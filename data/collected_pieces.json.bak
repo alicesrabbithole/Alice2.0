@@ -1,0 +1,35 @@
+{
+    "puzzles": {
+        "alice_test": {
+            "display_name": "Alice Test",
+            "full_image": "puzzles\\Alice Test\\Alice Test_full.png",
+            "rows": 4,
+            "cols": 4,
+            "enabled": true,
+            "thumbnail": "puzzles/Alice Test/Alice Test_thumbnail.png"
+        }
+    },
+    "pieces": {
+        "alice_test": {
+            "1": "puzzles/Alice Test/pieces/p1_1.png",
+            "10": "puzzles/Alice Test/pieces/p1_10.png",
+            "11": "puzzles/Alice Test/pieces/p1_11.png",
+            "12": "puzzles/Alice Test/pieces/p1_12.png",
+            "13": "puzzles/Alice Test/pieces/p1_13.png",
+            "14": "puzzles/Alice Test/pieces/p1_14.png",
+            "15": "puzzles/Alice Test/pieces/p1_15.png",
+            "16": "puzzles/Alice Test/pieces/p1_16.png",
+            "2": "puzzles/Alice Test/pieces/p1_2.png",
+            "3": "puzzles/Alice Test/pieces/p1_3.png",
+            "4": "puzzles/Alice Test/pieces/p1_4.png",
+            "5": "puzzles/Alice Test/pieces/p1_5.png",
+            "6": "puzzles/Alice Test/pieces/p1_6.png",
+            "7": "puzzles/Alice Test/pieces/p1_7.png",
+            "8": "puzzles/Alice Test/pieces/p1_8.png",
+            "9": "puzzles/Alice Test/pieces/p1_9.png"
+        }
+    },
+    "staff": [],
+    "drop_channels": {},
+    "user_pieces": {}
+}

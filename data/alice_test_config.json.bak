@@ -1,0 +1,28 @@
+{
+  "puzzles": {
+    "full_puzzle1": {
+      "full_image": "C:\\Users\\brian\\Desktop\\pythonProject1 - Copy\\puzzles\\puzzle1\\full_puzzle1.png"
+    }
+  },
+  "pieces": {
+    "p1": {
+      "1": "C:\\Users\\brian\\Desktop\\pythonProject1 - Copy\\pieces\\puzzle1\\p1_1.png",
+      "2": "C:\\Users\\brian\\Desktop\\pythonProject1 - Copy\\pieces\\puzzle1\\p1_2.png",
+      "3": "C:\\Users\\brian\\Desktop\\pythonProject1 - Copy\\pieces\\puzzle1\\p1_3.png",
+      "4": "C:\\Users\\brian\\Desktop\\pythonProject1 - Copy\\pieces\\puzzle1\\p1_4.png",
+      "5": "C:\\Users\\brian\\Desktop\\pythonProject1 - Copy\\pieces\\puzzle1\\p1_5.png",
+      "6": "C:\\Users\\brian\\Desktop\\pythonProject1 - Copy\\pieces\\puzzle1\\p1_6.png",
+      "7": "C:\\Users\\brian\\Desktop\\pythonProject1 - Copy\\pieces\\puzzle1\\p1_7.png",
+      "8": "C:\\Users\\brian\\Desktop\\pythonProject1 - Copy\\pieces\\puzzle1\\p1_8.png",
+      "9": "C:\\Users\\brian\\Desktop\\pythonProject1 - Copy\\pieces\\puzzle1\\p1_9.png"
+    }
+  },
+  "drop_channels": {
+    "1309962373846532159": {
+      "puzzle": "full_puzzle1",
+      "mode": "messages",
+      "value": 10,
+      "counter": 1
+    }
+  }
+}

@@ -30,6 +30,41 @@
         }
     },
     "staff": [],
-    "drop_channels": {},
-    "user_pieces": {}
+    "drop_channels": {
+        "1309962373846532159": {
+    "puzzle": "alice_test",
+    "puzzle_display": "Alice Test",
+    "mode": "messages",
+    "value": [10, 15],
+    "claims_range": [1, 3],
+    "message_count": 0,
+    "next_trigger": 63
+        }
+    },
+    "user_pieces": {
+        "625759569578164244": {
+            "Alice Test": [
+                "1",
+                "12"
+            ]
+        },
+        "1242587465647390720": {
+            "Alice Test": [
+                "12",
+                "1",
+                "16"
+            ]
+        },
+        "1077240270791397388": {
+            "Alice Test": [
+                "12",
+                "1"
+            ]
+        },
+        "1163697545466355763": {
+            "Alice Test": [
+                "1"
+            ]
+        }
+    }
 }
