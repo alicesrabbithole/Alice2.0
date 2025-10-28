@@ -24,8 +24,22 @@ def merge_and_generate_config(base_path="puzzles", existing_path="config.json", 
         if not os.path.isdir(puzzle_path):
             continue
 
-        # Skip if already defined
+        # Merge missing fields if puzzle already exists
         if puzzle_id in existing_puzzles:
+            existing = config["puzzles"][puzzle_id]
+            if "base_image" not in existing:
+                existing["base_image"] = base_image.replace("\\", "/")
+            if "full_image" not in existing:
+                existing["full_image"] = full_image.replace("\\", "/")
+            if "thumbnail" not in existing:
+                existing["thumbnail"] = thumbnail.replace("\\", "/")
+            if "grid" not in existing:
+                existing["grid"] = [rows, cols]
+            if "enabled" not in existing:
+                existing["enabled"] = True
+            # Still update pieces if missing
+            if puzzle_id not in config["pieces"]:
+                config["pieces"][puzzle_id] = piece_map
             continue
 
         # Detect images

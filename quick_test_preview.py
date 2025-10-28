@@ -2,6 +2,7 @@
 from cogs.puzzle_composer import PuzzleComposer
 from ui.overlay import build_puzzle_progress
 from cogs.db_utils import load_data, save_data, DEFAULT_DATA
+import os
 
 data = load_data()
 print("Loaded data keys:", list(data.keys()))
@@ -22,6 +23,7 @@ if not data.get("puzzles"):
 puzzle_key = next(iter(data["puzzles"].keys()))
 user_id = "1234567890"  # change to a real test user id if you have one
 
+
 print("Using puzzle_key:", puzzle_key)
 
 composer = PuzzleComposer(data, collected=None)
@@ -29,5 +31,22 @@ out1 = composer.build(puzzle_key, user_id)
 print("Composer wrote:", out1)
 
 collected = data.get("user_pieces", {}).get(user_id, {}).get(puzzle_key, [])
+if not collected:
+    print(f"⚠️ No collected pieces found for user {user_id} on puzzle '{puzzle_key}'")
+
 out2 = build_puzzle_progress(puzzle_key, collected, data, user_id=user_id)
 print("Overlay builder wrote:", out2)
+
+DRY_RUN = True
+
+if not DRY_RUN:
+    out1 = composer.build(puzzle_key, user_id)
+    print("Composer wrote:", out1)
+else:
+    print("🧪 Dry run — skipping composer.build()")
+thumb = data["puzzles"][puzzle_key].get("thumbnail")
+
+if thumb and os.path.exists(thumb):
+    print(f"🖼️ Thumbnail exists: {thumb}")
+else:
+    print(f"⚠️ No thumbnail found for puzzle '{puzzle_key}'")

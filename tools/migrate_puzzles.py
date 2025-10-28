@@ -46,7 +46,7 @@ def add_puzzle(key, display_name=None, full_image_path=None, pieces_dir=None):
     data = load_data()
 
     if key in data.get("puzzles", {}):
-        print(f"⚠️ Puzzle {key} already exists.")
+        print(f"⚠️ Puzzle '{key}' already exists.")
         return
 
     # Add puzzle metadata
@@ -71,7 +71,7 @@ def add_puzzle(key, display_name=None, full_image_path=None, pieces_dir=None):
     data.setdefault("pieces", {})[key] = pieces_dict
 
     save_data(data)
-    print(f"✨ Added new puzzle '{key}' with skeleton entries.")
+    print(f"✨ Added new puzzle '{display_name or key.title()}' with skeleton entries.")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Puzzle JSON migration helper")

@@ -6,6 +6,12 @@ import asyncio
 import json
 from cogs.db_utils import save_data, backup_data, get_drop_channels, slugify_key
 from tools.puzzle_tools import slugify, add_puzzle_from_existing
+import logging
+logger = logging.getLogger(__name__)
+
+logger.warning("🧪 [COG NAME] loaded")
+
+
 
 GUILD_ID = 1309962372269609010
 
@@ -41,7 +47,7 @@ class PuzzleAdminCog(commands.Cog):
         await ctx.defer(ephemeral=True)
 
         key = slugify(display_name)
-        full_image = os.path.join(puzzle_dir, f"{key}_full.png")
+        full_image = os.path.join(puzzle_dir, f"pretty_name(puzzles, key)_full.png")
         pieces_dir = os.path.join(puzzle_dir, "pieces")
         config_path = "config.json"
 
@@ -71,8 +77,9 @@ class PuzzleAdminCog(commands.Cog):
     @commands.is_owner()
     @app_commands.describe(puzzle="Puzzle key to delete")
     async def deletepuzzle(self, ctx: commands.Context, puzzle: str):
-        puzzle_key = puzzle.lower()
-        if puzzle_key not in self.bot.data.get("puzzles", {}):
+        from cogs.db_utils import resolve_puzzle_key
+        puzzle_key = resolve_puzzle_key(self.bot, puzzle)
+        if not puzzle_key or puzzle_key not in self.bot.data.get("puzzles", {}):
             await ctx.reply(f"❌ Puzzle `{puzzle}` not found.", ephemeral=True)
             return
 
@@ -114,10 +121,10 @@ class PuzzleAdminCog(commands.Cog):
             json.dump(self.bot.data, f, indent=2)
 
         # Remove user progress
-        for uid in self.bot.collected.get("user_pieces", {}):
-            self.bot.collected["user_pieces"][uid].pop(puzzle_key, None)
+        for uid in self.bot.data.get("user_pieces", {}):
+            self.bot.data["user_pieces"][uid].pop(puzzle_key, None)
 
-        save_data(self.bot.collected)
+        save_data(self.bot.data)
         await ctx.send(f"🗑️ Puzzle `{puzzle_key}` deleted and backup saved.", ephemeral=True)
 
     @commands.hybrid_command(
@@ -131,8 +138,9 @@ class PuzzleAdminCog(commands.Cog):
             await ctx.reply("❌ You don’t have permission to run this command.", ephemeral=True)
             return
 
-        puzzle_key = puzzle.lower()
-        if puzzle_key not in self.bot.data.get("pieces", {}):
+        from cogs.db_utils import resolve_puzzle_key
+        puzzle_key = resolve_puzzle_key(self.bot, puzzle)
+        if not puzzle_key or puzzle_key not in self.bot.data.get("puzzles", {}):
             await ctx.reply(f"❌ Puzzle `{puzzle}` not found.", ephemeral=True)
             return
 
@@ -140,16 +148,16 @@ class PuzzleAdminCog(commands.Cog):
 
         if user:
             uid = str(user.id)
-            if uid in self.bot.collected.get("user_pieces", {}) and puzzle_key in self.bot.collected["user_pieces"][uid]:
-                self.bot.collected["user_pieces"][uid].pop(puzzle_key, None)
-                save_data(self.bot.collected)
+            if uid in self.bot.data.get("user_pieces", {}) and puzzle_key in self.bot.data["user_pieces"][uid]:
+                self.bot.data["user_pieces"][uid].pop(puzzle_key, None)
+                save_data(self.bot.data)
                 await ctx.reply(f"🧹 Cleared `{puzzle}` progress for {user.display_name}.", ephemeral=True)
             else:
                 await ctx.reply(f"{user.display_name} has no progress on `{puzzle}`.", ephemeral=True)
         else:
-            for uid in self.bot.collected.get("user_pieces", {}):
-                self.bot.collected["user_pieces"][uid].pop(puzzle_key, None)
-            save_data(self.bot.collected)
+            for uid in self.bot.data.get("user_pieces", {}):
+                self.bot.data["user_pieces"][uid].pop(puzzle_key, None)
+            save_data(self.bot.data)
             await ctx.reply(f"🧹 Cleared `{puzzle}` progress for all users.", ephemeral=True)
 
 async def setup(bot: commands.Bot):

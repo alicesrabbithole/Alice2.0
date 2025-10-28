@@ -1,6 +1,5 @@
 from pathlib import Path
-import os
 
-BASE_DIR = Path(os.getcwd())
+BASE_DIR = Path(__file__).resolve().parent.parent  # project root
 
-LOG_CHANNEL_ID = 1411859714144468992  # ← replace with your actual log channel ID
+LOG_CHANNEL_ID = 123456789012345678

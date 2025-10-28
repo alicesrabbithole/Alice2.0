@@ -4,21 +4,16 @@ import re
 import hashlib
 import logging
 from typing import Any, Optional
-
+from ui.overlay import render_progress_image
 import discord
 from discord.ext import commands
 from discord import app_commands, File
 from PIL import Image
-
-from cogs.db_utils import slugify_key, write_preview
-from render_progress import render_progress_image
-from tools.preview_cache import (
-    preview_cache_path,
-    get_cache_dir,
-    invalidate_user_puzzle_cache,
-)
+from cogs.db_utils import slugify_key, write_preview, resolve_puzzle_key
 
 logger = logging.getLogger(__name__)
+
+logger.warning("🧪 [COG NAME] loaded")
 
 GUILD_ID = 1309962372269609010
 
@@ -38,154 +33,76 @@ class PuzzlesCog(commands.Cog):
         # limit to 25 if needed
         return choices[:25]
 
-    @commands.hybrid_command(
-        name="viewpuzzle",
-        description="View a user's progress on a puzzle (mention a user to view theirs)"
-    )
-    @app_commands.autocomplete(puzzle=puzzle_autocomplete)
-    async def viewpuzzle(self, ctx: commands.Context, puzzle: str, member: discord.Member = None):
-        target = member or ctx.author
-        user_id_str = str(target.id)
+    logger.info("🔥 viewpuzzle command triggered")
 
-        # --- resolve puzzle_key robustly (keys, display_name, folder)
-        puzzles_map: dict[str, Any] = self.bot.data.get("puzzles", {}) or {}
-        puzzle_key: Optional[str] = None
-
-        if puzzle in puzzles_map:
-            puzzle_key = puzzle
-
-        if puzzle_key is None:
-            for key in puzzles_map:
-                if key.lower() == puzzle.lower():
-                    puzzle_key = key
-                    break
-
-        if puzzle_key is None:
-            for key, info in puzzles_map.items():
-                display = str(info.get("display_name", "") or "")
-                if display.lower() == puzzle.lower():
-                    puzzle_key = key
-                    break
-
-        if puzzle_key is None:
-            puzzles_root = os.path.join(os.getcwd(), "puzzles")
-            candidates = [puzzle, puzzle.replace("_", " "), puzzle.title()]
-            for cand in candidates:
-                cand_path = os.path.join(puzzles_root, cand)
-                if os.path.isdir(cand_path):
-                    for key, info in puzzles_map.items():
-                        if key == cand or str(info.get("display_name", "")).lower() == cand.lower():
-                            puzzle_key = key
-                            break
-                    if puzzle_key:
-                        break
-
-        if not puzzle_key:
-            await ctx.reply(f"❌ Puzzle `{puzzle}` not found.", ephemeral=True)
+    @app_commands.command(name="viewpuzzle", description="View your progress on a puzzle")
+    @app_commands.describe(puzzle_name="Select a puzzle to view")
+    async def viewpuzzle(self, interaction: discord.Interaction, puzzle_name: str):
+        puzzle_key = resolve_puzzle_key(self.bot, puzzle_name)
+        logger.debug("Resolved puzzle_key: %s", puzzle_key)
+        if not puzzle_key or puzzle_key not in self.bot.data["puzzles"]:
+            await interaction.response.send_message(f"⚠️ Puzzle '{puzzle_name}' not found.", ephemeral=False)
             return
 
-        display_name = puzzles_map.get(puzzle_key, {}).get("display_name", puzzle_key)
+        # ✅ Defer response
+        await interaction.response.defer(ephemeral=False)
 
-        # --- puzzle folder
+        puzzle = self.bot.data["puzzles"][puzzle_key]
+        uid = str(interaction.user.id)
+        user_pieces = self.bot.data.get("user_pieces", {}).get(uid, {}).get(puzzle_key, [])
+        collected_count = len(user_pieces)
+        rows = puzzle.get("rows", 4)
+        cols = puzzle.get("cols", 4)
+        total_pieces = rows * cols
+        puzzle_cfg = puzzle.get("config", {})
+        piece_map = self.bot.data.get("pieces", {}).get(puzzle_key, {})
         puzzle_folder = os.path.join(os.getcwd(), "puzzles", puzzle_key)
-        if not os.path.isdir(puzzle_folder):
-            alt = os.path.join(os.getcwd(), "puzzles", display_name)
-            if os.path.isdir(alt):
-                puzzle_folder = alt
-            else:
-                await ctx.reply(f"Puzzle folder not found for `{display_name}`.", ephemeral=True)
-                return
 
-        # --- rows/cols (prefer stored config)
-        puzzle_cfg = puzzles_map.get(puzzle_key, {}) or {}
-        rows = puzzle_cfg.get("rows") or puzzle_cfg.get("r") or None
-        cols = puzzle_cfg.get("cols") or puzzle_cfg.get("c") or None
-        total_cfg = puzzle_cfg.get("total") or puzzle_cfg.get("pieces") or None
+        flags = self.bot.data.get("user_render_flags", {}).get(uid, {}).get(puzzle_key, {})
+        show_glow = flags.get("glow", False)
+        show_bar = flags.get("progress_bar", False)
 
-        total_from_cfg = None
-        if isinstance(total_cfg, int):
-            total_from_cfg = total_cfg
-        elif isinstance(total_cfg, dict):
-            total_from_cfg = len(total_cfg)
-        if rows is None or cols is None:
-            if total_from_cfg:
-                try:
-                    root = int(int(total_from_cfg) ** 0.5)
-                    rows = cols = root
-                except Exception:
-                    rows = cols = 4
-            else:
-                rows = cols = 4
-        rows = int(rows)
-        cols = int(cols)
+        logger.debug("Render flags for %s → glow=%s, bar=%s", puzzle_key, show_glow, show_bar)
 
-        # --- owned pieces (from bot.collected)
-        owned = list(self.bot.collected.get("user_pieces", {}).get(user_id_str, {}).get(puzzle_key, []))
-        owned = [str(x) for x in owned]
-        owned_count = len(owned)
+        if not flags:
+            logger.debug("No user-specific flags found for %s (uid=%s)", puzzle_key, uid)
 
-        # --- total pieces (prefer bot.data then disk)
-        total = None
-        stored_pieces = self.bot.data.get("pieces", {}).get(puzzle_key)
-        if stored_pieces:
-            try:
-                total = int(len(stored_pieces))
-            except Exception:
-                total = None
-
-        if not total:
-            pieces_dir = os.path.join(puzzle_folder, "pieces")
-            if os.path.isdir(pieces_dir):
-                files = [f for f in os.listdir(pieces_dir) if f.lower().endswith(".png")]
-                total = len(files)
-            else:
-                total = 0
-        total = int(total or 0)
-
-        # --- cache lookup
-        cache_path = preview_cache_path(puzzle_key, user_id_str, owned)
-        if os.path.isfile(cache_path):
-            out_path = cache_path
-        else:
-            # render into cache path
-            try:
-                os.makedirs(os.path.dirname(cache_path), exist_ok=True)
-                out_path = render_progress_image(
-                    puzzle_folder=puzzle_folder,
-                    collected_piece_ids=owned,
-                    rows=rows,
-                    cols=cols,
-                    puzzle_config=puzzle_cfg,
-                    output_path=cache_path,
-                )
-            except Exception as e:
-                await ctx.reply(f"❌ Failed to render progress image: {e}", ephemeral=True)
-                return
-
-        # --- reply
-        file = File(out_path, filename="progress.png")
         embed = discord.Embed(
-            title=f"🧩 Progress for {display_name}",
-            description=f"Collected {owned_count} / {total}",
+            title=f"🧩 {puzzle['display_name']}",
+            description=f"You’ve collected `{collected_count}/{total_pieces}` pieces.",
             color=discord.Color.purple()
         )
-        embed.set_image(url="attachment://progress.png")
-        if member:
-            embed.set_footer(text=f"Showing progress for {member.display_name}")
-        else:
-            embed.set_footer(text="Showing your progress")
 
-        await ctx.reply(embed=embed, file=file)
+        if user_pieces:
+            embed.add_field(
+                name="Collected pieces",
+                value=", ".join(sorted(user_pieces)),
+                inline=False
+            )
+            logger.debug("User %s has pieces: %s", uid, user_pieces)
+            logger.debug("User %s has pieces: %s", uid, user_pieces)
+        try:
+            preview_path = os.path.join("temp", f"{puzzle_key}_{uid}_progress.png")
+            render_progress_image(
+                puzzle_folder=puzzle_folder,
+                collected_piece_ids=user_pieces,
+                rows=rows,
+                cols=cols,
+                puzzle_config=puzzle_cfg,
+                output_path=preview_path,
+                piece_map=piece_map,
+                show_glow=show_glow,
+                show_bar=show_bar
+            )
 
-    # optional admin command to invalidate cache for a user/puzzle
-    @commands.hybrid_command(name="invalidatepreview", description="Invalidate preview cache for a user and puzzle")
-    async def invalidatepreview(self, ctx: commands.Context, puzzle_key: str, member: discord.Member = None):
-        if ctx.guild is None or ctx.guild.id != GUILD_ID:
-            return
-        member = member or ctx.author
-        user_id_str = str(member.id)
-        removed = invalidate_user_puzzle_cache(puzzle_key, user_id_str)
-        await ctx.reply(f"Removed {removed} cached preview(s).")
+            with open(preview_path, "rb") as fh:
+                file = discord.File(fh, filename="progress.png")
+                embed.set_image(url="attachment://progress.png")
+                await interaction.followup.send(embed=embed, file=file, ephemeral=False)
+
+        except Exception as e:
+            logger.exception("⚠️ Failed to generate or send preview: %s", e)
+            await interaction.followup.send(embed=embed, content="⚠️ Preview not available yet.", ephemeral=False)
 
     @commands.hybrid_command(name="listpuzzles", description="List available puzzles")
     async def listpuzzles(self, ctx: commands.Context):
@@ -200,4 +117,8 @@ class PuzzlesCog(commands.Cog):
 
 
 async def setup(bot: commands.Bot):
-    await bot.add_cog(PuzzlesCog(bot))
+    cog = PuzzlesCog(bot)
+    cog.viewpuzzle.autocomplete("puzzle_name")(cog.puzzle_autocomplete)
+    await bot.add_cog(cog)
+
+

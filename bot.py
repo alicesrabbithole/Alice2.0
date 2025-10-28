@@ -1,24 +1,31 @@
+print("🧠 Running bot.py from:", __file__)
+
 # bot.py
+
 import os
 import sys
 import asyncio
-import json
 import logging
 from typing import Any
-from dotenv import load_dotenv
+
 import discord
 from discord.ext import commands
-from tools.patch_config import patch_config
-from cogs.db_utils import load_data, sync_puzzle_images
+from dotenv import load_dotenv
+from cogs.db_utils import load_data, save_data, sync_puzzle_images, slugify_key
 from cogs.log_utils import log, log_exception
+from tools.patch_config import patch_config
+from cogs.db_utils import normalize_all_puzzle_keys
+from tools.puzzle_sync import initialize_puzzle_data
 
 # Logging setup
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)-8s %(name)s %(message)s")
+import logging
 
-# path to your config.json (relative to project root)
-config_path = os.path.join(os.path.dirname(__file__), "config.json")
-# call with project_anchor so patch_config resolves puzzles folder next to bot.py
-patch_config(config_path, project_anchor=__file__)
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+)
+logger = logging.getLogger(__name__)
+
 
 # Load environment
 load_dotenv()
@@ -36,10 +43,25 @@ intents.members = True
 intents.message_content = True
 
 bot: commands.Bot = commands.Bot(command_prefix="!", intents=intents)
+bot.collected = load_data()
 
-# Inject shared state before loading cogs
-bot.data: dict[str, Any] = json.load(open("config.json", "r", encoding="utf-8"))
-bot.collected: dict[str, Any] = load_data()
+# Load config and normalize puzzle keys
+bot.data = load_data()
+bot.data.setdefault("render_flags", {})
+
+
+def normalize_bot_data(bot):
+    bot.data["puzzles"] = {
+        slugify_key(k): v for k, v in bot.data.get("puzzles", {}).items()
+    }
+    bot.data["pieces"] = {
+        slugify_key(k): v for k, v in bot.data.get("pieces", {}).items()
+    }
+
+normalize_bot_data(bot)
+
+logger.info("✅ Normalized bot.data['pieces'] keys: %s", list(bot.data["pieces"].keys()))
+logger.info("✅ Sample key check: 'alice_test' in pieces → %s", 'alice_test' in bot.data["pieces"])
 
 _extensions_loaded = False
 _synced_tree = False
@@ -47,25 +69,30 @@ _synced_tree = False
 @bot.event
 async def on_ready():
     global _synced_tree
+    initialize_puzzle_data(bot)
+
     print(f"✅ Logged in as {bot.user} (id={bot.user.id})")
     print("📌 Prefix commands:", [c.name for c in bot.commands])
     print("📦 Loaded extensions:", list(bot.extensions.keys()))
+    print("🔍 Available puzzle slugs:", list(bot.data["puzzles"].keys()))
 
-    # Refresh in-memory collected data and sync puzzles to bot.data
-    bot.collected = load_data()
-    bot.data = {"puzzles": {}, "pieces": {}}
-    sync_puzzle_images(bot)
+    if not _synced_tree:
+        _synced_tree = True
+        try:
+            bot.tree.copy_global_to(guild=discord.Object(id=GUILD_ID))
+            synced = await bot.tree.sync(guild=discord.Object(id=GUILD_ID))
+            print("🌐 Synced guild commands:", [c.name for c in synced])
+        except Exception as e:
+            print("❌ Failed to sync command tree:", e)
 
-    if _synced_tree:
-        return
-    _synced_tree = True
-
-    try:
-        bot.tree.copy_global_to(guild=discord.Object(id=GUILD_ID))
-        synced = await bot.tree.sync(guild=discord.Object(id=GUILD_ID))
-        print("🌐 Synced guild commands:", [c.name for c in synced])
-    except Exception as e:
-        print("❌ Failed to sync command tree:", e)
+    if not _synced_tree:
+        _synced_tree = True
+        try:
+            bot.tree.copy_global_to(guild=discord.Object(id=GUILD_ID))
+            synced = await bot.tree.sync(guild=discord.Object(id=GUILD_ID))
+            print("🌐 Synced guild commands:", [c.name for c in synced])
+        except Exception as e:
+            print("❌ Failed to sync command tree:", e)
 
 async def load_all_cogs():
     global _extensions_loaded
@@ -78,7 +105,6 @@ async def load_all_cogs():
         print("❌ Cog folder not found:", cog_folder)
         return
 
-    # ✅ Centralized exclusion list for helper modules
     excluded = {
         "__init__.py",
         "db_utils.py",
@@ -86,7 +112,8 @@ async def load_all_cogs():
         "log_utils.py",
         "puzzle_composer.py",
         "patch_config.py",
-        "constants.py"
+        "constants.py",
+        "drop_config.py"
     }
 
     for filename in os.listdir(cog_folder):

@@ -1,6 +1,32 @@
-﻿.venv/
+﻿# Python cache and compiled files
 __pycache__/
 *.pyc
-.env
+
+# Virtual environments
+.venv/
+env/
+venv/
+
+# Editor settings
 .vscode/
 .idea/
+
+# Logs, backups, and temp files
+*.log
+*.bak
+*.tmp
+debug_dump.py
+null
+temp/
+cache/
+
+# Environment and secrets
+.env
+
+# OS-specific junk
+.DS_Store
+Thumbs.db
+
+# Optional: test artifacts
+test_*.py
+*.test.json

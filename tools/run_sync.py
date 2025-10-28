@@ -3,10 +3,8 @@ import shutil
 from cogs import db_utils
 
 def main():
-    # build data from filesystem
     data = db_utils.sync_from_fs("puzzles")
 
-    # backup existing data file if present
     try:
         shutil.copyfile("../data/collected_pieces.json", "data/collected_pieces.json.bak")
         print("Backup written to data/collected_pieces.json.bak")
@@ -15,7 +13,6 @@ def main():
     except Exception as e:
         print("Warning: could not write backup:", e)
 
-    # persist normalized data
     db_utils.save_data(data)
     cp = len(data.get("puzzles", {}))
     pp = sum(len(v) for v in data.get("pieces", {}).values())
@@ -24,3 +21,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

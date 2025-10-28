@@ -8,6 +8,10 @@ import psutil
 import json
 import datetime
 from cogs.db_utils import get_drop_channels, slugify_key
+import logging
+logger = logging.getLogger(__name__)
+
+logger.warning("🧪 [COG NAME] loaded")
 
 GUILD_ID = 1309962372269609010
 
@@ -25,17 +29,6 @@ async def cog_name_autocomplete(interaction: discord.Interaction, current: str):
 class OwnerCommandsCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
-
-    async def _toggle_cog(self, ctx: commands.Context, ext: str, friendly: str = None):
-        if ext in self.bot.extensions:
-            await self.bot.unload_extension(ext)
-            await ctx.send(f"✅ {friendly or ext} unloaded.")
-        else:
-            try:
-                await self.bot.load_extension(ext)
-                await ctx.send(f"✅ {friendly or ext} loaded.")
-            except Exception as e:
-                await ctx.send(f"⚠️ Failed to load {friendly or ext}: {e}")
 
     @commands.command(name="listowner", extras={"category": "Owner", "owner": True})
     @commands.is_owner()
@@ -57,20 +50,27 @@ class OwnerCommandsCog(commands.Cog):
         )
         await ctx.send(embed=embed)
 
-    @commands.hybrid_command(name="togglecog", description="Toggle a cog by name", extras={"category": "Owner", "owner": True})
+    @commands.hybrid_command(
+        name="togglecog",
+        description="Toggle a cog by name",
+        extras={"category": "Owner", "owner": True}
+    )
     @commands.is_owner()
     @app_commands.autocomplete(extension=cog_name_autocomplete)
     @app_commands.describe(extension="Pick a cog to load/unload")
     async def togglecog(self, ctx: commands.Context, extension: str):
-        if extension in self.bot.extensions:
-            await self.bot.unload_extension(extension)
-            await ctx.reply(f"❌ Unloaded `{extension}`.", ephemeral=False)
+        await self._toggle_cog(ctx, extension)
+
+    async def _toggle_cog(self, ctx: commands.Context, ext: str, friendly: str = None):
+        if ext in self.bot.extensions:
+            await self.bot.unload_extension(ext)
+            await ctx.send(f"❌ Unloaded `{friendly or ext}`.")
         else:
             try:
-                await self.bot.load_extension(extension)
-                await ctx.reply(f"✅ Loaded `{extension}`.", ephemeral=False)
+                await self.bot.load_extension(ext)
+                await ctx.send(f"✅ Loaded `{friendly or ext}`.")
             except Exception as e:
-                await ctx.reply(f"⚠️ Failed to load `{extension}`: {e}", ephemeral=False)
+                await ctx.send(f"⚠️ Failed to load `{friendly or ext}`: {e}")
 
     @commands.command(name="listcogs", extras={"category": "Toggle", "owner": True})
     @commands.is_owner()

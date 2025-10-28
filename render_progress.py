@@ -2,6 +2,8 @@
 import os
 from typing import Iterable, Optional
 from PIL import Image
+import logging
+logger = logging.getLogger(__name__)
 
 def _ensure_image(path: Optional[str]) -> bool:
     return bool(path and os.path.isfile(path))

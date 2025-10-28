@@ -1,7 +1,7 @@
-# cogs/puzzle_composer.py
 import logging
 from typing import Optional
 from PIL import Image, ImageDraw
+import os
 
 from cogs import db_utils
 
@@ -25,39 +25,29 @@ class PuzzleComposer:
         meta, key = db_utils.get_puzzle(self.data, key)
         return key, meta
 
-    def _compose_base_image(self, meta: dict) -> Image.Image:
-        # Minimal placeholder composition logic if metadata doesn't provide a full image.
-        # Replace or extend this with your real composition logic.
-        rows = meta.get("rows", 1)
-        cols = meta.get("cols", 1)
-        thumb = meta.get("thumbnail")
-        width = cols * 64
-        height = rows * 64
-        base = Image.new("RGBA", (width, height), (0, 0, 0, 0))
-        draw = ImageDraw.Draw(base)
-        draw.rectangle([0, 0, width - 1, height - 1], outline=(200, 200, 200, 255))
-        # If a thumbnail path exists, try to paste it; otherwise leave placeholder.
-        if thumb:
-            try:
-                thumb_img = Image.open(thumb).convert("RGBA")
-                thumb_img = thumb_img.resize((width, height))
-                base.paste(thumb_img, (0, 0), thumb_img)
-            except Exception:
-                logger.exception("Failed to open or paste thumbnail %s", thumb)
-        return base
+    def _compose_overlay_image(self, meta: dict, collected: list) -> Image.Image:
+        base_path = meta.get("base_image") or meta.get("full_image")
+        if not base_path or not os.path.exists(base_path):
+            raise FileNotFoundError(f"Missing base image: {base_path}")
+
+        img = Image.open(base_path).convert("RGBA")
+
+        if not collected:
+            logger.info("🧩 No pieces collected — returning base image")
+            return img
+
+        # Optional: draw overlays if pieces are collected
+        # You can wire in render_piece_overlay here if needed
+        return img
 
     def build(self, puzzle_key: str, user_id: Optional[str] = None) -> str:
-        """
-        Compose the puzzle preview and return the path to the written preview image.
-        Raises exceptions for unexpected failures so callers can see them.
-        """
         slug, meta = self._get_puzzle_meta(puzzle_key)
         if not meta:
             raise KeyError(f"Puzzle not found for key: {puzzle_key} (resolved slug: {slug})")
 
-        base = self._compose_base_image(meta)
+        collected = []  # No progress — just show the base image
+        base = self._compose_overlay_image(meta, collected)
 
-        # Always use the central write_preview helper and return its result.
         out_path = db_utils.write_preview(slug, base, user_id)
         logger.info("PuzzleComposer.build wrote preview: %s", out_path)
         return out_path

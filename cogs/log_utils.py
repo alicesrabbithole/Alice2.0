@@ -1,16 +1,17 @@
-# cogs/log_utils.py
-import discord
-import traceback
+import logging
 
-async def log(bot: discord.Client, message: str = None, embed: discord.Embed = None):
-    channel = getattr(bot, "log_channel", None)
-    if channel:
+async def log(bot, message: str):
+    log_channel = bot.get_channel(1411859714144468992)
+    if log_channel:
         try:
-            await channel.send(content=message, embed=embed)
+            await log_channel.send(message)
         except Exception:
-            pass  # Avoid crashing on log failure
+            logging.exception("Failed to send log message")
 
-async def log_exception(bot: discord.Client, context: str, exc: Exception):
-    tb = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
-    msg = f"⚠️ Exception in {context}:\n```{tb[-1800:]}```"
-    await log(bot, msg)
+async def log_exception(bot, context: str, error: Exception):
+    log_channel = bot.get_channel(1411859714144468992)
+    if log_channel:
+        try:
+            await log_channel.send(f"❌ Error in {context}: `{type(error).__name__}` — {error}")
+        except Exception:
+            logging.exception("Failed to send exception log")

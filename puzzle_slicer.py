@@ -30,7 +30,7 @@ def slice_puzzle(
         y = row * piece_height
 
         piece = base.crop((x, y, x + piece_width, y + piece_height))
-        piece_path = os.path.join(output_folder, f"p1_{idx}.png")
+        piece_path = piece_path = os.path.join(puzzle_folder, "pieces", f"p1_{piece_id}.png")
 
         # Overwrite protection
         if os.path.exists(piece_path):

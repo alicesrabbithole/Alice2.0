@@ -1,22 +1,19 @@
 import discord
 from discord.ext import commands
 from discord import app_commands, Interaction
-from cogs.db_utils import sync_puzzle_images, slugify_key, get_drop_channels
+from cogs.db_utils import sync_puzzle_images, slugify_key, get_drop_channels, add_piece_to_user
 from PIL import Image
 import re
 import os
 import pathlib
+from tools.utils import pretty_name
+import logging
+
+logger = logging.getLogger(__name__)
 
 GUILD_ID = 1309962372269609010
 
-# --- module-level autocomplete ---
-async def puzzle_key_autocomplete(interaction: Interaction, current: str):
-    return [
-        app_commands.Choice(name=p, value=p)
-        for p in interaction.client.data.get("puzzles", {})
-        if current.lower() in p.lower()
-    ][:25]
-
+logger.warning("🧪 [COG NAME] loaded")
 
 class AdminCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
@@ -25,27 +22,28 @@ class AdminCog(commands.Cog):
         # sync_puzzle_images may have different signatures or return None.
         # Be defensive: call it if available and tolerate None or different return shapes.
         self.puzzles, self.pieces, self.names = {}, {}, {}
-        try:
-            res = sync_puzzle_images(self.bot)
-            if isinstance(res, dict):
-                # some syncs return a dict with subkeys
-                self.puzzles = res.get("puzzles", {}) or {}
-                self.pieces = res.get("pieces", {}) or {}
-                # optional name map
-                self.names = res.get("names", {}) or {}
-            elif isinstance(res, tuple) and len(res) == 3:
-                self.puzzles, self.pieces, self.names = res
-            elif isinstance(res, tuple) and len(res) == 2:
-                self.puzzles, self.pieces = res
-            # otherwise leave defaults (bot.data will be used at runtime)
-        except Exception:
-            # swallow here so cog still loads; runtime will read bot.data as source of truth
-            pass
+
+        class AdminCog(commands.Cog):
+            def __init__(self, bot: commands.Bot):
+                self.bot = bot
+
+                self.puzzles, self.pieces, self.names = {}, {}, {}
+                try:
+                    self.puzzles = bot.data.get("puzzles", {})
+                    self.pieces = bot.data.get("pieces", {})
+                except Exception as e:
+                    print(f"❌ Puzzle sync failed: {e}")
+
+                if not self.puzzles or not self.pieces:
+                    print("⚠️ Puzzle or piece data is missing or empty.")
 
     async def puzzle_key_autocomplete(self, interaction: Interaction, current: str):
         return [
-            app_commands.Choice(name=p, value=p)
-            for p in self.bot.data.get("puzzles", {})
+                   app_commands.Choice(
+                       name=self.bot.data["puzzles"][p].get("display_name", p),
+                       value=p
+                   )
+                   for p in self.bot.data.get("puzzles", {})
             if current.lower() in p.lower()
         ][:25]
 
@@ -131,8 +129,10 @@ class AdminCog(commands.Cog):
         files = [f for f in os.listdir(folder) if re.match(r"p1_\d+\.png", f)]
         files.sort(key=lambda x: int(re.findall(r"\d+", x)[0]))
 
+
         first = Image.open(folder / files[0])
         tile_w, tile_h = first.size
+
         preview = Image.new("RGBA", (tile_w * cols, tile_h * rows), (0, 0, 0, 0))
 
         count = 0
@@ -147,6 +147,7 @@ class AdminCog(commands.Cog):
                     ghost = piece.copy()
                     ghost.putalpha(80)
                     preview.paste(ghost, (col * tile_w, row * tile_h))
+
 
                 count += 1
 
@@ -163,11 +164,11 @@ class AdminCog(commands.Cog):
 
         for key in puzzles:
             if key not in pieces:
-                report.append(f"🧩 Puzzle `{key}` is missing a `pieces` block in config.json.")
+                report.append(f"🧩 Puzzle **{pretty_name(puzzles, key)}** (`{key}`) is missing a `pieces` block in config.json.")
                 continue
 
             if "grid" not in puzzles[key]:
-                report.append(f"⚠️ Puzzle `{key}` is missing a `grid` in config.json.")
+                report.append(f"⚠️ Puzzle **{pretty_name(puzzles, key)}** (`{key}`) is missing a `grid` in config.json.")
 
             expected = puzzles[key].get("grid", [4, 4])
             total = expected[0] * expected[1]
@@ -175,29 +176,83 @@ class AdminCog(commands.Cog):
             actual = len(piece_map)
 
             if actual != total:
-                report.append(f"🧩 Puzzle `{key}` has {actual}/{total} pieces.")
+                report.append(f"🧩 Puzzle **{pretty_name(puzzles, key)}** (`{key}`) has {actual}/{total} pieces.")
 
             for pid in list(piece_map.keys()):
                 try:
                     idx = int(pid)
                 except ValueError:
-                    report.append(f"⚠️ Puzzle `{key}` has non-integer piece ID: `{pid}`")
+                    report.append(f"⚠️ Puzzle **{pretty_name(puzzles, key)}** (`{key}`) has non-integer piece ID: `{pid}`")
                     continue
                 if idx < 1 or idx > total:
-                    report.append(f"⚠️ Piece `{pid}` in `{key}` is out of bounds.")
+                    report.append(f"⚠️ Piece `{pid}` in `{pretty_name(puzzles, key)}`is out of bounds.")
 
                 path = piece_map.get(pid)
                 if path and not os.path.exists(path):
-                    report.append(f"❌ Missing file: `{path}` (piece {pid} of `{key}`)")
+                    report.append(f"❌ Missing file: `{path}` (piece {pid} of `{pretty_name(puzzles, key)}`)")
 
         used_keys = set()
         for uid, puzzles_dict in user_pieces.items():
             used_keys.update(puzzles_dict.keys())
         unused = set(pieces.keys()) - used_keys
         for key in unused:
-            report.append(f"🕳️ Puzzle `{key}` is unused by any user.")
+            report.append(f"🕳️ Puzzle **{pretty_name(puzzles, key)}** (`{key}`) is unused by any user.")
 
         await ctx.send("\n".join(report[:50]) or "✅ No issues found.")
+
+    @commands.command(name="sync_puzzle_images")
+    @commands.has_permissions(administrator=True)
+    async def sync_puzzle_images_cmd(self, ctx):
+        embed = sync_puzzle_images(self.bot)
+        await ctx.send(embed=embed)
+
+    @commands.command(name="give_piece")
+    @commands.has_permissions(administrator=True)
+    async def give_piece_cmd(self, ctx, user: discord.User, puzzle_name: str, piece_id: str):
+        success = add_piece_to_user(user.id, puzzle_name, piece_id)
+        if success:
+            await ctx.send(f"✅ Gave piece `{piece_id}` of `{puzzle_name}` to {user.mention}")
+        else:
+            await ctx.send(f"⚠️ {user.mention} already has piece `{piece_id}` of `{puzzle_name}`")
+
+    @commands.command(name="toggle_glow")
+    @commands.has_permissions(administrator=True)
+    async def toggle_glow_cmd(self, ctx, puzzle_key: str):
+        flags = self.bot.data.setdefault("render_flags", {}).setdefault(puzzle_key, {})
+        current = flags.get("show_glow", False)
+        flags["show_glow"] = not current
+
+        from cogs.db_utils import save_data
+        save_data(self.bot.data)
+
+        await ctx.send(f"✨ Glow for `{puzzle_key}` is now set to `{flags['show_glow']}`")
+        logger.info("Glow toggled for %s → %s", puzzle_key, flags["show_glow"])
+
+    @commands.command(name="toggle_bar")
+    @commands.has_permissions(administrator=True)
+    async def toggle_bar_cmd(self, ctx, puzzle_key: str):
+        flags = self.bot.data.setdefault("render_flags", {}).setdefault(puzzle_key, {})
+        current = flags.get("show_bar", False)
+        flags["show_bar"] = not current
+
+        from cogs.db_utils import save_data
+        save_data(self.bot.data)
+
+        await ctx.send(f"📊 Progress bar for `{puzzle_key}` is now set to `{flags['show_bar']}`")
+        logger.info("Progress bar toggled for %s → %s", puzzle_key, flags["show_bar"])
+
+
+        @commands.command(name="view_render_flags")
+        @commands.has_permissions(administrator=True)
+        async def view_render_flags_cmd(self, ctx, puzzle_key: str):
+            flags = self.bot.data.get("render_flags", {}).get(puzzle_key, {})
+            glow = flags.get("show_glow", False)
+            bar = flags.get("show_bar", False)
+            await ctx.send(f"🔍 `{puzzle_key}` → glow: `{glow}`, bar: `{bar}`")
+
+        await ctx.send(f"📊 Progress bar for `{puzzle_key}` is now set to `{flags['show_bar']}`")
+        logger.info("Progress bar toggled for %s → %s", puzzle_key, flags["show_bar"])
+
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(AdminCog(bot))
