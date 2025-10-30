@@ -1,158 +1,62 @@
-print("🧠 Running bot.py from:", __file__)
-
-# bot.py
-
-import os
-import sys
-import asyncio
-import logging
-from typing import Any
-
 import discord
 from discord.ext import commands
+import os
 from dotenv import load_dotenv
-from cogs.db_utils import load_data, save_data, sync_puzzle_images, slugify_key
-from cogs.log_utils import log, log_exception
-from tools.patch_config import patch_config
-from cogs.db_utils import normalize_all_puzzle_keys
-from tools.puzzle_sync import initialize_puzzle_data
-
-# Logging setup
 import logging
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
-)
-logger = logging.getLogger(__name__)
+from cogs.utils.db_utils import load_data
+from cogs.utils.log_utils import setup_logging
 
-
-# Load environment
 load_dotenv()
 TOKEN = os.getenv("DISCORD_TOKEN")
-if not TOKEN:
-    raise SystemExit("❌ DISCORD_TOKEN not set in .env")
+setup_logging()
+logger = logging.getLogger(__name__)
 
-GUILD_ID = 1309962372269609010
-
-# Bot setup
-intents = discord.Intents.default()
-intents.messages = True
-intents.guilds = True
-intents.members = True
-intents.message_content = True
-
-bot: commands.Bot = commands.Bot(command_prefix="!", intents=intents)
-bot.collected = load_data()
-
-# Load config and normalize puzzle keys
-bot.data = load_data()
-bot.data.setdefault("render_flags", {})
+# Make sure your User ID is set here!
+OWNER_ID = 278345224973385728
 
 
-def normalize_bot_data(bot):
-    bot.data["puzzles"] = {
-        slugify_key(k): v for k, v in bot.data.get("puzzles", {}).items()
-    }
-    bot.data["pieces"] = {
-        slugify_key(k): v for k, v in bot.data.get("pieces", {}).items()
-    }
+class PuzzleBot(commands.Bot):
+    def __init__(self):
+        intents = discord.Intents.default()
+        intents.message_content = True
 
-normalize_bot_data(bot)
+        super().__init__(command_prefix="!", intents=intents, owner_id=OWNER_ID, help_command=None)
 
-logger.info("✅ Normalized bot.data['pieces'] keys: %s", list(bot.data["pieces"].keys()))
-logger.info("✅ Sample key check: 'alice_test' in pieces → %s", 'alice_test' in bot.data["pieces"])
+        self.data = load_data()
+        self.initial_extensions = [
+            "cogs.puzzle_drops_cog",
+            "cogs.puzzles_cog",
+            "cogs.admin_cog",
+            "cogs.help_cog"
+        ]
 
-_extensions_loaded = False
-_synced_tree = False
-
-@bot.event
-async def on_ready():
-    global _synced_tree
-    initialize_puzzle_data(bot)
-
-    print(f"✅ Logged in as {bot.user} (id={bot.user.id})")
-    print("📌 Prefix commands:", [c.name for c in bot.commands])
-    print("📦 Loaded extensions:", list(bot.extensions.keys()))
-    print("🔍 Available puzzle slugs:", list(bot.data["puzzles"].keys()))
-
-    if not _synced_tree:
-        _synced_tree = True
-        try:
-            bot.tree.copy_global_to(guild=discord.Object(id=GUILD_ID))
-            synced = await bot.tree.sync(guild=discord.Object(id=GUILD_ID))
-            print("🌐 Synced guild commands:", [c.name for c in synced])
-        except Exception as e:
-            print("❌ Failed to sync command tree:", e)
-
-    if not _synced_tree:
-        _synced_tree = True
-        try:
-            bot.tree.copy_global_to(guild=discord.Object(id=GUILD_ID))
-            synced = await bot.tree.sync(guild=discord.Object(id=GUILD_ID))
-            print("🌐 Synced guild commands:", [c.name for c in synced])
-        except Exception as e:
-            print("❌ Failed to sync command tree:", e)
-
-async def load_all_cogs():
-    global _extensions_loaded
-    if _extensions_loaded:
-        return
-    _extensions_loaded = True
-
-    cog_folder = "cogs"
-    if not os.path.isdir(cog_folder):
-        print("❌ Cog folder not found:", cog_folder)
-        return
-
-    excluded = {
-        "__init__.py",
-        "db_utils.py",
-        "preview_cache.py",
-        "log_utils.py",
-        "puzzle_composer.py",
-        "patch_config.py",
-        "constants.py",
-        "drop_config.py"
-    }
-
-    for filename in os.listdir(cog_folder):
-        if filename.endswith(".py") and filename not in excluded:
-            cog_name = f"{cog_folder}.{filename[:-3]}"
+    async def setup_hook(self):
+        """This is called when the bot is loading its extensions."""
+        logger.info("--- Loading Cogs ---")
+        for extension in self.initial_extensions:
             try:
-                await bot.load_extension(cog_name)
-                print(f"✅ Loaded cog: {cog_name}")
+                await self.load_extension(extension)
+                logger.info(f"Successfully loaded extension: {extension}")
             except Exception as e:
-                print(f"⚠️ Failed to load {cog_name}: {e}")
+                logger.exception(f"Failed to load extension {extension}.")
 
-async def main():
-    await load_all_cogs()
-    print("🚀 Cogs loaded; starting bot.")
-    try:
-        await bot.start(TOKEN)
-    except KeyboardInterrupt:
-        print("🛑 KeyboardInterrupt received; shutting down.")
-        await bot.close()
-    except Exception as e:
-        print("💥 Error while running bot:", e, file=sys.stderr)
-        await bot.close()
-        raise
+        # --- THIS IS THE FIX ---
+        # The command sync has been removed from here to prevent rate limiting on startup.
+        # Use !reload or !sync to update commands manually.
 
-@bot.event
-async def on_command(ctx):
-    await log(bot, f"📥 `{ctx.command}` used by {ctx.author} in {ctx.channel.mention}")
+    async def on_ready(self):
+        logger.info(f'--- Logged in as {self.user} (ID: {self.user.id}) ---')
+        logger.info('Bot is ready and online.')
+        logger.info("Use !reload or !sync to update application commands if needed.")
 
-@bot.event
-async def on_command_error(ctx, error):
-    await log_exception(bot, f"command `{ctx.command}` by {ctx.author}", error)
 
-@bot.tree.error
-async def on_app_command_error(interaction: discord.Interaction, error: discord.app_commands.AppCommandError):
-    await log_exception(bot, f"slash command `{interaction.command}` by {interaction.user}", error)
+bot = PuzzleBot()
 
 if __name__ == "__main__":
-    try:
-        asyncio.run(main())
-    except Exception as exc:
-        print("🔥 Fatal error:", exc, file=sys.stderr)
-        sys.exit(1)
+    if TOKEN is None:
+        logger.critical("DISCORD_TOKEN environment variable not found. Please set it in your .env file.")
+    elif str(OWNER_ID) == "YOUR_USER_ID_HERE":
+        logger.critical("OWNER_ID has not been set in bot.py. Please set it to your Discord User ID.")
+    else:
+        bot.run(TOKEN)
