@@ -1,0 +1,4 @@
+run = "pip install -r requirements.txt && python3 bot.py"
+
+[nix]
+channel = "stable-23_11"
