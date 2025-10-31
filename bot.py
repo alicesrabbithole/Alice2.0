@@ -6,6 +6,7 @@ import logging
 
 from cogs.utils.db_utils import load_data
 from cogs.utils.log_utils import setup_logging
+from keep_alive import keep_alive
 
 load_dotenv()
 TOKEN = os.getenv("DISCORD_TOKEN")
@@ -16,7 +17,7 @@ logger = logging.getLogger(__name__)
 OWNER_ID = 278345224973385728
 
 
-class PuzzleBot(commands.Bot):
+class AliceBot(commands.Bot):
     def __init__(self):
         intents = discord.Intents.default()
         intents.message_content = True
@@ -51,7 +52,8 @@ class PuzzleBot(commands.Bot):
         logger.info("Use !reload or !sync to update application commands if needed.")
 
 
-bot = PuzzleBot()
+bot = AliceBot()
+keep_alive()
 
 if __name__ == "__main__":
     if TOKEN is None:
