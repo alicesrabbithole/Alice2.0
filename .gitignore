@@ -1,32 +1,24 @@
-﻿# Python cache and compiled files
+﻿# Byte-compiled / optimized / C extensions
 __pycache__/
-*.pyc
+*.py[cod]
+*$py.class
 
-# Virtual environments
+# Virtual environment
 .venv/
-env/
 venv/
+ENV/
 
-# Editor settings
+# IDE and editor directories
 .vscode/
 .idea/
 
-# Logs, backups, and temp files
-*.log
-*.bak
-*.tmp
-debug_dump.py
-null
-temp/
-cache/
-
-# Environment and secrets
+# Dotenv environment variables file
 .env
 
-# OS-specific junk
-.DS_Store
-Thumbs.db
+# --- Alice Bot Specific ---
+# Ignore all data files, especially the database
+data/
+puzzles/
 
-# Optional: test artifacts
-test_*.py
-*.test.json
+# Ignore the keep_alive file if it exists
+keep_alive.py
