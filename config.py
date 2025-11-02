@@ -6,7 +6,7 @@ from pathlib import Path
 
 # --- Core Bot Settings ---
 # Your Discord User ID. This is used to identify the bot owner.
-OWNER_ID = 278345224973385728
+OWNER_ID = 1077240270791397388
 
 # --- Guild Settings ---
 # The ID of the primary server where the bot operates.

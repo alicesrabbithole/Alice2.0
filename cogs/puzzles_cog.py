@@ -9,6 +9,7 @@ import config
 from .utils.db_utils import resolve_puzzle_key, get_puzzle_display_name
 from .ui.overlay import render_progress_image
 from .ui.views import PuzzleGalleryView
+from .ui.theme import Emojis, Colors
 
 logger = logging.getLogger(__name__)
 
@@ -21,13 +22,16 @@ class PuzzlesCog(commands.Cog, name="Puzzles"):
 
     async def puzzle_autocomplete(self, interaction: discord.Interaction, current: str) -> List[
         app_commands.Choice[str]]:
-        """Autocomplete for puzzle names."""
+        """Autocomplete for puzzle names, showing the display name."""
         puzzles = self.bot.data.get("puzzles", {})
         choices = []
-        for slug, _ in puzzles.items():
-            display_name = get_puzzle_display_name(self.bot.data, slug)
+        for slug, meta in puzzles.items():
+            # --- THIS IS THE FIX FOR AUTOCOMPLETE ---
+            # Use the display_name for the user-facing name, and the slug for the internal value.
+            display_name = meta.get("display_name", slug)
             if current.lower() in slug.lower() or current.lower() in display_name.lower():
                 choices.append(app_commands.Choice(name=display_name, value=slug))
+            # --- End of fix ---
         return choices[:25]
 
     @commands.hybrid_command(name="viewpuzzle", description="View your progress on a specific puzzle.")
@@ -35,19 +39,24 @@ class PuzzlesCog(commands.Cog, name="Puzzles"):
     async def viewpuzzle(self, ctx: commands.Context, *, puzzle_name: str):
         """Shows your current progress on a selected puzzle."""
         await ctx.defer()
+
+        # The puzzle_name passed here will be the SLUG (e.g., "alice_test") because we set it as the `value` in the Choice.
         puzzle_key = resolve_puzzle_key(self.bot.data, puzzle_name)
         if not puzzle_key:
-            return await ctx.send(f"❌ Puzzle not found: `{puzzle_name}`", ephemeral=True)
+            return await ctx.send(f"{Emojis.FAILURE} Puzzle not found: `{puzzle_name}`", ephemeral=True)
 
+        # --- THIS IS THE FIX FOR THE EMBED ---
+        # We fetch the display_name using our utility function.
         display_name = get_puzzle_display_name(self.bot.data, puzzle_key)
+        # --- End of fix ---
+
         user_pieces = self.bot.data.get("user_pieces", {}).get(str(ctx.author.id), {}).get(puzzle_key, [])
         total_pieces = len(self.bot.data.get("pieces", {}).get(puzzle_key, {}))
 
-        emoji = config.CUSTOM_EMOJI_STRING or config.DEFAULT_EMOJI
         embed = discord.Embed(
-            title=f"{emoji} {display_name}",
+            title=f"{Emojis.PUZZLE_PIECE} {display_name}",  # Use the correct display_name
             description=f"**Progress:** {len(user_pieces)} / {total_pieces} pieces collected.",
-            color=discord.Color.purple()
+            color=Colors.PRIMARY
         ).set_author(name=ctx.author.display_name, icon_url=ctx.author.display_avatar.url)
 
         try:
@@ -58,7 +67,7 @@ class PuzzlesCog(commands.Cog, name="Puzzles"):
             await ctx.send(embed=embed, file=file)
         except Exception as e:
             logger.exception(f"Error rendering puzzle view for {puzzle_key}: {e}")
-            await ctx.send("⚠️ An unexpected error occurred while rendering the puzzle.", ephemeral=True)
+            await ctx.send(f"{Emojis.WARNING} An unexpected error occurred while rendering the puzzle.", ephemeral=True)
 
     @commands.hybrid_command(name="gallery", description="Browse through all the puzzles you have started.")
     async def gallery(self, ctx: commands.Context):
@@ -66,17 +75,15 @@ class PuzzlesCog(commands.Cog, name="Puzzles"):
         await ctx.defer(ephemeral=True)
         user_puzzles = self.bot.data.get("user_pieces", {}).get(str(ctx.author.id), {})
 
-        # Get keys for puzzles where the user has at least one piece
         user_puzzle_keys = [key for key, pieces in user_puzzles.items() if pieces]
 
         if not user_puzzle_keys:
             return await ctx.send("You haven't collected any puzzle pieces yet! Go find some!", ephemeral=True)
 
-        # Sort puzzles alphabetically by their display name
         user_puzzle_keys.sort(key=lambda key: get_puzzle_display_name(self.bot.data, key))
 
         view = PuzzleGalleryView(self.bot, ctx.interaction, user_puzzle_keys)
-        embed, file, _ = await view.generate_embed_and_file()
+        embed, file = await view.generate_embed_and_file()  # generate_embed_and_file now returns 2 items
 
         await ctx.send(embed=embed, file=file, view=view, ephemeral=True)
 
@@ -87,7 +94,7 @@ class PuzzlesCog(commands.Cog, name="Puzzles"):
         await ctx.defer(ephemeral=True)
         puzzle_key = resolve_puzzle_key(self.bot.data, puzzle_name)
         if not puzzle_key:
-            return await ctx.send(f"❌ Puzzle not found: `{puzzle_name}`", ephemeral=True)
+            return await ctx.send(f"{Emojis.FAILURE} Puzzle not found: `{puzzle_name}`", ephemeral=True)
 
         all_user_pieces = self.bot.data.get("user_pieces", {})
         leaderboard_data = []
@@ -97,19 +104,16 @@ class PuzzlesCog(commands.Cog, name="Puzzles"):
                 if piece_count > 0:
                     leaderboard_data.append((int(user_id), piece_count))
 
-        # Sort by piece count (desc) and then by user ID (asc) for tie-breaking
         leaderboard_data.sort(key=lambda x: (-x[1], x[0]))
 
         display_name = get_puzzle_display_name(self.bot.data, puzzle_key)
-        emoji = config.CUSTOM_EMOJI_STRING or config.DEFAULT_EMOJI
-        embed = discord.Embed(title=f"{emoji} Leaderboard for {display_name}", color=discord.Color.gold())
+        embed = discord.Embed(title=f"{Emojis.LEADERBOARD} Leaderboard for {display_name}", color=Colors.GOLD)
 
         if not leaderboard_data:
             embed.description = "No one has collected any pieces for this puzzle yet."
         else:
             lines = []
             for i, (user_id, count) in enumerate(leaderboard_data[:20], start=1):
-                # Asynchronously fetch user to avoid blocking and handle not found users
                 user = await self.bot.fetch_user(user_id) if self.bot.get_user(user_id) is None else self.bot.get_user(
                     user_id)
                 user_mention = user.mention if user else f"User (`{user_id}`)"
