@@ -5,7 +5,7 @@ import logging
 import io
 
 import config
-from ..utils.db_utils import add_piece_to_user, save_data, get_puzzle_display_name
+from utils.db_utils import add_piece_to_user, save_data, get_puzzle_display_name
 from .overlay import render_progress_image
 
 logger = logging.getLogger(__name__)

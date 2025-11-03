@@ -9,12 +9,13 @@ from datetime import datetime, timezone, timedelta
 from PIL import Image
 
 import config
-from .utils.db_utils import (
+from utils.db_utils import (
     save_data, resolve_puzzle_key, get_puzzle_display_name
 )
-from .utils.log_utils import log
+from utils.log_utils import log
 from .ui.views import DropView
-from .permissions_cog import can_use
+from utils.checks import is_admin
+from utils.theme import Colors
 
 logger = logging.getLogger(__name__)
 
@@ -74,7 +75,7 @@ class PuzzleDropsCog(commands.Cog, name="Puzzle Drops"):
         embed = discord.Embed(
             title=f"{emoji} A Wild Puzzle Piece Appears!",
             description=f"A piece of the **{display_name}** puzzle has dropped!\nClick the button to collect it.",
-            color=discord.Color.purple()
+            color=Colors.THEME_COLOR
         ).set_image(url="attachment://puzzle_piece.png")
 
         raw_cfg = self.bot.data.get("drop_channels", {}).get(str(channel.id), {})
@@ -153,7 +154,7 @@ class PuzzleDropsCog(commands.Cog, name="Puzzle Drops"):
 
     @commands.hybrid_command(name="spawndrop", description="Manually spawn a puzzle drop.")
     @app_commands.autocomplete(puzzle=puzzle_autocomplete)
-    @can_use("puzzle_master")
+    @is_admin()
     async def spawndrop(self, ctx: commands.Context, puzzle: str, channel: Optional[discord.TextChannel] = None):
         """Manually spawns a puzzle piece drop."""
         await ctx.defer(ephemeral=True)
@@ -177,16 +178,16 @@ class PuzzleDropsCog(commands.Cog, name="Puzzle Drops"):
 
     @commands.hybrid_command(name="setdropchannel", description="Configure a channel for automatic puzzle drops.")
     @app_commands.autocomplete(puzzle=puzzle_autocomplete)
-    @can_use("moderator")
+    @is_admin()
     async def setdropchannel(self, ctx: commands.Context, channel: discord.TextChannel, puzzle: str,
                              mode: str, value: int):  # <<< FIX IS HERE
         """Sets up a channel for automatic drops (timer or message-based)."""
-        await ctx.defer(ephemeral=True)
+        await ctx.defer(ephemeral=False)
 
         if puzzle != "all_puzzles":
             puzzle_key = resolve_puzzle_key(self.bot.data, puzzle)
             if not puzzle_key:
-                return await ctx.send(f"❌ Puzzle not found: `{puzzle}`", ephemeral=True)
+                return await ctx.send(f"❌ Puzzle not found: `{puzzle}`", ephemeral=False)
 
         final_value = value * 60 if mode == "timer" else value
         drop_channels = self.bot.data.setdefault("drop_channels", {})
@@ -200,7 +201,7 @@ class PuzzleDropsCog(commands.Cog, name="Puzzle Drops"):
         }
         save_data(self.bot.data)
         display_name = get_puzzle_display_name(self.bot.data, puzzle) if puzzle != "all_puzzles" else "All Puzzles"
-        await ctx.send(f"✅ Drops for **{display_name}** are now configured in {channel.mention}.", ephemeral=True)
+        await ctx.send(f"✅ Drops for **{display_name}** are now configured in {channel.mention}.", ephemeral=False)
         await log(self.bot, f"🔧 Drop channel configured for **{display_name}** in `#{channel.name}` by `{ctx.author}`.")
 
     @setdropchannel.autocomplete("mode")

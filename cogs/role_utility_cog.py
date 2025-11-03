@@ -1,9 +1,9 @@
 import discord
 from discord.ext import commands
 from discord import app_commands
-
+from utils.checks import is_staff
 import config
-from .permissions_cog import can_use
+from utils.theme import Colors
 
 
 class RoleUtilityCog(commands.Cog, name="Role Utilities"):
@@ -17,7 +17,7 @@ class RoleUtilityCog(commands.Cog, name="Role Utilities"):
         return ctx.guild is not None and ctx.guild.id == config.WONDERLAND_GUILD_ID
 
     @commands.hybrid_command(name="roles", description="List all roles in the server, categorized.")
-    @can_use("moderator")
+    @is_staff()
     async def roles(self, ctx: commands.Context):
         """Lists all roles in the server, split into categories."""
         await ctx.defer(ephemeral=True)
@@ -31,7 +31,7 @@ class RoleUtilityCog(commands.Cog, name="Role Utilities"):
         embed = discord.Embed(
             title=f"📜 Roles in {ctx.guild.name}",
             description=f"Showing a total of **{len(all_roles)}** roles.",
-            color=discord.Color.purple()
+            color=Colors.THEME_COLOR
         )
 
         def add_role_fields(title: str, roles: list[discord.Role]):
@@ -64,7 +64,7 @@ class RoleUtilityCog(commands.Cog, name="Role Utilities"):
 
     @commands.hybrid_command(name="roleinfo", description="Show detailed information about a role.")
     @app_commands.describe(role="The role you want information about.")
-    @can_use("moderator")
+    @is_staff()
     async def roleinfo(self, ctx: commands.Context, role: discord.Role):
         """Shows detailed information about a specific role."""
         embed = discord.Embed(
@@ -78,7 +78,7 @@ class RoleUtilityCog(commands.Cog, name="Role Utilities"):
         embed.add_field(name="Hoisted", value="✅ Yes" if role.hoist else "❌ No", inline=True)
         embed.add_field(name="Position", value=str(role.position), inline=True)
         embed.set_footer(text=f"Created at: {discord.utils.format_dt(role.created_at, style='D')}")
-        await ctx.send(embed=embed, ephemeral=True)
+        await ctx.send(embed=embed, ephemeral=False)
 
 
 async def setup(bot: commands.Bot):

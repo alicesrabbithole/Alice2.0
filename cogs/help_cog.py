@@ -1,39 +1,30 @@
 import discord
 from discord.ext import commands
-from typing import List, Optional
+from typing import Optional
 
-import config
+# Using your theme for colors and emojis
+from utils.theme import Colors, Emojis
 
 
 class HelpCog(commands.Cog, name="Help"):
-    """Provides a dynamic, permission-aware help command."""
+    """Provides a dynamic, hybrid help command."""
 
     def __init__(self, bot: commands.Bot):
         self.bot = bot
 
-    async def get_cog_commands(self, cog: commands.Cog) -> List[commands.Command]:
-        """
-        Gets a list of commands from a cog, checking permissions for the context author.
-        """
-        visible_commands = []
-        for command in cog.get_commands():
-            if not command.hidden:
-                try:
-                    if await command.can_run(self.context):
-                        visible_commands.append(command)
-                except (commands.CommandError, discord.DiscordException):
-                    continue
-        return visible_commands
-
     @commands.hybrid_command(name="help", aliases=["alicehelp"], description="Shows a list of available commands.")
+    @commands.guild_only()
     async def help_command(self, ctx: commands.Context, command_name: Optional[str] = None):
         """Shows help for all commands or a specific command."""
-        self.context = ctx  # Store context for permission checks
+        # Defer the reply to give the bot time to build the embed
+        await ctx.defer(ephemeral=True)
 
         if command_name:
             command = self.bot.get_command(command_name)
-            if not command or not await command.can_run(ctx):
-                await ctx.send(f"❌ I couldn't find a command named `{command_name}` that you can use.", ephemeral=True)
+            if not command or command.hidden:
+                # Your personalized error message
+                await ctx.send(f"{Emojis.FAILURE} I couldn't find a command named `{command_name}` that you can use.",
+                               ephemeral=True)
                 return
             await self.send_command_help(ctx, command)
         else:
@@ -43,20 +34,19 @@ class HelpCog(commands.Cog, name="Help"):
         """Sends an embed with all visible commands categorized by cog."""
         embed = discord.Embed(
             title="Alice Bot Help",
-            description="Here are all the commands you can use. For more info on a command, use `/help <command_name>`.",
-            color=discord.Color.purple()
+            description=f"Here are my commands. For more info, use `{ctx.prefix}help <command_name>`.",
+            color=Colors.PRIMARY  # Your theme color
         ).set_thumbnail(url=self.bot.user.display_avatar.url)
 
-        # Sort cogs alphabetically by name, but put "Owner" and "Permissions" last
-        cogs = sorted(
-            self.bot.cogs.values(),
-            key=lambda c: (c.qualified_name in ["Owner", "Permissions"], c.qualified_name)
-        )
+        # Sort cogs alphabetically
+        sorted_cogs = sorted(self.bot.cogs.values(), key=lambda c: c.qualified_name)
 
-        for cog in cogs:
-            visible_commands = await self.get_cog_commands(cog)
+        for cog in sorted_cogs:
+            # Get all non-hidden hybrid commands from the cog
+            visible_commands = [cmd for cmd in cog.get_commands() if
+                                isinstance(cmd, commands.HybridCommand) and not cmd.hidden]
+
             if visible_commands:
-                # Format commands with their descriptions
                 command_list = [
                     f"**`/{cmd.name}`** - {cmd.description or 'No description available.'}"
                     for cmd in sorted(visible_commands, key=lambda c: c.name)
@@ -67,7 +57,7 @@ class HelpCog(commands.Cog, name="Help"):
                     inline=False
                 )
 
-        embed.set_footer(text="You can use ! or / for any command.")
+        embed.set_footer(text="You can use either / or ! for hybrid commands.")
         await ctx.send(embed=embed, ephemeral=True)
 
     async def send_command_help(self, ctx: commands.Context, command: commands.Command):
@@ -75,13 +65,11 @@ class HelpCog(commands.Cog, name="Help"):
         embed = discord.Embed(
             title=f"Help for `/{command.name}`",
             description=command.description or "No description available.",
-            color=discord.Color.purple()
+            color=Colors.PRIMARY  # Your theme color
         )
-        # Usage
         usage = f"/{command.name} {command.signature}"
         embed.add_field(name="Usage", value=f"`{usage}`", inline=False)
 
-        # Aliases
         if command.aliases:
             embed.add_field(name="Aliases", value=", ".join(f"`{alias}`" for alias in command.aliases), inline=False)
 

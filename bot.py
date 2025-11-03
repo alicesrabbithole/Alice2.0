@@ -5,9 +5,9 @@ from dotenv import load_dotenv
 import logging
 
 import config
-from cogs.utils.db_utils import load_data
-from cogs.utils.log_utils import setup_logging
-# The unconditional `from keep_alive import keep_alive` has been REMOVED from here.
+from utils.db_utils import load_data
+from utils.log_utils import setup_logging
+
 
 # --- Setup ---
 load_dotenv()
@@ -35,11 +35,10 @@ class AliceBot(commands.Bot):
             "cogs.admin_cog",
             "cogs.help_cog",
             "cogs.moderation_cog",
-            "cogs.permissions_cog",
             "cogs.puzzle_drops_cog",
             "cogs.puzzles_cog",
             "cogs.role_utility_cog",
-            "cogs.userid_cog",
+            "sticky_cog"
         ]
 
     async def setup_hook(self):
@@ -60,13 +59,6 @@ class AliceBot(commands.Bot):
 
 # --- Bot Initialization and Run ---
 bot = AliceBot()
-
-# --- THIS IS THE FIX ---
-# Only import and run keep_alive if we are on Replit.
-if IS_REPLIT:
-    from keep_alive import keep_alive
-    keep_alive()
-# --- End of fix ---
 
 if __name__ == "__main__":
     if TOKEN is None:
