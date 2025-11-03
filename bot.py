@@ -38,7 +38,7 @@ class AliceBot(commands.Bot):
             "cogs.puzzle_drops_cog",
             "cogs.puzzles_cog",
             "cogs.role_utility_cog",
-            "sticky_cog"
+            "cogs.sticky_cog"
         ]
 
     async def setup_hook(self):
