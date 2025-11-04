@@ -12,17 +12,17 @@ class AliceHelpCog(commands.Cog, name="Help"):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
 
+    # --- THIS IS THE FIX ---
+    # The command name is now correctly set back to 'alicehelp'.
     @commands.hybrid_command(name="alicehelp", description="Shows a list of available commands.")
     @commands.guild_only()
     async def alicehelp_command(self, ctx: commands.Context, command_name: Optional[str] = None):
         """Shows help for all commands or a specific command."""
-        # Defer the reply to give the bot time to build the embed
         await ctx.defer(ephemeral=True)
 
         if command_name:
             command = self.bot.get_command(command_name)
             if not command or command.hidden:
-                # Your personalized error message
                 await ctx.send(f"{Emojis.FAILURE} I couldn't find a command named `{command_name}` that you can use.",
                                ephemeral=True)
                 return
@@ -34,19 +34,16 @@ class AliceHelpCog(commands.Cog, name="Help"):
         """Sends an embed with all visible commands categorized by cog."""
         embed = discord.Embed(
             title="Alice Bot Help",
-            description=f"Here are my commands. For more info, use `{ctx.prefix}help <command_name>`.",
-            color=Colors.PRIMARY  # Your theme color
+            description=f"Here are my commands. For more info, use `{ctx.prefix}alicehelp <command_name>`.",
+            color=Colors.PRIMARY
         ).set_thumbnail(url=self.bot.user.display_avatar.url)
 
-        # Sort cogs alphabetically
         sorted_cogs = sorted(self.bot.cogs.values(), key=lambda c: c.qualified_name)
 
         for cog in sorted_cogs:
-            # We skip the default "Help" cog so it doesn't show up
             if cog.qualified_name == "Help":
                 continue
 
-            # Get all non-hidden hybrid commands from the cog
             visible_commands = [cmd for cmd in cog.get_commands() if
                                 isinstance(cmd, commands.HybridCommand) and not cmd.hidden]
 
@@ -69,7 +66,7 @@ class AliceHelpCog(commands.Cog, name="Help"):
         embed = discord.Embed(
             title=f"Help for `/{command.name}`",
             description=command.description or "No description available.",
-            color=Colors.PRIMARY  # Your theme color
+            color=Colors.PRIMARY
         )
         usage = f"/{command.name} {command.signature}"
         embed.add_field(name="Usage", value=f"`{usage}`", inline=False)
