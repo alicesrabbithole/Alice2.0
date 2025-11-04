@@ -18,7 +18,7 @@ ENV/
 # --- Alice Bot Specific ---
 # Ignore all data files, especially the database
 data/
-puzzles/
+
 
 # Ignore the keep_alive file if it exists
 keep_alive.py
