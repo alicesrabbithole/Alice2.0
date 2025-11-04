@@ -85,7 +85,6 @@ def sync_from_fs() -> Dict[str, Dict]:
             """Generates a path relative to the PUZZLES_ROOT directory."""
             if full_path and full_path.exists():
                 try:
-                    # This is the correct logic.
                     return str(full_path.relative_to(config.PUZZLES_ROOT)).replace("\\", "/")
                 except ValueError:
                     logger.error(f"Path {full_path} is not within the puzzles root {config.PUZZLES_ROOT}.")
