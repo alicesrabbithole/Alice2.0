@@ -5,6 +5,7 @@ import shutil
 import logging
 from typing import Dict, Any, Optional
 from datetime import datetime
+from pathlib import Path
 
 import config
 
@@ -80,10 +81,11 @@ def sync_from_fs() -> Dict[str, Dict]:
         rows = meta.get("rows", 4)
         cols = meta.get("cols", 4)
 
-        # --- THE FIX: Use .relative_to() to store only the part of the path *after* PUZZLES_ROOT ---
-        def get_relative_path(full_path):
-            if full_path:
-                return str(full_path.relative_to(config.PUZZLES_ROOT)).replace("\\", "/")
+        # --- THE REAL FIX: Use os.path.relpath to store only the part AFTER the root ---
+        def get_relative_path(full_path: Path) -> Optional[str]:
+            if full_path and full_path.exists():
+                # This correctly creates a relative path like "alice_test/alice_test_base.png"
+                return os.path.relpath(full_path, config.PUZZLES_ROOT).replace("\\", "/")
             return None
 
         full_img = next(puzzle_dir.glob("*_full.png"), None)
@@ -97,7 +99,6 @@ def sync_from_fs() -> Dict[str, Dict]:
                 key=lambda p: int(re.search(r'p(\d+)', p.name).group(1)) if re.search(r'p(\d+)', p.name) else 0
             )
             for i, piece_path in enumerate(piece_files, start=1):
-                # Apply the fix to piece paths as well
                 puzzle_pieces[str(i)] = get_relative_path(piece_path)
 
         if "rows" not in meta and puzzle_pieces:
@@ -110,7 +111,6 @@ def sync_from_fs() -> Dict[str, Dict]:
                         cols = num_pieces // i
                         break
 
-        # Apply the fix to base and full image paths
         puzzles[slug] = {
             "display_name": display_name,
             "full_image": get_relative_path(full_img),
@@ -125,19 +125,13 @@ def sync_from_fs() -> Dict[str, Dict]:
 
 def resolve_puzzle_key(data: dict, identifier: str) -> Optional[str]:
     """Finds a puzzle's key (slug) from a user-provided identifier."""
-    if not identifier:
-        return None
+    if not identifier: return None
     puzzles = data.get("puzzles", {})
     norm_id = identifier.lower().strip()
-
-    if identifier in puzzles:
-        return identifier
-    if norm_id in puzzles:
-        return norm_id
-
+    if identifier in puzzles: return identifier
+    if norm_id in puzzles: return norm_id
     for slug, meta in puzzles.items():
-        if meta.get("display_name", "").lower() == norm_id:
-            return slug
+        if meta.get("display_name", "").lower() == norm_id: return slug
     return None
 
 

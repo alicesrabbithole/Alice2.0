@@ -2,23 +2,20 @@ import logging
 from typing import List, Dict
 from PIL import Image, ImageDraw, ImageFont
 import io
-from pathlib import Path
+
+import config
 
 logger = logging.getLogger(__name__)
 
-# --- FIX 1: We still need a font ---
-FONT_NAME = "DejaVuSans-Bold.ttf"
+# --- Font Loading ---
 try:
-    FONT = ImageFont.truetype(FONT_NAME, 24)
-    FONT_SMALL = ImageFont.truetype(FONT_NAME, 18)
+    FONT = ImageFont.truetype(config.FONT_PATH, 24)
+    FONT_SMALL = ImageFont.truetype(config.FONT_PATH, 18)
 except IOError:
-    logger.warning(f"Font not found at '{FONT_NAME}'. Falling back to default font.")
+    logger.warning(f"Font not found at '{config.FONT_PATH}'. Falling back to default font.")
     FONT = ImageFont.load_default()
     FONT_SMALL = ImageFont.load_default()
 
-
-# --- FIX 2 (THE SLEDGEHAMMER): REMOVE THE PUZZLES_ROOT CONSTANT ---
-# We will no longer prepend a root directory. We will use the path from the data file as-is.
 
 def render_progress_image(bot_data: Dict, puzzle_key: str, collected_piece_ids: List[str]) -> bytes:
     """Renders a user's puzzle progress and a progress bar into a single image."""
@@ -40,42 +37,48 @@ def render_progress_image(bot_data: Dict, puzzle_key: str, collected_piece_ids: 
 
     puzzle_img = Image.new("RGBA", (img_width, img_height), (30, 30, 30, 255))
 
-    # --- FIX 3: Use the paths DIRECTLY from the data file ---
     base_image_path = puzzle_meta.get("base_image")
     try:
-        if base_image_path and Path(base_image_path).exists():
-            puzzle_img = Image.open(base_image_path).convert("RGBA").resize((img_width, img_height),
-                                                                            Image.Resampling.LANCZOS)
-        elif base_image_path:
-            logger.warning(f"Base image for {puzzle_key} not found at: {base_image_path}")
+        if base_image_path:
+            # This is the correct logic: join the configured root with the relative path from the DB
+            full_path = config.PUZZLES_ROOT.joinpath(base_image_path)
+            if full_path.exists():
+                puzzle_img = Image.open(full_path).convert("RGBA").resize((img_width, img_height),
+                                                                          Image.Resampling.LANCZOS)
+            else:
+                logger.warning(f"Base image for {puzzle_key} not found at: {full_path}")
     except Exception as e:
         logger.exception(f"Failed to load base puzzle image for {puzzle_key}. Error: {e}")
 
     for piece_id in collected_piece_ids:
         piece_path_str = piece_map.get(str(piece_id))
         try:
-            if piece_path_str and Path(piece_path_str).exists():
-                with Image.open(piece_path_str).convert("RGBA") as piece_img:
-                    piece_img = piece_img.resize((tile_size, tile_size), Image.Resampling.LANCZOS)
-                    idx = int(piece_id) - 1
-                    r, c = divmod(idx, cols)
-                    puzzle_img.paste(piece_img, (c * tile_size, r * tile_size), piece_img)
-            elif piece_path_str:
-                logger.warning(f"Piece {piece_id} for {puzzle_key} not found at: {piece_path_str}")
+            if piece_path_str:
+                full_path = config.PUZZLES_ROOT.joinpath(piece_path_str)
+                if full_path.exists():
+                    with Image.open(full_path).convert("RGBA") as piece_img:
+                        piece_img = piece_img.resize((tile_size, tile_size), Image.Resampling.LANCZOS)
+                        idx = int(piece_id) - 1
+                        r, c = divmod(idx, cols)
+                        puzzle_img.paste(piece_img, (c * tile_size, r * tile_size), piece_img)
+                else:
+                    logger.warning(f"Piece {piece_id} for {puzzle_key} not found at: {full_path}")
         except Exception as e:
-            logger.exception(f"Failed to process piece {piece_id} for {puzzle_key}. Error: {e}")
+            logger.exception(f"Failed to process piece {piece_id} for puzzle {puzzle_key}. Error: {e}")
 
     total_pieces = len(piece_map)
     is_complete = len(collected_piece_ids) == total_pieces
     if is_complete:
         full_image_path_str = puzzle_meta.get("full_image")
         try:
-            if full_image_path_str and Path(full_image_path_str).exists():
-                full_img = Image.open(full_image_path_str).convert("RGBA").resize((img_width, img_height),
-                                                                                  Image.Resampling.LANCZOS)
-                puzzle_img = full_img
-            elif full_image_path_str:
-                logger.warning(f"Full image for {puzzle_key} not found at: {full_image_path_str}")
+            if full_image_path_str:
+                full_path = config.PUZZLES_ROOT.joinpath(full_image_path_str)
+                if full_path.exists():
+                    full_img = Image.open(full_path).convert("RGBA").resize((img_width, img_height),
+                                                                            Image.Resampling.LANCZOS)
+                    puzzle_img = full_img
+                else:
+                    logger.warning(f"Full image for {puzzle_key} not found at: {full_path}")
         except Exception as e:
             logger.exception(f"Failed to load full puzzle image on completion for {puzzle_key}. Error: {e}")
 
