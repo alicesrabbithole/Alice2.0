@@ -37,22 +37,27 @@ class DropView(discord.ui.View):
         return discord.PartialEmoji(name=config.DEFAULT_EMOJI)
 
     async def on_timeout(self):
-        self.collect_button.disabled = True
-        self.collect_button.label = "Drop Expired"
+        """Called when the view times out."""
+        # --- FIX #1: MAKE BUTTON DISAPPEAR ON TIMEOUT ---
+        # Edit the original message to remove the view, which makes the button vanish.
         if self.message:
             try:
-                await self.message.edit(view=self)
-            except discord.NotFound:
-                pass  # Message was deleted, nothing to do
+                await self.message.edit(view=None)
+            except (discord.NotFound, discord.HTTPException):
+                pass  # Ignore if the message is already gone or other errors occur
+
+        # Now, post the summary.
         await self.post_summary()
+        self.stop()
 
     async def post_summary(self):
         """Posts a summary of who collected the piece after the drop ends."""
         if not self.message:
             return
+        # If no one claimed the piece, simply return and do nothing.
         if not self.claimants:
-            summary = f"The drop for the **{self.puzzle_display_name}** puzzle (Piece `{self.piece_id}`) timed out with no collectors."
-        else:
+            return
+            # This part only runs if there were claimants.
             mentions = ', '.join(u.mention for u in self.claimants)
             summary = f"Piece `{self.piece_id}` of the **{self.puzzle_display_name}** puzzle was collected by: {mentions}"
         try:

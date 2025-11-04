@@ -39,7 +39,7 @@ PERMISSIONS_FILE = DATA_DIR / "permissions.json"
 # --- Puzzle & UI Settings ---
 # A custom emoji to use for puzzle-related messages.
 # Example: "<:aiwpiece:1433314933595967630>"
-CUSTOM_EMOJI_STRING = "<:aiwpiece:1433314933595967630>"
+CUSTOM_EMOJI_STRING = "<:pcaiw:1434756070513053746>"
 
 # A default emoji to use if the custom one is unavailable.
 DEFAULT_EMOJI = "🧩"
