@@ -6,15 +6,15 @@ from typing import Optional
 from utils.theme import Colors, Emojis
 
 
-class HelpCog(commands.Cog, name="Help"):
+class AliceHelpCog(commands.Cog, name="Help"):
     """Provides a dynamic, hybrid help command."""
 
     def __init__(self, bot: commands.Bot):
         self.bot = bot
 
-    @commands.hybrid_command(name="help", aliases=["alicehelp"], description="Shows a list of available commands.")
+    @commands.hybrid_command(name="alicehelp", description="Shows a list of available commands.")
     @commands.guild_only()
-    async def help_command(self, ctx: commands.Context, command_name: Optional[str] = None):
+    async def alicehelp_command(self, ctx: commands.Context, command_name: Optional[str] = None):
         """Shows help for all commands or a specific command."""
         # Defer the reply to give the bot time to build the embed
         await ctx.defer(ephemeral=True)
@@ -42,6 +42,10 @@ class HelpCog(commands.Cog, name="Help"):
         sorted_cogs = sorted(self.bot.cogs.values(), key=lambda c: c.qualified_name)
 
         for cog in sorted_cogs:
+            # We skip the default "Help" cog so it doesn't show up
+            if cog.qualified_name == "Help":
+                continue
+
             # Get all non-hidden hybrid commands from the cog
             visible_commands = [cmd for cmd in cog.get_commands() if
                                 isinstance(cmd, commands.HybridCommand) and not cmd.hidden]
@@ -77,4 +81,4 @@ class HelpCog(commands.Cog, name="Help"):
 
 
 async def setup(bot: commands.Bot):
-    await bot.add_cog(HelpCog(bot))
+    await bot.add_cog(AliceHelpCog(bot))
