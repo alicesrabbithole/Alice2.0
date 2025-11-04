@@ -166,7 +166,6 @@ class PuzzleDropsCog(commands.Cog, name="Puzzle Drops"):
         await ctx.defer(ephemeral=False)
         if puzzle != "all_puzzles":
             puzzle_key = resolve_puzzle_key(self.bot.data, puzzle)
-            # --- THIS IS THE FIX --- The f-string was missing its closing quote.
             if not puzzle_key: return await ctx.send(f"❌ Puzzle not found: `{puzzle}`", ephemeral=False)
         final_mode = mode or self.DEFAULT_DROP_MODE
         if final_mode == "timer":
