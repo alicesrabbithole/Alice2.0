@@ -149,9 +149,6 @@ class PuzzleDropsCog(commands.Cog, name="Puzzle Drops"):
                     raw_cfg["next_trigger"] = raw_cfg["message_count"] + raw_cfg.get("value")
                 save_data(self.bot.data)
 
-        # IMPORTANT: This allows the bot to process commands in messages.
-        await self.bot.process_commands(message)
-
     @commands.hybrid_command(name="spawndrop", description="Manually spawn a puzzle drop.")
     @app_commands.autocomplete(puzzle=puzzle_autocomplete)
     @is_admin()

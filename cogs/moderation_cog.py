@@ -27,13 +27,13 @@ class ModerationCog(commands.Cog, name="Moderation"):
 
         overwrites = channel.overwrites_for(verified_role)
         if overwrites.send_messages is False:
-            await ctx.send("🔒 This channel is already locked.", ephemeral=True)
+            await ctx.send("{Emojis.LOCK} This channel is already locked.", ephemeral=True)
             return
 
         overwrites.send_messages = False
         try:
             await channel.set_permissions(verified_role, overwrite=overwrites, reason=f"Channel locked by {ctx.author}")
-            embed = discord.Embed(description="🔒 This channel has been **locked**.", color=Colors.PRIMARY)
+            embed = discord.Embed(description="{Emojis.LOCK} This channel has been **locked**.", color=Colors.PRIMARY)
             await ctx.send(embed=embed)
         except discord.Forbidden:
             await ctx.send("❌ Tell Alice that I can't do my job in this channel .", ephemeral=True)
@@ -52,14 +52,14 @@ class ModerationCog(commands.Cog, name="Moderation"):
 
         overwrites = channel.overwrites_for(verified_role)
         if overwrites.send_messages is True:
-            await ctx.send("🔓 This channel is already unlocked.", ephemeral=True)
+            await ctx.send("{Emojis.UNLOCK} This channel is already unlocked.", ephemeral=True)
             return
 
         overwrites.send_messages = True
         try:
             await channel.set_permissions(verified_role, overwrite=overwrites,
                                           reason=f"Channel unlocked by {ctx.author}")
-            embed = discord.Embed(description="🔓 This channel has been **unlocked**.", color=Colors.SUCCESS)
+            embed = discord.Embed(description="{Emojis.UNLOCK} This channel has been **unlocked**.", color=Colors.SUCCESS)
             await ctx.send(embed=embed)
         except discord.Forbidden:
             await ctx.send("❌ Tell Alice that I can't do my job in this channel .", ephemeral=True)

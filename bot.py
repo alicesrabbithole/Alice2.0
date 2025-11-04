@@ -78,6 +78,12 @@ class AliceBot(commands.Bot):
 # --- Bot Initialization and Run ---
 bot = AliceBot()
 
+
+async def on_command(self, ctx: commands.Context):
+    """This event is triggered every time a command is successfully invoked."""
+    logger.info(f"COMMAND INVOKED: User '{ctx.author}' ran command '{ctx.command.name}'")
+
+
 if __name__ == "__main__":
     if TOKEN is None:
         logger.critical("DISCORD_TOKEN environment variable not found. Please set it in your .env file.")
