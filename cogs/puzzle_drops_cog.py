@@ -26,8 +26,6 @@ logger = logging.getLogger(__name__)
 class PuzzleDropsCog(commands.Cog, name="Puzzle Drops"):
     """Manages the automatic and manual dropping of puzzle pieces."""
 
-    # --- DEFAULTS FOR SETDROPCHANNEL ---
-    # You can easily adjust these default values.
     DEFAULT_DROP_MODE = "timer"
     DEFAULT_DROP_TIMER_MINUTES = 60
     DEFAULT_DROP_MESSAGE_COUNT = 100
@@ -41,12 +39,14 @@ class PuzzleDropsCog(commands.Cog, name="Puzzle Drops"):
 
     async def puzzle_autocomplete(self, interaction: discord.Interaction, current: str) -> List[
         app_commands.Choice[str]]:
-        """Autocomplete for puzzle names, including a random option."""
+        """Autocomplete for puzzle names, now safely using self.bot.data."""
         choices = []
         try:
-            bot_data = load_data()
-            puzzles = bot_data.get("puzzles")
-            if not isinstance(puzzles, dict): return []
+            # --- FIX: Use self.bot.data for consistency and safety ---
+            puzzles = self.bot.data.get("puzzles")
+            if not isinstance(puzzles, dict):
+                logger.warning("Autocomplete failed: self.bot.data['puzzles'] is not a dict or is missing.")
+                return []
 
             if "all puzzles".startswith(current.lower()):
                 choices.append(app_commands.Choice(name="All Puzzles (Random)", value="all_puzzles"))
@@ -58,22 +58,18 @@ class PuzzleDropsCog(commands.Cog, name="Puzzle Drops"):
                     choices.append(app_commands.Choice(name=display_name, value=slug))
         except Exception as e:
             logger.error(f"FATAL: Unhandled exception in puzzle_autocomplete: {e}")
-            return []
+            return [] # Return empty list on any failure
         return choices[:25]
 
     async def _spawn_drop(self, channel: discord.TextChannel, puzzle_key: str, forced_piece: Optional[str] = None):
         """Internal logic to create and send a puzzle drop."""
         display_name = get_puzzle_display_name(self.bot.data, puzzle_key)
         pieces_map = self.bot.data.get("pieces", {}).get(puzzle_key)
-        if not pieces_map:
-            logger.warning(f"Attempted to spawn drop for '{puzzle_key}' but no pieces were found.")
-            return
+        if not pieces_map: return
 
         piece_id = forced_piece or random.choice(list(pieces_map.keys()))
         piece_path = pieces_map.get(piece_id)
-        if not piece_path:
-            logger.warning(f"Could not find path for piece '{piece_id}' in puzzle '{puzzle_key}'.")
-            return
+        if not piece_path: return
 
         full_path = config.PUZZLES_ROOT / piece_path
         try:
@@ -84,7 +80,7 @@ class PuzzleDropsCog(commands.Cog, name="Puzzle Drops"):
                 buffer.seek(0)
                 file = discord.File(buffer, filename="puzzle_piece.png")
         except Exception as e:
-            logger.exception(f"Failed to process image for drop. Using raw file. Error: {e}")
+            logger.exception(f"Failed to process image for drop: {e}")
             file = discord.File(full_path, filename="puzzle_piece.png")
 
         emoji = config.CUSTOM_EMOJI_STRING or config.DEFAULT_EMOJI
@@ -97,7 +93,6 @@ class PuzzleDropsCog(commands.Cog, name="Puzzle Drops"):
         raw_cfg = self.bot.data.get("drop_channels", {}).get(str(channel.id), {})
         claims_range = raw_cfg.get("claims_range", [1, 3])
         claim_limit = random.randint(claims_range[0], claims_range[1])
-
         view = DropView(self.bot, puzzle_key, display_name, piece_id, claim_limit)
         try:
             message = await channel.send(embed=embed, file=file, view=view)
@@ -111,10 +106,7 @@ class PuzzleDropsCog(commands.Cog, name="Puzzle Drops"):
         await self.bot.wait_until_ready()
         now = datetime.now(timezone.utc)
         drop_channels = self.bot.data.get("drop_channels", {})
-
-        # --- FIX: FLAG TO CHECK IF DATA NEEDS SAVING ---
         data_changed = False
-
         for ch_id_str, raw_cfg in drop_channels.items():
             if raw_cfg.get("mode") != "timer": continue
             last_drop_str = raw_cfg.get("last_drop_time")
@@ -135,18 +127,13 @@ class PuzzleDropsCog(commands.Cog, name="Puzzle Drops"):
                         puzzle_key = random.choice(all_puzzles) if all_puzzles else None
                     else:
                         puzzle_key = resolve_puzzle_key(self.bot.data, puzzle_slug)
-
                     if puzzle_key:
                         await self._spawn_drop(channel, puzzle_key)
                         raw_cfg["last_drop_time"] = now.isoformat()
-                        # --- FIX: MARK DATA AS CHANGED ---
                         data_changed = True
-
             except (ValueError, TypeError) as e:
-                logger.error(f"Could not process drop channel {ch_id_str} due to invalid data: {e}. Skipping.")
+                logger.error(f"Could not process drop channel {ch_id_str}: {e}")
                 continue
-
-        # --- FIX: SAVE DATA ONLY IF IT HAS CHANGED ---
         if data_changed:
             save_data(self.bot.data)
 
@@ -161,7 +148,6 @@ class PuzzleDropsCog(commands.Cog, name="Puzzle Drops"):
                 if puzzle_key:
                     await self._spawn_drop(message.channel, puzzle_key)
                     raw_cfg["message_count"] = 0
-                    raw_cfg["next_trigger"] = raw_cfg.get("value")
                 save_data(self.bot.data)
 
     @commands.hybrid_command(name="spawndrop", description="Manually spawn a puzzle drop.")
@@ -170,53 +156,45 @@ class PuzzleDropsCog(commands.Cog, name="Puzzle Drops"):
     async def spawndrop(self, ctx: commands.Context, puzzle: str, channel: Optional[discord.TextChannel] = None):
         await ctx.defer(ephemeral=True)
         target_channel = channel or ctx.channel
-        bot_data = load_data()
+        # --- FIX: Use self.bot.data, not load_data() ---
         if puzzle == "all_puzzles":
-            all_puzzles = list(bot_data.get("puzzles", {}).keys())
-            if not all_puzzles: return await ctx.send("❌ No puzzles are available to choose from.", ephemeral=True)
+            all_puzzles = list(self.bot.data.get("puzzles", {}).keys())
+            if not all_puzzles: return await ctx.send("❌ No puzzles are available.", ephemeral=True)
             puzzle_key = random.choice(all_puzzles)
         else:
-            puzzle_key = resolve_puzzle_key(bot_data, puzzle)
+            puzzle_key = resolve_puzzle_key(self.bot.data, puzzle)
         if not puzzle_key: return await ctx.send(f"❌ Puzzle not found: `{puzzle}`", ephemeral=True)
         await self._spawn_drop(target_channel, puzzle_key)
-        display_name = get_puzzle_display_name(bot_data, puzzle_key)
-        await ctx.send(f"✅ Drop for **{display_name}** has been spawned in {target_channel.mention}.", ephemeral=True)
+        display_name = get_puzzle_display_name(self.bot.data, puzzle_key)
+        await ctx.send(f"✅ Drop for **{display_name}** spawned in {target_channel.mention}.", ephemeral=True)
 
     @commands.hybrid_command(name="setdropchannel", description="Configure a channel for automatic puzzle drops.")
     @app_commands.autocomplete(puzzle=puzzle_autocomplete)
     @is_admin()
     async def setdropchannel(self, ctx: commands.Context, channel: discord.TextChannel, puzzle: str,
                              mode: Optional[str] = None, value: Optional[int] = None):
-        """Sets up a channel for automatic drops (timer or message-based)."""
         await ctx.defer(ephemeral=False)
-        bot_data = load_data()
+        # --- FIX: Use self.bot.data, not load_data() ---
         if puzzle != "all_puzzles":
-            puzzle_key = resolve_puzzle_key(bot_data, puzzle)
+            puzzle_key = resolve_puzzle_key(self.bot.data, puzzle)
             if not puzzle_key: return await ctx.send(f"❌ Puzzle not found: `{puzzle}`", ephemeral=False)
-
-        # --- FIX: APPLY DEFAULTS ---
         final_mode = mode or self.DEFAULT_DROP_MODE
         if final_mode == "timer":
             final_value = (value * 60) if value is not None else (self.DEFAULT_DROP_TIMER_MINUTES * 60)
             value_display = value if value is not None else self.DEFAULT_DROP_TIMER_MINUTES
             unit_display = "minutes"
-        elif final_mode == "messages":
+        else: # "messages"
             final_value = value if value is not None else self.DEFAULT_DROP_MESSAGE_COUNT
             value_display = final_value
             unit_display = "messages"
-        else:
-            return await ctx.send(f"❌ Invalid mode `{final_mode}`. Use 'timer' or 'messages'.", ephemeral=True)
 
-        drop_channels = bot_data.setdefault("drop_channels", {})
+        drop_channels = self.bot.data.setdefault("drop_channels", {})
         drop_channels[str(channel.id)] = {
             "puzzle": puzzle, "mode": final_mode, "value": final_value,
-            "last_drop_time": datetime.now(timezone.utc).isoformat(),
-            "message_count": 0, "next_trigger": final_value if final_mode == "messages" else 0
+            "last_drop_time": datetime.now(timezone.utc).isoformat(), "message_count": 0,
         }
-        save_data(bot_data)
-        display_name = get_puzzle_display_name(bot_data, puzzle) if puzzle != "all_puzzles" else "All Puzzles"
-
-        # --- FIX: IMPROVED CONFIRMATION MESSAGE ---
+        save_data(self.bot.data)
+        display_name = get_puzzle_display_name(self.bot.data, puzzle) if puzzle != "all_puzzles" else "All Puzzles"
         await ctx.send(
             f"✅ Drops for **{display_name}** are now configured in {channel.mention}.\n"
             f"Mode: `{final_mode}` | Every: `{value_display} {unit_display}`.",
