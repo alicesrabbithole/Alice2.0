@@ -81,15 +81,14 @@ def sync_from_fs() -> Dict[str, Dict]:
         rows = meta.get("rows", 4)
         cols = meta.get("cols", 4)
 
-        # --- THE REAL FIX: Use os.path.relpath to store only the part AFTER the root ---
         def get_relative_path(full_path: Path) -> Optional[str]:
-            """This is the function with the final fix."""
+            """Generates a path relative to the PUZZLES_ROOT directory."""
             if full_path and full_path.exists():
                 try:
-                    # THE FIX: Use relative_to the PROJECT ROOT, not the puzzles root.
-                    return str(full_path.relative_to(config.PROJECT_ROOT)).replace("\\", "/")
+                    # This is the correct logic.
+                    return str(full_path.relative_to(config.PUZZLES_ROOT)).replace("\\", "/")
                 except ValueError:
-                    logger.error(f"Path {full_path} is not within the project root {config.PROJECT_ROOT}.")
+                    logger.error(f"Path {full_path} is not within the puzzles root {config.PUZZLES_ROOT}.")
                     return None
             return None
 
