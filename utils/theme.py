@@ -17,8 +17,8 @@ THEME_COLOR = CYAN_BLUE
 class Emojis:
     """A class to hold all custom emoji strings for easy access."""
     # --- General Emojis ---
-    SUCCESS = "<:success:123456789012345678>"
-    FAILURE = "<:failure:123456789012345678>"
+    SUCCESS = "<:check:1364549836073865247>"
+    FAILURE = "<:xxxx:1326424917352255508>"
     # ... etc
 
     # --- Moderation Emojis ---
@@ -32,6 +32,6 @@ class Emojis:
 class Colors:
     """A class to hold all custom embed colors."""
     PRIMARY = discord.Color(0x793aab)
-    SUCCESS = discord.Color(0x57F287)
-    FAILURE = discord.Color(0xED4245)      # A bright red for errors
+    SUCCESS = discord.Color(0x00827F)
+    FAILURE = discord.Color(0x850101)      # A bright red for errors
     # ... etc
