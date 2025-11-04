@@ -41,7 +41,7 @@ class AliceBot(commands.Bot):
         self.data = load_data()
         self.initial_extensions = [
             "cogs.admin_cog",
-            "cogs.help_cog",
+            "cogs.alice_help_cog",
             "cogs.moderation_cog",
             "cogs.puzzle_drops_cog",
             "cogs.puzzles_cog",

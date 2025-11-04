@@ -46,4 +46,4 @@ DEFAULT_EMOJI = "🧩"
 
 # The path to the font file for rendering text on images.
 # Place a TrueType Font (e.g., "arial.ttf") in your root directory.
-FONT_PATH = "arial.ttf"
+FONT_PATH = "DejaVuSans-Bold.ttf"
