@@ -134,8 +134,6 @@ class PuzzleDropsCog(commands.Cog, name="Puzzle Drops"):
         raw_cfg = self.bot.data.get("drop_channels", {}).get(str(message.channel.id))
         if raw_cfg and raw_cfg.get("mode") == "messages":
             raw_cfg["message_count"] = raw_cfg.get("message_count", 0) + 1
-            # --- THIS IS THE FIX ---
-            # Correctly use 'next_trigger' which was accidentally removed.
             if raw_cfg["message_count"] >= raw_cfg.get("next_trigger", raw_cfg.get("value")):
                 puzzle_key = resolve_puzzle_key(self.bot.data, raw_cfg.get("puzzle"))
                 if puzzle_key:
@@ -155,4 +153,48 @@ class PuzzleDropsCog(commands.Cog, name="Puzzle Drops"):
             puzzle_key = random.choice(all_puzzles)
         else:
             puzzle_key = resolve_puzzle_key(self.bot.data, puzzle)
-        if not puzzle_key: return await ctx.send(f"❌ Puzzle not found:
+        if not puzzle_key: return await ctx.send(f"❌ Puzzle not found: `{puzzle}`", ephemeral=True)
+        await self._spawn_drop(target_channel, puzzle_key)
+        display_name = get_puzzle_display_name(self.bot.data, puzzle_key)
+        await ctx.send(f"✅ Drop for **{display_name}** spawned in {target_channel.mention}.", ephemeral=True)
+
+    @commands.hybrid_command(name="setdropchannel", description="Configure a channel for automatic puzzle drops.")
+    @app_commands.autocomplete(puzzle=puzzle_autocomplete)
+    @is_admin()
+    async def setdropchannel(self, ctx: commands.Context, channel: discord.TextChannel, puzzle: str,
+                             mode: Optional[str] = None, value: Optional[int] = None):
+        await ctx.defer(ephemeral=False)
+        if puzzle != "all_puzzles":
+            puzzle_key = resolve_puzzle_key(self.bot.data, puzzle)
+            # --- THIS IS THE FIX --- The f-string was missing its closing quote.
+            if not puzzle_key: return await ctx.send(f"❌ Puzzle not found: `{puzzle}`", ephemeral=False)
+        final_mode = mode or self.DEFAULT_DROP_MODE
+        if final_mode == "timer":
+            final_value = (value * 60) if value is not None else (self.DEFAULT_DROP_TIMER_MINUTES * 60)
+            value_display = value if value is not None else self.DEFAULT_DROP_TIMER_MINUTES
+            unit_display = "minutes"
+        elif final_mode == "messages":
+            final_value = value if value is not None else self.DEFAULT_DROP_MESSAGE_COUNT
+            value_display = final_value
+            unit_display = "messages"
+        else:
+            return await ctx.send(f"❌ Invalid mode `{final_mode}`. Use 'timer' or 'messages'.", ephemeral=True)
+
+        drop_channels = self.bot.data.setdefault("drop_channels", {})
+        drop_channels[str(channel.id)] = {
+            "puzzle": puzzle, "mode": final_mode, "value": final_value,
+            "last_drop_time": datetime.now(timezone.utc).isoformat(), "message_count": 0,
+            "next_trigger": final_value if final_mode == "messages" else 0
+        }
+        save_data(self.bot.data)
+        display_name = get_puzzle_display_name(self.bot.data, puzzle) if puzzle != "all_puzzles" else "All Puzzles"
+        await ctx.send(
+            f"✅ Drops for **{display_name}** are now configured in {channel.mention}.\n"
+            f"Mode: `{final_mode}` | Every: `{value_display} {unit_display}`.",
+            ephemeral=False
+        )
+        await log(self.bot, f"🔧 Drop channel configured for **{display_name}** in `#{channel.name}` by `{ctx.author}`.")
+
+
+async def setup(bot: commands.Bot):
+    await bot.add_cog(PuzzleDropsCog(bot))
