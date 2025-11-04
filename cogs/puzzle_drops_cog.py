@@ -10,7 +10,10 @@ from PIL import Image
 
 import config
 from utils.db_utils import (
-    save_data, resolve_puzzle_key, get_puzzle_display_name
+    load_data,  # <-- Import load_data
+    save_data,
+    resolve_puzzle_key,
+    get_puzzle_display_name
 )
 from utils.log_utils import log
 from ui.views import DropView
@@ -33,15 +36,19 @@ class PuzzleDropsCog(commands.Cog, name="Puzzle Drops"):
     async def puzzle_autocomplete(self, interaction: discord.Interaction, current: str) -> List[
         app_commands.Choice[str]]:
         """Autocomplete for puzzle names, including a random option."""
-        puzzles = self.bot.data.get("puzzles", {})
+        # --- THIS IS THE FIX ---
+        # Load data directly to ensure it's always fresh for autocomplete.
+        bot_data = load_data()
+        puzzles = bot_data.get("puzzles", {})
         choices = []
+
         # Add "All Puzzles" option
         if "all puzzles".startswith(current.lower()):
             choices.append(app_commands.Choice(name="All Puzzles (Random)", value="all_puzzles"))
 
         # Add individual puzzles
         for slug, _ in puzzles.items():
-            display_name = get_puzzle_display_name(self.bot.data, slug)
+            display_name = get_puzzle_display_name(bot_data, slug)
             if current.lower() in slug.lower() or current.lower() in display_name.lower():
                 choices.append(app_commands.Choice(name=display_name, value=slug))
         return choices[:25]
@@ -60,7 +67,6 @@ class PuzzleDropsCog(commands.Cog, name="Puzzle Drops"):
             logger.warning(f"Could not find path for piece '{piece_id}' in puzzle '{puzzle_key}'.")
             return
 
-        # --- THIS IS THE FIX ---
         # Construct the full, absolute path to the image file.
         full_path = config.PUZZLES_ROOT / piece_path
 
@@ -173,7 +179,7 @@ class PuzzleDropsCog(commands.Cog, name="Puzzle Drops"):
         if not puzzle_key:
             return await ctx.send(f"❌ Puzzle not found: `{puzzle}`", ephemeral=True)
 
-        await self._spawn_drop(target_channel, puzzle_key)
+        await self._spawn_drop(target_channel, puzzle.lower())
         display_name = get_puzzle_display_name(self.bot.data, puzzle_key)
         await ctx.send(f"✅ Drop for **{display_name}** has been spawned in {target_channel.mention}.",
                        ephemeral=True)
@@ -182,7 +188,7 @@ class PuzzleDropsCog(commands.Cog, name="Puzzle Drops"):
     @app_commands.autocomplete(puzzle=puzzle_autocomplete)
     @is_admin()
     async def setdropchannel(self, ctx: commands.Context, channel: discord.TextChannel, puzzle: str,
-                             mode: str, value: int):  # <<< FIX IS HERE
+                             mode: str, value: int):
         """Sets up a channel for automatic drops (timer or message-based)."""
         await ctx.defer(ephemeral=False)
 
@@ -202,7 +208,7 @@ class PuzzleDropsCog(commands.Cog, name="Puzzle Drops"):
             "next_trigger": final_value
         }
         save_data(self.bot.data)
-        display_name = get_puzzle_display_name(self.bot.data, puzzle) if puzzle != "all_puzzles" else "All Puzzles"
+        display_name = get_puzzle_display_name(self.bot.data, puzzle_key) if puzzle != "all_puzzles" else "All Puzzles"
         await ctx.send(f"✅ Drops for **{display_name}** are now configured in {channel.mention}.", ephemeral=False)
         await log(self.bot, f"🔧 Drop channel configured for **{display_name}** in `#{channel.name}` by `{ctx.author}`.")
 
