@@ -1,97 +1,172 @@
 import discord
 from discord.ext import commands
+from discord import app_commands
+import logging
 from typing import Optional
 
-# Import your theme for consistent colors
-from utils.theme import Colors, Emojis
+from utils.db_utils import(
+    save_data, sync_from_fs, backup_data, resolve_puzzle_key,
+    get_puzzle_display_name, add_piece_to_user, remove_piece_from_user,
+    wipe_puzzle_from_all)
+from utils.log_utils import log
+
+logger = logging.getLogger(__name__)
 
 
-class HelpCog(commands.Cog, name="Help"):
-    """Provides a dynamic, hybrid help command."""
+class AdminCog(commands.Cog, name="Owner"):
+    """Owner-only commands for bot administration."""
 
     def __init__(self, bot: commands.Bot):
         self.bot = bot
 
-    @commands.hybrid_command(name="help", aliases=["alicehelp"], description="Shows a list of available commands.")
-    @commands.guild_only()  # Good practice for hybrid commands to specify scope
-    async def help_command(self, ctx: commands.Context, command_name: Optional[str] = None):
-        """Shows help for all commands or a specific command."""
+    async def puzzle_autocomplete(self, interaction: discord.Interaction, current: str) -> list[app_commands.Choice[str]]:
+        """Autocomplete for puzzle names."""
+        puzzles = self.bot.data.get("puzzles", {})
+        choices = []
+        for slug, _ in puzzles.items():
+            display_name = get_puzzle_display_name(self.bot.data, slug)
+            if current.lower() in slug.lower() or current.lower() in display_name.lower():
+                choices.append(app_commands.Choice(name=display_name, value=slug))
+        return choices[:25]
 
-        # If a command name is provided, show help for that specific command
-        if command_name:
-            # Look for the command in both the slash command tree and prefix commands
-            command = self.bot.tree.get_command(command_name) or self.bot.get_command(command_name)
+    @commands.hybrid_command(name="reload", description="[Owner] Reloads all cogs and syncs commands.")
+    @commands.is_owner()
+    async def reload(self, ctx: commands.Context):
+        """Reloads all cogs and re-syncs application commands."""
+        await ctx.defer(ephemeral=True)
+        reloaded_cogs, failed_cogs = [], []
 
-            # If no command is found, send an error
-            if not command:
-                await ctx.send(f"{Emojis.FAILURE} I couldn't find a command named `{command_name}`.", ephemeral=True)
-                return
-            await self.send_command_help(ctx, command)
-        # Otherwise, show the full list of commands
+        for extension in self.bot.initial_extensions:
+            try:
+                await self.bot.reload_extension(extension)
+                reloaded_cogs.append(f"✅ `{extension}`")
+            except Exception as e:
+                logger.exception(f"Failed to reload {extension}.")
+                failed_cogs.append(f"❌ `{extension}`")
+
+        try:
+            synced = await self.bot.tree.sync()
+            reloaded_cogs.append(f"✅ `Synced {len(synced)} Commands`")
+        except Exception as e:
+            logger.exception("Failed to sync commands.")
+            failed_cogs.append("❌ `Command Sync Failed`")
+
+        summary = "**Cog Reload Summary:**\n" + "\n".join(reloaded_cogs)
+        if failed_cogs:
+            summary += "\n\n**Failures:**\n" + "\n".join(failed_cogs)
+
+        await ctx.send(summary, ephemeral=True)
+
+    @commands.command(name="sync", description="[Owner] Force-syncs all commands with Discord.")
+    @commands.is_owner()
+    async def sync(self, ctx: commands.Context):
+        """A command to forcefully re-sync all slash commands."""
+        await ctx.defer(ephemeral=True)
+        try:
+            synced = await self.bot.tree.sync()
+            await ctx.send(f"✅ Synced **{len(synced)}** commands globally.", ephemeral=True)
+            logger.info(f"Commands forcefully synced by {ctx.author}. Synced {len(synced)} commands.")
+        except Exception as e:
+            logger.exception("Failed to sync commands.")
+            await ctx.send(f"❌ Failed to sync commands: `{e}`", ephemeral=True)
+
+    @commands.hybrid_command(name="addstaff", description="[Owner] Adds a user to the bot's staff list.")
+    @commands.is_owner()
+    async def addstaff(self, ctx: commands.Context, user: discord.Member):
+        """Adds a user to the legacy staff list."""
+        staff_list = self.bot.data.setdefault("staff", [])
+        if str(user.id) not in staff_list:
+            staff_list.append(str(user.id))
+            save_data(self.bot.data)
+            await ctx.send(f"✅ {user.mention} has been added to the staff list.", ephemeral=True)
+            await log(self.bot, f"🔑 {user.mention} was added to staff by {ctx.author.mention}.")
         else:
-            await self.send_full_help(ctx)
+            await ctx.send(f"⚠️ {user.mention} is already on the staff list.", ephemeral=True)
 
-    async def send_full_help(self, ctx: commands.Context):
-        """Sends an embed with all commands categorized by cog."""
-        embed = discord.Embed(
-            title="Alice Bot Help",
-            description=f"Here are my commands. For more info, use `{ctx.prefix}help <command_name>`.",
-            color=Colors.PRIMARY  # Using your theme color!
-        ).set_thumbnail(url=self.bot.user.display_avatar.url)
+    @commands.hybrid_command(name="removestaff", description="[Owner] Removes a user from the bot's staff list.")
+    @commands.is_owner()
+    async def removestaff(self, ctx: commands.Context, user: discord.Member):
+        """Removes a user from the legacy staff list."""
+        staff_list = self.bot.data.get("staff", [])
+        if str(user.id) in staff_list:
+            staff_list.remove(str(user.id))
+            save_data(self.bot.data)
+            await ctx.send(f"✅ {user.mention} has been removed from the staff list.", ephemeral=True)
+            await log(self.bot, f"🔑 {user.mention} was removed from staff by {ctx.author.mention}.")
+        else:
+            await ctx.send(f"⚠️ {user.mention} is not on the staff list.", ephemeral=True)
 
-        # Sort cogs alphabetically for a clean look
-        sorted_cogs = sorted(self.bot.cogs.values(), key=lambda c: c.qualified_name)
+    @commands.hybrid_command(name="syncpuzzles", description="[Owner] Syncs puzzle data from the filesystem.")
+    @commands.is_owner()
+    async def syncpuzzles(self, ctx: commands.Context):
+        """Syncs all puzzle data from the 'puzzles' directory."""
+        await ctx.defer(ephemeral=True)
+        backup_data()
+        synced_data = sync_from_fs()
+        self.bot.data["puzzles"] = synced_data["puzzles"]
+        self.bot.data["pieces"] = synced_data["pieces"]
+        save_data(self.bot.data)
+        await ctx.send(
+            f"✅ Synced **{len(synced_data['puzzles'])}** puzzles and **{sum(len(p) for p in synced_data['pieces'].values())}** pieces from the filesystem.",
+            ephemeral=True)
+        await log(self.bot, f"🔄 Puzzles synced from filesystem by {ctx.author.mention}.")
 
-        for cog in sorted_cogs:
-            # We will list both hybrid and regular slash commands
-            commands_in_cog = []
+    @commands.hybrid_command(name="givepiece", description="[Owner] Gives a puzzle piece to a user.")
+    @app_commands.autocomplete(puzzle_name=puzzle_autocomplete)
+    @commands.is_owner()
+    async def givepiece(self, ctx: commands.Context, user: discord.Member, puzzle_name: str, piece_id: str):
+        """Gives a specific puzzle piece to a user."""
+        await ctx.defer(ephemeral=True)
+        puzzle_key = resolve_puzzle_key(self.bot.data, puzzle_name)
+        if not puzzle_key:
+            return await ctx.send(f"❌ Puzzle not found: `{puzzle_name}`", ephemeral=True)
 
-            # Get hybrid commands
-            for cmd in cog.get_commands():
-                if isinstance(cmd, commands.HybridCommand) and not cmd.hidden:
-                    commands_in_cog.append(cmd)
+        if add_piece_to_user(self.bot.data, user.id, puzzle_key, piece_id):
+            save_data(self.bot.data)
+            display_name = get_puzzle_display_name(self.bot.data, puzzle_key)
+            await ctx.send(f"✅ Gave piece `{piece_id}` of **{display_name}** to {user.mention}.", ephemeral=True)
+            await log(self.bot,
+                      f"🎁 Piece `{piece_id}` of **{display_name}** given to {user.mention} by {ctx.author.mention}.")
+        else:
+            await ctx.send(f"⚠️ {user.mention} already has that piece.", ephemeral=True)
 
-            # Get slash-only commands (if any)
-            if hasattr(cog, 'get_app_commands'):
-                for cmd in cog.get_app_commands():
-                    # Avoid duplicates if it's already in the hybrid list
-                    if not any(c.name == cmd.name for c in commands_in_cog):
-                        commands_in_cog.append(cmd)
+    @commands.hybrid_command(name="takepiece", description="[Owner] Takes a puzzle piece from a user.")
+    @app_commands.autocomplete(puzzle_name=puzzle_autocomplete)
+    @commands.is_owner()
+    async def takepiece(self, ctx: commands.Context, user: discord.Member, puzzle_name: str, piece_id: str):
+        """Takes a specific puzzle piece from a user."""
+        await ctx.defer(ephemeral=True)
+        puzzle_key = resolve_puzzle_key(self.bot.data, puzzle_name)
+        if not puzzle_key:
+            return await ctx.send(f"❌ Puzzle not found: `{puzzle_name}`", ephemeral=True)
 
-            # Only add the field if there are commands to show
-            if commands_in_cog:
-                # The permission checks will handle unauthorized use, so we don't need to check here.
-                command_list = [
-                    f"**`/{cmd.name}`** - {cmd.description or 'No description available.'}"
-                    for cmd in sorted(commands_in_cog, key=lambda c: c.name)
-                ]
-                embed.add_field(
-                    name=f"**{cog.qualified_name} Commands**",
-                    value="\n".join(command_list),
-                    inline=False
-                )
+        if remove_piece_from_user(self.bot.data, user.id, puzzle_key, piece_id):
+            save_data(self.bot.data)
+            display_name = get_puzzle_display_name(self.bot.data, puzzle_key)
+            await ctx.send(f"✅ Took piece `{piece_id}` of **{display_name}** from {user.mention}.", ephemeral=True)
+            await log(self.bot,
+                      f"💔 Piece `{piece_id}` of **{display_name}** taken from {user.mention} by {ctx.author.mention}.")
+        else:
+            await ctx.send(f"⚠️ {user.mention} does not have that piece.", ephemeral=True)
 
-        embed.set_footer(text="You can use either / or ! for hybrid commands.")
-        await ctx.send(embed=embed, ephemeral=True)
+    @commands.hybrid_command(name="wipepuzzle", description="[Owner] Wipes all progress for a puzzle from all users.")
+    @app_commands.autocomplete(puzzle_name=puzzle_autocomplete)
+    @commands.is_owner()
+    async def wipepuzzle(self, ctx: commands.Context, puzzle_name: str):
+        """Wipes all collected pieces for a specific puzzle from everyone."""
+        await ctx.defer(ephemeral=True)
+        puzzle_key = resolve_puzzle_key(self.bot.data, puzzle_name)
+        if not puzzle_key:
+            return await ctx.send(f"❌ Puzzle not found: `{puzzle_name}`", ephemeral=True)
 
-    async def send_command_help(self, ctx: commands.Context, command: commands.Command):
-        """Sends a detailed help embed for a specific command."""
-        embed = discord.Embed(
-            title=f"Help for `/{command.name}`",
-            description=command.description or "No description available.",
-            color=Colors.PRIMARY  # Using your theme color!
-        )
-
-        # Build the usage string
-        usage = f"/{command.name} {command.signature}"
-        embed.add_field(name="Usage", value=f"`{usage}`", inline=False)
-
-        # Show aliases if they exist
-        if command.aliases:
-            embed.add_field(name="Aliases", value=", ".join(f"`{alias}`" for alias in command.aliases), inline=False)
-
-        await ctx.send(embed=embed, ephemeral=True)
+        wiped_count = wipe_puzzle_from_all(self.bot.data, puzzle_key)
+        save_data(self.bot.data)
+        display_name = get_puzzle_display_name(self.bot.data, puzzle_key)
+        await ctx.send(
+            f"✅ Wiped all progress for **{display_name}**. Removed data from **{wiped_count}** users.",
+            ephemeral=True)
+        await log(self.bot, f"💥 All progress for **{display_name}** was wiped by {ctx.author.mention}.")
 
 
 async def setup(bot: commands.Bot):
-    await bot.add_cog(HelpCog(bot))
+    await bot.add_cog(AdminCog(bot))
