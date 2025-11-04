@@ -13,7 +13,7 @@ from utils.db_utils import (
     save_data, resolve_puzzle_key, get_puzzle_display_name
 )
 from utils.log_utils import log
-from .ui.views import DropView
+from ui.views import DropView
 from utils.checks import is_admin
 from utils.theme import Colors
 
