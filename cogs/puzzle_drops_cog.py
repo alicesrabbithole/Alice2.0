@@ -60,8 +60,12 @@ class PuzzleDropsCog(commands.Cog, name="Puzzle Drops"):
             logger.warning(f"Could not find path for piece '{piece_id}' in puzzle '{puzzle_key}'.")
             return
 
+        # --- THIS IS THE FIX ---
+        # Construct the full, absolute path to the image file.
+        full_path = config.PUZZLES_ROOT / piece_path
+
         try:
-            with Image.open(piece_path) as img:
+            with Image.open(full_path) as img:
                 img.thumbnail((128, 128))
                 buffer = io.BytesIO()
                 img.save(buffer, "PNG")
@@ -69,7 +73,8 @@ class PuzzleDropsCog(commands.Cog, name="Puzzle Drops"):
                 file = discord.File(buffer, filename="puzzle_piece.png")
         except Exception as e:
             logger.exception(f"Failed to process image for drop. Using raw file. Error: {e}")
-            file = discord.File(piece_path, filename="puzzle_piece.png")
+            # Use the full_path here as well for the fallback.
+            file = discord.File(full_path, filename="puzzle_piece.png")
 
         emoji = config.CUSTOM_EMOJI_STRING or config.DEFAULT_EMOJI
         embed = discord.Embed(
