@@ -12,7 +12,6 @@ from utils.log_utils import setup_logging
 # --- Setup ---
 load_dotenv()
 TOKEN = os.getenv("DISCORD_TOKEN")
-IS_REPLIT = os.getenv("REPL_ID") is not None
 
 setup_logging()
 logger = logging.getLogger(__name__)
@@ -55,6 +54,25 @@ class AliceBot(commands.Bot):
         logger.info(f'--- Logged in as {self.user} (ID: {self.user.id}) ---')
         logger.info('Bot is ready and online.')
         logger.info("Use !reload or !sync to update application commands if needed.")
+
+    async def setup_hook(self):
+        """This is called when the bot is loading its extensions."""
+        # --- THIS IS THE CRITICAL FIX ---
+        # 1. Clear the command tree to remove any ghost commands on Discord's side.
+        self.tree.clear_commands(guild=discord.Object(id=1309962372269609010))  # Use guild=discord.Object(id=YOUR_GUILD_ID) for one server
+        await self.tree.sync()
+        # -------------------------------
+
+        logger.info("--- Loading Cogs ---")
+        for extension in self.initial_extensions:
+            try:
+                await self.load_extension(extension)
+                logger.info(f"Successfully loaded extension: {extension}")
+            except Exception as e:
+                logger.exception(f"Failed to load extension {extension}.")
+
+        # After loading, sync the new commands.
+        await self.tree.sync()
 
 
 # --- Bot Initialization and Run ---
