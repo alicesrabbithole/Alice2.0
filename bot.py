@@ -8,16 +8,6 @@ import config
 from utils.db_utils import load_data
 from utils.log_utils import setup_logging
 
-import discord
-from discord.ext import commands
-import os
-from dotenv import load_dotenv
-import logging
-
-import config
-from utils.db_utils import load_data
-from utils.log_utils import setup_logging
-
 # --- Setup ---
 load_dotenv()
 TOKEN = os.getenv("DISCORD_TOKEN")
@@ -49,22 +39,15 @@ class AliceBot(commands.Bot):
             "cogs.sticky_cog"
         ]
 
+    # --- THIS IS THE FIX ---
+    # This setup_hook is now much simpler and more reliable.
+    # It loads all the code first, and then syncs everything exactly one time.
+    # This will prevent the bot from getting stuck.
     async def setup_hook(self):
         """This is called once when the bot logs in."""
         logger.info("--- Running Setup Hook ---")
 
-        # In case of a messy state, this clears all commands from one server.
-        # This is not needed for daily use, but is a great tool for debugging.
-        # You can comment this out after the first successful run.
-        if config.GUILD_ID:
-            logger.info(f"Clearing commands for guild {config.GUILD_ID}...")
-            self.tree.clear_commands(guild=discord.Object(id=config.GUILD_ID))
-            await self.tree.sync(guild=discord.Object(id=config.GUILD_ID))
-            logger.info("Commands cleared.")
-        else:
-            logger.warning("No GUILD_ID found in config.py. Skipping command clearing.")
-
-        # Load all cogs
+        # 1. Load all cogs
         logger.info("--- Loading Cogs ---")
         for extension in self.initial_extensions:
             try:
@@ -73,10 +56,10 @@ class AliceBot(commands.Bot):
             except Exception as e:
                 logger.exception(f"Failed to load extension {extension}.")
 
-        # After loading, sync the new commands.
-        # Syncing to one guild is MUCH faster.
+        # 2. Sync the commands exactly once.
         if config.GUILD_ID:
             logger.info("Syncing commands to guild...")
+            self.tree.copy_global_to(guild=discord.Object(id=config.GUILD_ID))
             await self.tree.sync(guild=discord.Object(id=config.GUILD_ID))
             logger.info("Commands synced to guild.")
         else:
@@ -94,18 +77,14 @@ class AliceBot(commands.Bot):
         This event is called for every message the bot sees.
         We need this to ensure prefix commands are processed.
         """
-        # Ignore messages from bots, including ourselves
         if message.author.bot:
             return
-
-        # This is the crucial line that makes prefix commands work.
         await self.process_commands(message)
 
     async def on_command(self, ctx: commands.Context):
         """This event is triggered every time a command is successfully invoked."""
         if ctx.command is None:
             return
-
         logger.info(
             f"COMMAND: User '{ctx.author}' (ID: {ctx.author.id}) ran command '{ctx.command.name}' "
             f"in channel '{ctx.channel}' (ID: {ctx.channel.id})"
@@ -122,4 +101,3 @@ if __name__ == "__main__":
         logger.critical("OWNER_ID has not been set in config.py. Please set it to your Discord User ID.")
     else:
         bot.run(TOKEN)
-
