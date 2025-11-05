@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 
 # --- Intents and Bot Class ---
 intents = discord.Intents.default()
-intents.message_content = True  # Make sure this is enabled in the Developer Portal
+intents.message_content = True
 
 
 class AliceBot(commands.Bot):
@@ -26,7 +26,7 @@ class AliceBot(commands.Bot):
             command_prefix="!",
             intents=intents,
             owner_id=config.OWNER_ID,
-            help_command=None  # We use our custom help command
+            help_command=None
         )
         self.data = load_data()
         self.initial_extensions = [
@@ -39,15 +39,22 @@ class AliceBot(commands.Bot):
             "cogs.sticky_cog"
         ]
 
-    # --- THIS IS THE FIX ---
-    # This setup_hook is now much simpler and more reliable.
-    # It loads all the code first, and then syncs everything exactly one time.
-    # This will prevent the bot from getting stuck.
+    # --- THIS IS THE TEMPORARY "NUKE" VERSION ---
     async def setup_hook(self):
         """This is called once when the bot logs in."""
-        logger.info("--- Running Setup Hook ---")
+        logger.info("--- Running Setup Hook (NUKE MODE) ---")
 
-        # 1. Load all cogs
+        # 1. Forcefully clear all commands from your specific guild.
+        if config.GUILD_ID:
+            logger.warning(f"CLEARING ALL COMMANDS FROM GUILD {config.GUILD_ID}...")
+            self.tree.clear_commands(guild=discord.Object(id=config.GUILD_ID))
+            await self.tree.sync(guild=discord.Object(id=config.GUILD_ID))
+            logger.warning("All guild commands cleared from Discord's cache.")
+        else:
+            logger.error("NUKE FAILED: No GUILD_ID found in config.py!")
+            return
+
+        # 2. Load all cogs.
         logger.info("--- Loading Cogs ---")
         for extension in self.initial_extensions:
             try:
@@ -56,16 +63,12 @@ class AliceBot(commands.Bot):
             except Exception as e:
                 logger.exception(f"Failed to load extension {extension}.")
 
-        # 2. Sync the commands exactly once.
+        # 3. Sync the fresh, correct commands back to the guild.
         if config.GUILD_ID:
-            logger.info("Syncing commands to guild...")
+            logger.info("Syncing fresh commands to guild...")
             self.tree.copy_global_to(guild=discord.Object(id=config.GUILD_ID))
             await self.tree.sync(guild=discord.Object(id=config.GUILD_ID))
-            logger.info("Commands synced to guild.")
-        else:
-            logger.info("Syncing commands globally...")
-            await self.tree.sync()
-            logger.info("Commands synced globally.")
+            logger.info("Fresh commands synced to guild.")
 
     async def on_ready(self):
         """Called when the bot is ready and online."""
@@ -73,20 +76,15 @@ class AliceBot(commands.Bot):
         logger.info('Bot is ready and online.')
 
     async def on_message(self, message: discord.Message):
-        """
-        This event is called for every message the bot sees.
-        We need this to ensure prefix commands are processed.
-        """
         if message.author.bot:
             return
         await self.process_commands(message)
 
     async def on_command(self, ctx: commands.Context):
-        """This event is triggered every time a command is successfully invoked."""
         if ctx.command is None:
             return
         logger.info(
-            f"COMMAND: User '{ctx.author}' (ID: {ctx.author.id}) ran command '{ctx.command.name}' "
+            f"COMMAND: User '{ctx.author}' ran command '{ctx.command.name}' "
             f"in channel '{ctx.channel}' (ID: {ctx.channel.id})"
         )
 
@@ -96,8 +94,8 @@ bot = AliceBot()
 
 if __name__ == "__main__":
     if TOKEN is None:
-        logger.critical("DISCORD_TOKEN environment variable not found. Please set it in your .env file.")
+        logger.critical("DISCORD_TOKEN environment variable not found.")
     elif config.OWNER_ID == 0:
-        logger.critical("OWNER_ID has not been set in config.py. Please set it to your Discord User ID.")
+        logger.critical("OWNER_ID has not been set in config.py.")
     else:
         bot.run(TOKEN)
