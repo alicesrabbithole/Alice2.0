@@ -32,15 +32,23 @@ def save_data(data: Dict[str, Any]):
         logger.exception("Failed to save data to data.json.")
 
 
+def backup_data():
+    """Creates a backup of the current data file."""
+    if DATA_FILE.exists():
+        backup_file = DATA_FILE.with_suffix(".json.bak")
+        try:
+            DATA_FILE.rename(backup_file)
+            logger.info(f"Created backup: {backup_file}")
+        except IOError:
+            logger.exception("Failed to create data backup.")
+
+
 # --- File System Syncing ---
 
-# --- THIS IS THE FIX ---
-# This function was removed, but admin_cog needs it. It has been restored.
-# It scans your puzzle directories and builds a fresh data structure.
-def sync_from_fs() -> Dict[str, Any]:
+def sync_from_fs(current_data: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Scans the puzzle directory and generates a fresh data structure
-    containing all puzzle metadata and piece information.
+    Scans the puzzle directory and generates a fresh puzzle/piece structure,
+    preserving existing collections and drop channel settings.
     """
     logger.info("Scanning puzzle directory and rebuilding data from file system...")
     puzzles_data = {}
@@ -49,15 +57,12 @@ def sync_from_fs() -> Dict[str, Any]:
     puzzle_root = config.PUZZLES_ROOT
     if not puzzle_root.is_dir():
         logger.error(f"Puzzle root directory not found: {puzzle_root}")
-        return {}
+        return current_data
 
     for puzzle_dir in puzzle_root.iterdir():
-        if not puzzle_dir.is_dir():
-            continue
-
+        if not puzzle_dir.is_dir(): continue
         puzzle_key = puzzle_dir.name
 
-        # Load puzzle metadata from a potential meta.json
         display_name = puzzle_key.replace("_", " ").title()
         image_path = puzzle_dir / "puzzle_image.png"
         grid_size = [3, 3]  # Default
@@ -75,7 +80,6 @@ def sync_from_fs() -> Dict[str, Any]:
             "grid_size": grid_size
         }
 
-        # Scan for pieces
         pieces_dir = puzzle_dir / "pieces"
         if pieces_dir.is_dir():
             puzzle_pieces = {}
@@ -84,15 +88,12 @@ def sync_from_fs() -> Dict[str, Any]:
                 puzzle_pieces[piece_id] = str(piece_file.relative_to(puzzle_root.parent)).replace('\\', '/')
             pieces_data[puzzle_key] = puzzle_pieces
 
-    bot_data = {
-        "puzzles": puzzles_data,
-        "pieces": pieces_data,
-        "collections": {},
-        "drop_channels": {}
-    }
-    save_data(bot_data)
+    # Preserve existing user collections and drop channel settings
+    current_data["puzzles"] = puzzles_data
+    current_data["pieces"] = pieces_data
+
     logger.info("Sync from file system complete.")
-    return bot_data
+    return current_data
 
 
 # --- Puzzle and Piece Utilities ---
@@ -130,14 +131,31 @@ def add_piece_to_user(bot_data: Dict[str, Any], user_id: int, puzzle_key: str, p
     return False
 
 
+def remove_piece_from_user(bot_data: Dict[str, Any], user_id: int, puzzle_key: str, piece_id: str) -> bool:
+    """Removes a puzzle piece from a user. Returns True if removed."""
+    collections = bot_data.get("collections", {})
+    user_collection = collections.get(str(user_id), {})
+    if puzzle_key in user_collection and piece_id in user_collection[puzzle_key]:
+        user_collection[puzzle_key].remove(piece_id)
+        if not user_collection[puzzle_key]:
+            del user_collection[puzzle_key]
+        return True
+    return False
+
+
 def get_user_collection(bot_data: Dict[str, Any], user_id: int) -> Dict[str, Any]:
     """Retrieves the puzzle collection for a specific user."""
     return bot_data.get("collections", {}).get(str(user_id), {})
 
 
-# This function was also needed by admin_cog and has been restored.
-def wipe_puzzle_from_all(bot_data: Dict[str, Any], puzzle_key: str):
-    """Removes all collected pieces for a specific puzzle from all users."""
-    for user_id, collection in bot_data.get("collections", {}).items():
-        if puzzle_key in collection:
-            del collection[puzzle_key]
+def wipe_puzzle_from_all(bot_data: Dict[str, Any], puzzle_key: str) -> int:
+    """Removes all collected pieces for a specific puzzle from all users. Returns count of affected users."""
+    wiped_count = 0
+    collections = bot_data.get("collections", {})
+    for user_id in list(collections.keys()):
+        if puzzle_key in collections[user_id]:
+            del collections[user_id][puzzle_key]
+            wiped_count += 1
+            if not collections[user_id]:
+                del collections[user_id]
+    return wiped_count
