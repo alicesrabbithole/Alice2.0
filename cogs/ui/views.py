@@ -1,6 +1,7 @@
 import discord
 import logging
-
+import io
+from .overlay import render_progress_image
 from utils.db_utils import add_piece_to_user, save_data
 
 logger = logging.getLogger(__name__)
@@ -77,3 +78,56 @@ class DropView(discord.ui.View):
             # --- THIS IS THE FIX ---
             # Pass the message from the interaction directly. This is 100% reliable.
             await self.post_summary(message_to_edit=interaction.message)
+
+class PuzzleGalleryView(discord.ui.View):
+    def __init__(self, bot, interaction, puzzle_keys: list[str]):
+        super().__init__(timeout=300)
+        self.bot = bot
+        self.interaction = interaction
+        self.puzzle_keys = puzzle_keys
+        self.index = 0
+
+    async def generate_embed_and_file(self):
+        puzzle_key = self.puzzle_keys[self.index]
+        logger.info(f"[DEBUG] Generating embed for puzzle {puzzle_key} at index {self.index}")
+        puzzle_meta = self.bot.data["puzzles"][puzzle_key]
+        user_id = str(self.interaction.user.id)
+        collected = self.bot.data.get("user_pieces", {}).get(user_id, {}).get(puzzle_key, [])
+        total_pieces = len(self.bot.data["pieces"][puzzle_key])
+
+        # Render overlay with *all* collected pieces so far
+        image_bytes = render_progress_image(self.bot.data, puzzle_key, collected)
+        filename = f"{puzzle_key}_progress.png"
+        file = discord.File(io.BytesIO(image_bytes), filename=filename)
+
+        embed = discord.Embed(
+            title=f"{puzzle_meta['display_name']} Progress",
+            description=f"{len(collected)} / {total_pieces} pieces collected",
+            color=discord.Color.blurple()
+        )
+        embed.set_image(url=f"attachment://{filename}")
+
+        return embed, file
+
+    @discord.ui.button(label="Previous", style=discord.ButtonStyle.secondary)
+    async def previous_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        logger.info(f"[DEBUG] {interaction.user} clicked Previous, moving to index {self.index - 1}")
+        if self.index > 0:
+            self.index -= 1
+        embed, file = await self.generate_embed_and_file()
+        await interaction.response.edit_message(embed=embed, attachments=[file], view=self)
+
+    @discord.ui.button(label="Next", style=discord.ButtonStyle.secondary)
+    async def next_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if self.index < len(self.puzzle_keys) - 1:
+            self.index += 1
+        embed, file = await self.generate_embed_and_file()
+        await interaction.response.edit_message(embed=embed, attachments=[file], view=self)
+
+    @discord.ui.button(label="Close", style=discord.ButtonStyle.danger)
+    async def close_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.message.delete()
+        self.stop()
+
+
+

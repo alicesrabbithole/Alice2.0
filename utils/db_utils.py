@@ -72,7 +72,13 @@ def sync_from_fs(current_data: Dict[str, Any]) -> Dict[str, Any]:
             with open(meta_file, 'r') as f:
                 meta = json.load(f)
                 display_name = meta.get("display_name", display_name)
+
                 grid_size = meta.get("grid_size", grid_size)
+                rows = meta.get("rows", grid_size)
+                cols = meta.get("cols", grid_size)
+
+                meta["rows"] = rows
+                meta["cols"] = cols
 
         puzzles_data[puzzle_key] = {
             "display_name": display_name,
@@ -84,7 +90,17 @@ def sync_from_fs(current_data: Dict[str, Any]) -> Dict[str, Any]:
         if pieces_dir.is_dir():
             puzzle_pieces = {}
             for piece_file in pieces_dir.glob("*.png"):
-                piece_id = piece_file.stem
+                stem = piece_file.stem
+                # normalize: "p12" -> "12", "12" -> "12"
+                if stem.startswith("p") and stem[1:].isdigit():
+                    piece_id = stem[1:]
+                else:
+                    piece_id = stem
+                # enforce numeric string IDs (so "01" becomes "1")
+                try:
+                    piece_id = str(int(piece_id))
+                except ValueError:
+                    pass  # leave as-is if not numeric
                 puzzle_pieces[piece_id] = str(piece_file.relative_to(puzzle_root.parent)).replace('\\', '/')
             pieces_data[puzzle_key] = puzzle_pieces
 
