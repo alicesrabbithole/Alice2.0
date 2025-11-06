@@ -101,7 +101,7 @@ def sync_from_fs(current_data: Dict[str, Any]) -> Dict[str, Any]:
                     piece_id = str(int(piece_id))
                 except ValueError:
                     pass  # leave as-is if not numeric
-                puzzle_pieces[piece_id] = str(piece_file.relative_to(puzzle_root.parent)).replace('\\', '/')
+                puzzle_pieces[piece_id] = str(piece_file.relative_to(puzzle_root)).replace('\\', '/')
             pieces_data[puzzle_key] = puzzle_pieces
 
     # Preserve existing user collections and drop channel settings
