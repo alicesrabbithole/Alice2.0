@@ -82,7 +82,7 @@ def sync_from_fs(current_data: Dict[str, Any]) -> Dict[str, Any]:
 
         puzzles_data[puzzle_key] = {
             "display_name": display_name,
-            "image_path": str(image_path.relative_to(puzzle_root.parent)).replace('\\', '/'),
+            "image_path": str(image_path.relative_to(puzzle_root)).replace('\\', '/'),
             "grid_size": grid_size
         }
 
