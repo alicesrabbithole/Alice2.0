@@ -58,10 +58,15 @@ def render_progress_image(bot_data: Dict, puzzle_key: str, collected_piece_ids: 
             logger.debug(f"Piece ID {pid} not found in piece_map for puzzle {puzzle_key}")
             continue
         try:
-            full_piece_path = config.PUZZLES_ROOT.joinpath(piece_path)
+            # Option A: use the stored relative path from piece_map
+            full_piece_path = config.PUZZLES_ROOT / piece_path
+            logger.debug(f"Opening piece {pid} at {full_piece_path}")
+
             if full_piece_path.exists():
-                piece_img = Image.open(full_piece_path).convert("RGBA").resize((tile_size, tile_size),
-                                                                               Image.Resampling.LANCZOS)
+                piece_img = Image.open(full_piece_path).convert("RGBA").resize(
+                    (tile_size, tile_size),
+                    Image.Resampling.LANCZOS
+                )
                 idx = int(pid) - 1
                 r, c = divmod(idx, cols)
                 puzzle_img.paste(piece_img, (c * tile_size, r * tile_size), piece_img)
