@@ -190,12 +190,12 @@ class PuzzleDropsCog(commands.Cog, name="Puzzle Drops"):
     @app_commands.autocomplete(puzzle=puzzle_autocomplete)
     @is_admin()
     async def setdropchannel(
-        self,
-        ctx: commands.Context,
-        channel: discord.TextChannel,
-        puzzle: str,
-        mode: Optional[str] = None,
-        value: Optional[int] = None,
+            self,
+            ctx: commands.Context,
+            channel: discord.TextChannel,
+            puzzle: str,
+            mode: Optional[str] = None,
+            value: Optional[int] = None,
     ):
         await ctx.defer(ephemeral=False)
         if puzzle != "all_puzzles":
@@ -241,5 +241,7 @@ class PuzzleDropsCog(commands.Cog, name="Puzzle Drops"):
             f"🔧 Drop channel configured for **{display_name}** in `#{channel.name}` by `{ctx.author}`."
         )
 
-    async def setup(bot: commands.Bot):
-        await bot.add_cog(PuzzleDropsCog(bot))
+
+# --- Cog entry point ---
+async def setup(bot: commands.Bot):
+    await bot.add_cog(PuzzleDropsCog(bot))
