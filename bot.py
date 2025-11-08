@@ -3,7 +3,11 @@ from discord.ext import commands
 import os
 from dotenv import load_dotenv
 import logging
-
+logging.basicConfig(
+    level=logging.DEBUG,
+    format="%(asctime)s [%(levelname)8s] %(name)20s : %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S"
+)
 import config
 from utils.db_utils import load_data
 from utils.log_utils import setup_logging
