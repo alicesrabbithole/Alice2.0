@@ -5,20 +5,18 @@ from typing import Dict, Any
 
 import config
 
-DATA_FILE = Path(__file__).parent.parent / "data.json"
+DATA_FILE = Path(__file__).parent.parent / "data" / "collected_pieces.json"
 logger = logging.getLogger(__name__)
 
-
 # --- Data Loading and Saving ---
-
 def load_data() -> Dict[str, Any]:
-    """Loads the main data file (data.json)."""
+    """Loads the main data file (collected_pieces.json)."""
     if DATA_FILE.exists():
         with open(DATA_FILE, "r") as f:
             try:
                 return json.load(f)
             except json.JSONDecodeError:
-                logger.exception("Failed to decode data.json. Returning empty dictionary.")
+                logger.exception("Failed to decode collected_pieces.json. Returning empty dictionary.")
                 return {}
     return {}
 
@@ -29,7 +27,7 @@ def save_data(data: Dict[str, Any]):
         with open(DATA_FILE, "w") as f:
             json.dump(data, f, indent=4)
     except IOError:
-        logger.exception("Failed to save data to data.json.")
+        logger.exception("Failed to save data to collected_pieces.json.")
 
 
 def backup_data():
@@ -146,8 +144,8 @@ def get_puzzle_display_name(bot_data: Dict[str, Any], puzzle_key: str) -> str:
 def add_piece_to_user(bot_data: Dict[str, Any], user_id: int, puzzle_key: str, piece_id: str) -> bool:
     """Adds a puzzle piece to a user's collection. Returns True if added, False if already owned."""
     user_id_str = str(user_id)
-    collections = bot_data.setdefault("collections", {})
-    user_collection = collections.setdefault(user_id_str, {})
+    user_pieces = bot_data.setdefault("user_pieces", {})
+    user_collection = user_pieces.setdefault(user_id_str, {})
     user_puzzle_pieces = user_collection.setdefault(puzzle_key, [])
 
     if piece_id not in user_puzzle_pieces:
@@ -155,11 +153,10 @@ def add_piece_to_user(bot_data: Dict[str, Any], user_id: int, puzzle_key: str, p
         return True
     return False
 
-
 def remove_piece_from_user(bot_data: Dict[str, Any], user_id: int, puzzle_key: str, piece_id: str) -> bool:
     """Removes a puzzle piece from a user. Returns True if removed."""
-    collections = bot_data.get("collections", {})
-    user_collection = collections.get(str(user_id), {})
+    user_pieces = bot_data.get("user_pieces", {})
+    user_collection = user_pieces.get(str(user_id), {})
     if puzzle_key in user_collection and piece_id in user_collection[puzzle_key]:
         user_collection[puzzle_key].remove(piece_id)
         if not user_collection[puzzle_key]:
@@ -167,21 +164,20 @@ def remove_piece_from_user(bot_data: Dict[str, Any], user_id: int, puzzle_key: s
         return True
     return False
 
-
 def get_user_collection(bot_data: Dict[str, Any], user_id: int) -> Dict[str, Any]:
     """Retrieves the puzzle collection for a specific user."""
-    return bot_data.get("collections", {}).get(str(user_id), {})
+    return bot_data.get("user_pieces", {}).get(str(user_id), {})
 
 
 def wipe_puzzle_from_all(bot_data: Dict[str, Any], puzzle_key: str) -> int:
     """Removes all collected pieces for a specific puzzle from all users. Returns count of affected users."""
     wiped_count = 0
-    collections = bot_data.get("collections", {})
-    for user_id in list(collections.keys()):
-        if puzzle_key in collections[user_id]:
-            del collections[user_id][puzzle_key]
+    user_pieces = bot_data.get("user_pieces", {})
+    for user_id in list(user_pieces.keys()):
+        if puzzle_key in user_pieces[user_id]:
+            del user_pieces[user_id][puzzle_key]
             wiped_count += 1
-            if not collections[user_id]:
-                del collections[user_id]
+            if not user_pieces[user_id]:
+                del user_pieces[user_id]
     return wiped_count
 
