@@ -141,7 +141,7 @@ class PuzzleDropsCog(commands.Cog, name="Puzzle Drops"):
                         puzzle_key = resolve_puzzle_key(self.bot.data, puzzle_slug)
                     if puzzle_key:
                         await self._spawn_drop(channel, puzzle_key)
-                        raw_cfg["last_drop_time"] = now.isoformat()git p
+                        raw_cfg["last_drop_time"] = now.isoformat()
                         data_changed = True
             except (ValueError, TypeError) as e:
                 logger.error(f"Could not process drop channel {ch_id_str}: {e}")
