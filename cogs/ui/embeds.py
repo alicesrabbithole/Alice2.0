@@ -1,31 +1,39 @@
 import discord
 import io
 import logging
+from utils.db_utils import get_user_pieces  # Correct import
 
-def build_progress_embed(puzzle_meta, collected_piece_ids, total_pieces, image_bytes):
+def build_progress_embed(
+        puzzle_meta, bot_data, user_id, puzzle_key,
+        total_pieces, image_bytes
+    ):
     logger = logging.getLogger(__name__)
-    logger.info(f"[DEBUG] build_progress_embed called with:")
+    logger.info("[DEBUG] build_progress_embed called with:")
     logger.info(f"[DEBUG] puzzle_meta: {puzzle_meta}")
-    logger.info(f"[DEBUG] collected_piece_ids: {collected_piece_ids}")
     logger.info(f"[DEBUG] total_pieces: {total_pieces}")
     logger.info(f"[DEBUG] image_bytes length: {len(image_bytes) if image_bytes else 'None'}")
+    logger.info(f"[DEBUG] user_id: {user_id}, puzzle_key: {puzzle_key}")
+
+    user_pieces = get_user_pieces(bot_data, user_id, puzzle_key)
+    logger.info(f"[DEBUG] user_pieces: {user_pieces}")
 
     embed = discord.Embed(
         title=f"Progress for {puzzle_meta['display_name']}",
-        description=f"Collected {len(collected_piece_ids)} / {total_pieces} pieces",
+        description=f"Collected {len(user_pieces)} / {total_pieces} pieces",
         color=discord.Color.blurple()
     )
 
-    if collected_piece_ids:
+    if user_pieces:
         embed.add_field(
             name="Collected IDs",
-            value=", ".join(collected_piece_ids),
+            value=", ".join(user_pieces),
             inline=False
         )
     else:
         embed.add_field(name="Collected IDs", value="None yet!", inline=False)
 
-    file = discord.File(io.BytesIO(image_bytes), filename=f"{puzzle_meta['display_name']}_progress.png")
-    embed.set_image(url=f"attachment://{puzzle_meta['display_name']}_progress.png")
+    filename = f"{puzzle_meta['display_name'].replace(' ', '_').lower()}_progress.png"
+    file = discord.File(io.BytesIO(image_bytes), filename=filename)
+    embed.set_image(url=f"attachment://{filename}")
 
     return embed, file

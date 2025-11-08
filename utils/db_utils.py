@@ -40,6 +40,13 @@ def backup_data():
         except IOError:
             logger.exception("Failed to create data backup.")
 
+def get_user_pieces(bot_data, user_id, puzzle_key):
+    """
+    Returns a list of the collected piece IDs for a given user and puzzle key.
+    If none are found, returns an empty list.
+    """
+    user_id_str = str(user_id)  # in case we get an int
+    return bot_data.get("user_pieces", {}).get(user_id_str, {}).get(puzzle_key, [])
 
 # --- File System Syncing ---
 def sync_from_fs(current_data: Dict[str, Any]) -> Dict[str, Any]:

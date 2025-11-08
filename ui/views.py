@@ -103,6 +103,9 @@ class PuzzleGalleryView(discord.ui.View):
         display_name = get_puzzle_display_name(self.bot.data, puzzle_key)
         user_pieces = self.bot.data.get("user_pieces", {}).get(str(self.interaction.user.id), {}).get(puzzle_key, [])
         total_pieces = len(self.bot.data.get("pieces", {}).get(puzzle_key, {}))
+        user_id = self.interaction.user.id  # or user.id in your code context
+        puzzle_key = "alice_test"
+        user_pieces = get_user_pieces(self.bot.data, user_id, puzzle_key)
 
         emoji = config.CUSTOM_EMOJI_STRING or config.DEFAULT_EMOJI
         embed = discord.Embed(
@@ -114,6 +117,8 @@ class PuzzleGalleryView(discord.ui.View):
         embed.set_footer(text=f"Puzzle {self.current_index + 1} of {len(self.user_puzzle_keys)}")
 
         filename = f"{puzzle_key}_progress.png"
+        logger.info(
+            f"[DEBUG] render_progress_image called for puzzle_key={puzzle_key} with collected_piece_ids={collected_piece_ids}")
         try:
             image_bytes = render_progress_image(self.bot.data, puzzle_key, user_pieces)
             file = discord.File(io.BytesIO(image_bytes), filename=filename)

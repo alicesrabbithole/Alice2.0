@@ -1,3 +1,7 @@
 {
-    "display_name": "Alice Test"
+    "display_name": "Alice Test",
+    "rows": 5,
+    "cols": 5,
+    "base_image": "alice_test_base.png",
+    "full_image": "alice_test_full.png"
 }
