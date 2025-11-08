@@ -1,17 +1,13 @@
 import discord
 from discord.ext import commands
-from discord import app_commands, File
-import io
+from discord import app_commands
 import logging
 from typing import List
 
-# --- THIS IS THE FIX ---
-# Changed the import paths from relative (.utils) or cogs.utils to just utils
 from utils.db_utils import resolve_puzzle_key, get_puzzle_display_name
 from ui.overlay import render_progress_image
 from ui.views import PuzzleGalleryView
 from utils.theme import Emojis, Colors
-# --- End of fix ---
 
 logger = logging.getLogger(__name__)
 
@@ -36,45 +32,11 @@ class PuzzlesCog(commands.Cog, name="Puzzles"):
             # --- End of fix ---
         return choices[:25]
 
-    @commands.hybrid_command(name="viewpuzzle", description="View your progress on a specific puzzle.")
-    @app_commands.autocomplete(puzzle_name=puzzle_autocomplete)
-    async def viewpuzzle(self, ctx: commands.Context, *, puzzle_name: str):
-        """Shows your current progress on a selected puzzle."""
-        await ctx.defer()
-
-        # The puzzle_name passed here will be the SLUG (e.g., "alice_test") because we set it as the `value` in the Choice.
-        puzzle_key = resolve_puzzle_key(self.bot.data, puzzle_name)
-        if not puzzle_key:
-            return await ctx.send(f"{Emojis.FAILURE} Puzzle not found: `{puzzle_name}`", ephemeral=True)
-
-        # --- THIS IS THE FIX FOR THE EMBED ---
-        # We fetch the display_name using our utility function.
-        display_name = get_puzzle_display_name(self.bot.data, puzzle_key)
-        # --- End of fix ---
-
-        user_pieces = self.bot.data.get("user_pieces", {}).get(str(ctx.author.id), {}).get(puzzle_key, [])
-        total_pieces = len(self.bot.data.get("pieces", {}).get(puzzle_key, {}))
-
-        embed = discord.Embed(
-            title=f"{Emojis.PUZZLE_PIECE} {display_name}",  # Use the correct display_name
-            description=f"**Progress:** {len(user_pieces)} / {total_pieces} pieces collected.",
-            color=Colors.THEME_COLOR
-        ).set_author(name=ctx.author.display_name, icon_url=ctx.author.display_avatar.url)
-
-        try:
-            image_bytes = render_progress_image(self.bot.data, puzzle_key, user_pieces)
-            filename = f"{puzzle_key}_progress.png"
-            file = File(io.BytesIO(image_bytes), filename=filename)
-            embed.set_image(url=f"attachment://{filename}")
-            await ctx.send(embed=embed, file=file, ephemeral=False)
-        except Exception as e:
-            logger.exception(f"Error rendering puzzle view for {puzzle_key}: {e}")
-            await ctx.send(f"{Emojis.WARNING} An unexpected error occurred while rendering the puzzle.", ephemeral=True)
-
     @commands.hybrid_command(name="gallery", description="Browse through all the puzzles you have started.")
     async def gallery(self, ctx: commands.Context):
         """Shows an interactive gallery of all puzzles the user has pieces for."""
         await ctx.defer(ephemeral=False)
+        logger.info(f"[DEBUG] /gallery invoked by {ctx.author} ({ctx.author.id})")
         user_puzzles = self.bot.data.get("user_pieces", {}).get(str(ctx.author.id), {})
 
         user_puzzle_keys = [key for key, pieces in user_puzzles.items() if pieces]

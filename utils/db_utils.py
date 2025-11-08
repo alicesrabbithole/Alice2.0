@@ -1,168 +1,187 @@
-import os
 import json
-import re
-import shutil
 import logging
-from typing import Dict, Any, Optional
-from datetime import datetime
 from pathlib import Path
+from typing import Dict, Any
 
 import config
 
+DATA_FILE = Path(__file__).parent.parent / "data.json"
 logger = logging.getLogger(__name__)
 
-DEFAULT_DATA = {"puzzles": {}, "pieces": {}, "user_pieces": {}, "drop_channels": {}, "staff": []}
 
+# --- Data Loading and Saving ---
 
 def load_data() -> Dict[str, Any]:
-    """Loads the main data file (collected_pieces.json)."""
-    if not config.DB_PATH.exists():
-        config.DATA_DIR.mkdir(exist_ok=True)
-        save_data(DEFAULT_DATA)
-        return DEFAULT_DATA.copy()
-    try:
-        with open(config.DB_PATH, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except (json.JSONDecodeError, TypeError):
-        logger.exception("Failed to load database, returning default data.")
-        return DEFAULT_DATA.copy()
+    """Loads the main data file (data.json)."""
+    if DATA_FILE.exists():
+        with open(DATA_FILE, "r") as f:
+            try:
+                return json.load(f)
+            except json.JSONDecodeError:
+                logger.exception("Failed to decode data.json. Returning empty dictionary.")
+                return {}
+    return {}
 
 
 def save_data(data: Dict[str, Any]):
-    """Saves the provided data dictionary to the main data file."""
-    config.DATA_DIR.mkdir(exist_ok=True)
-    temp_path = config.DB_PATH.with_suffix(".json.tmp")
-    with open(temp_path, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=4, ensure_ascii=False)
-    os.replace(temp_path, config.DB_PATH)
+    """Saves the provided dictionary to the data file."""
+    try:
+        with open(DATA_FILE, "w") as f:
+            json.dump(data, f, indent=4)
+    except IOError:
+        logger.exception("Failed to save data to data.json.")
 
 
 def backup_data():
-    """Creates a timestamped backup of the main data file."""
-    if not config.DB_PATH.exists():
-        return
-    config.BACKUP_DIR.mkdir(exist_ok=True)
-    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-    backup_path = config.BACKUP_DIR / f"backup_{config.DB_PATH.stem}_{timestamp}.json"
-    try:
-        shutil.copy2(config.DB_PATH, backup_path)
-        logger.info(f"Data backup saved to {backup_path}")
-    except Exception:
-        logger.exception("Failed to create data backup.")
+    """Creates a backup of the current data file."""
+    if DATA_FILE.exists():
+        backup_file = DATA_FILE.with_suffix(".json.bak")
+        try:
+            DATA_FILE.rename(backup_file)
+            logger.info(f"Created backup: {backup_file}")
+        except IOError:
+            logger.exception("Failed to create data backup.")
 
 
-def get_puzzle_display_name(data: dict, puzzle_key: str) -> str:
-    """Gets the display name for a puzzle."""
-    if not puzzle_key:
-        return "Unknown Puzzle"
-    meta = data.get("puzzles", {}).get(puzzle_key, {})
-    return meta.get("display_name", puzzle_key.replace("_", " ").title())
+# --- File System Syncing ---
+def sync_from_fs(current_data: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Scans the puzzle directory and generates a fresh puzzle/piece structure,
+    preserving existing collections and drop channel settings.
+    """
+    logger.info("Scanning puzzle directory and rebuilding data from file system...")
+    puzzles_data: Dict[str, Any] = {}
+    pieces_data: Dict[str, Dict[str, str]] = {}
 
+    puzzle_root = config.PUZZLES_ROOT  # e.g., Path("puzzles")
+    if not puzzle_root.is_dir():
+        logger.error(f"Puzzle root directory not found: {puzzle_root}")
+        return current_data
 
-def sync_from_fs() -> Dict[str, Dict]:
-    """Syncs puzzle structure and pieces from the filesystem."""
-    puzzles, pieces = {}, {}
-    if not config.PUZZLES_ROOT.is_dir():
-        logger.error(f"Puzzles root directory not found at: {config.PUZZLES_ROOT}")
-        return {"puzzles": {}, "pieces": {}}
-
-    for puzzle_dir in config.PUZZLES_ROOT.iterdir():
+    for puzzle_dir in puzzle_root.iterdir():
         if not puzzle_dir.is_dir():
             continue
-        slug = puzzle_dir.name
 
-        meta_path = puzzle_dir / "meta.json"
-        meta = {}
-        if meta_path.exists():
-            with open(meta_path, "r", encoding="utf-8") as f:
-                meta = json.load(f)
+        puzzle_key = puzzle_dir.name
+        display_name = puzzle_key.replace("_", " ").title()
+        image_path = puzzle_dir / "puzzle_image.png"
+        grid_size = [3, 3]  # Default
 
-        display_name = meta.get("display_name", slug.replace("_", " ").title())
-        rows = meta.get("rows", 4)
-        cols = meta.get("cols", 4)
+        meta_file = puzzle_dir / "meta.json"
+        if meta_file.exists():
+            try:
+                with open(meta_file, 'r') as f:
+                    meta = json.load(f)
+                display_name = meta.get("display_name", display_name)
 
-        def get_relative_path(full_path: Path) -> Optional[str]:
-            """Generates a path relative to the PUZZLES_ROOT directory."""
-            if full_path and full_path.exists():
-                try:
-                    return str(full_path.relative_to(config.PUZZLES_ROOT)).replace("\\", "/")
-                except ValueError:
-                    logger.error(f"Path {full_path} is not within the puzzles root {config.PUZZLES_ROOT}.")
-                    return None
-            return None
+                # Support either grid_size or explicit rows/cols, normalize for downstream use
+                grid_size = meta.get("grid_size", grid_size)
+                rows = meta.get("rows", grid_size[0] if isinstance(grid_size, list) else 3)
+                cols = meta.get("cols", grid_size[1] if isinstance(grid_size, list) else 3)
+            except Exception:
+                logger.exception(f"Failed reading meta.json for {puzzle_key}; using defaults.")
+                rows, cols = grid_size
 
-        full_img = next(puzzle_dir.glob("*_full.png"), None)
-        base_img = next(puzzle_dir.glob("*_base.png"), None)
+        # Store image_path RELATIVE TO PUZZLES_ROOT so it includes the slug (e.g. "alice_test/puzzle_image.png")
+        puzzles_data[puzzle_key] = {
+            "display_name": display_name,
+            "image_path": str(image_path.relative_to(puzzle_root)).replace('\\', '/'),
+            "rows": rows if isinstance(rows, int) else grid_size[0],
+            "cols": cols if isinstance(cols, int) else grid_size[1],
+        }
 
-        puzzle_pieces = {}
+        # Collect piece paths RELATIVE TO PUZZLES_ROOT so they include the slug (e.g. "alice_test/pieces/p7.png")
         pieces_dir = puzzle_dir / "pieces"
         if pieces_dir.is_dir():
-            piece_files = sorted(
-                pieces_dir.glob("p*.png"),
-                key=lambda p: int(re.search(r'p(\d+)', p.name).group(1)) if re.search(r'p(\d+)', p.name) else 0
-            )
-            for i, piece_path in enumerate(piece_files, start=1):
-                puzzle_pieces[str(i)] = get_relative_path(piece_path)
+            puzzle_pieces: Dict[str, str] = {}
+            for piece_file in sorted(pieces_dir.glob("*.png")):
+                stem = piece_file.stem
+                # normalize: "p12" -> "12", "12" -> "12"
+                if stem.startswith("p") and stem[1:].isdigit():
+                    piece_id = stem[1:]
+                else:
+                    piece_id = stem
+                # enforce numeric string IDs (so "01" becomes "1")
+                try:
+                    piece_id = str(int(piece_id))
+                except ValueError:
+                    # allow non-numeric IDs if present
+                    pass
 
-        if "rows" not in meta and puzzle_pieces:
-            num_pieces = len(puzzle_pieces)
-            rows = cols = int(num_pieces ** 0.5)
-            if rows * cols != num_pieces:
-                for i in range(int(num_pieces ** 0.5), 0, -1):
-                    if num_pieces % i == 0:
-                        rows = i
-                        cols = num_pieces // i
-                        break
+                rel_path = str(piece_file.relative_to(puzzle_root)).replace('\\', '/')
+                puzzle_pieces[piece_id] = rel_path
 
-        puzzles[slug] = {
-            "display_name": display_name,
-            "full_image": get_relative_path(full_img),
-            "base_image": get_relative_path(base_img),
-            "rows": rows,
-            "cols": cols
-        }
-        pieces[slug] = puzzle_pieces
+            pieces_data[puzzle_key] = puzzle_pieces
 
-    return {"puzzles": puzzles, "pieces": pieces}
+    # Preserve existing user collections and drop channel settings
+    current_data["puzzles"] = puzzles_data
+    current_data["pieces"] = pieces_data
+
+    logger.info("Sync from file system complete.")
+    return current_data
 
 
-def resolve_puzzle_key(data: dict, identifier: str) -> Optional[str]:
-    """Finds a puzzle's key (slug) from a user-provided identifier."""
-    if not identifier: return None
-    puzzles = data.get("puzzles", {})
-    norm_id = identifier.lower().strip()
-    if identifier in puzzles: return identifier
-    if norm_id in puzzles: return norm_id
-    for slug, meta in puzzles.items():
-        if meta.get("display_name", "").lower() == norm_id: return slug
+# --- Puzzle and Piece Utilities ---
+
+def resolve_puzzle_key(bot_data: Dict[str, Any], puzzle_input: str) -> str | None:
+    """Finds a puzzle's key from either its key or display name."""
+    puzzles = bot_data.get("puzzles", {})
+    if puzzle_input in puzzles:
+        return puzzle_input
+
+    for key, meta in puzzles.items():
+        if meta.get("display_name", "").lower() == puzzle_input.lower():
+            return key
     return None
 
 
-def add_piece_to_user(data: dict, user_id: int, puzzle_key: str, piece_id: str) -> bool:
-    """Adds a puzzle piece to a user's collection. Returns False if they already have it."""
-    user_pieces = data.setdefault("user_pieces", {}).setdefault(str(user_id), {})
-    piece_list = user_pieces.setdefault(puzzle_key, [])
-    if piece_id not in piece_list:
-        piece_list.append(piece_id)
+def get_puzzle_display_name(bot_data: Dict[str, Any], puzzle_key: str) -> str:
+    """Gets the display name for a puzzle, falling back to a formatted key."""
+    if not puzzle_key:
+        return "Unknown Puzzle"
+    puzzle_meta = bot_data.get("puzzles", {}).get(puzzle_key, {})
+    return puzzle_meta.get("display_name", puzzle_key.replace("_", " ").title())
+
+
+def add_piece_to_user(bot_data: Dict[str, Any], user_id: int, puzzle_key: str, piece_id: str) -> bool:
+    """Adds a puzzle piece to a user's collection. Returns True if added, False if already owned."""
+    user_id_str = str(user_id)
+    collections = bot_data.setdefault("collections", {})
+    user_collection = collections.setdefault(user_id_str, {})
+    user_puzzle_pieces = user_collection.setdefault(puzzle_key, [])
+
+    if piece_id not in user_puzzle_pieces:
+        user_puzzle_pieces.append(piece_id)
         return True
     return False
 
 
-def remove_piece_from_user(data: dict, user_id: int, puzzle_key: str, piece_id: str) -> bool:
-    """Removes a specific puzzle piece from a user's collection."""
-    user_puzzle_pieces = data.get("user_pieces", {}).get(str(user_id), {}).get(puzzle_key)
-    if user_puzzle_pieces and piece_id in user_puzzle_pieces:
-        user_puzzle_pieces.remove(piece_id)
+def remove_piece_from_user(bot_data: Dict[str, Any], user_id: int, puzzle_key: str, piece_id: str) -> bool:
+    """Removes a puzzle piece from a user. Returns True if removed."""
+    collections = bot_data.get("collections", {})
+    user_collection = collections.get(str(user_id), {})
+    if puzzle_key in user_collection and piece_id in user_collection[puzzle_key]:
+        user_collection[puzzle_key].remove(piece_id)
+        if not user_collection[puzzle_key]:
+            del user_collection[puzzle_key]
         return True
     return False
 
 
-def wipe_puzzle_from_all(data: dict, puzzle_key: str) -> int:
-    """Removes all pieces for a specific puzzle from all users."""
+def get_user_collection(bot_data: Dict[str, Any], user_id: int) -> Dict[str, Any]:
+    """Retrieves the puzzle collection for a specific user."""
+    return bot_data.get("collections", {}).get(str(user_id), {})
+
+
+def wipe_puzzle_from_all(bot_data: Dict[str, Any], puzzle_key: str) -> int:
+    """Removes all collected pieces for a specific puzzle from all users. Returns count of affected users."""
     wiped_count = 0
-    user_pieces = data.get("user_pieces", {})
-    for user_id in list(user_pieces.keys()):
-        if puzzle_key in user_pieces[user_id]:
-            del user_pieces[user_id][puzzle_key]
+    collections = bot_data.get("collections", {})
+    for user_id in list(collections.keys()):
+        if puzzle_key in collections[user_id]:
+            del collections[user_id][puzzle_key]
             wiped_count += 1
+            if not collections[user_id]:
+                del collections[user_id]
     return wiped_count
+

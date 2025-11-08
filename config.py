@@ -12,6 +12,7 @@ OWNER_ID = 1077240270791397388
 # The ID of the primary server where the bot operates.
 # Used for server-specific commands and features.
 GUILD_ID = 1309962372269609010
+WONDERLAND_GUILD_ID = 1309962372269609010
 
 # --- Channel & Role IDs ---
 # The channel where the bot will send administrative logs.

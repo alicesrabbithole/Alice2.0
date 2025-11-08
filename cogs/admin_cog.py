@@ -4,7 +4,7 @@ from discord import app_commands
 import logging
 from typing import Optional
 
-from utils.db_utils import(
+from utils.db_utils import (
     save_data, sync_from_fs, backup_data, resolve_puzzle_key,
     get_puzzle_display_name, add_piece_to_user, remove_piece_from_user,
     wipe_puzzle_from_all)
@@ -43,13 +43,6 @@ class AdminCog(commands.Cog, name="Owner"):
             except Exception as e:
                 logger.exception(f"Failed to reload {extension}.")
                 failed_cogs.append(f"❌ `{extension}`")
-
-        try:
-            synced = await self.bot.tree.sync()
-            reloaded_cogs.append(f"✅ `Synced {len(synced)} Commands`")
-        except Exception as e:
-            logger.exception("Failed to sync commands.")
-            failed_cogs.append("❌ `Command Sync Failed`")
 
         summary = "**Cog Reload Summary:**\n" + "\n".join(reloaded_cogs)
         if failed_cogs:
@@ -102,12 +95,11 @@ class AdminCog(commands.Cog, name="Owner"):
         """Syncs all puzzle data from the 'puzzles' directory."""
         await ctx.defer(ephemeral=True)
         backup_data()
-        synced_data = sync_from_fs()
-        self.bot.data["puzzles"] = synced_data["puzzles"]
-        self.bot.data["pieces"] = synced_data["pieces"]
+        # The bot's current data is passed to the function, which returns the updated version.
+        self.bot.data = sync_from_fs(self.bot.data)
         save_data(self.bot.data)
         await ctx.send(
-            f"✅ Synced **{len(synced_data['puzzles'])}** puzzles and **{sum(len(p) for p in synced_data['pieces'].values())}** pieces from the filesystem.",
+            f"✅ Synced **{len(self.bot.data['puzzles'])}** puzzles and **{sum(len(p) for p in self.bot.data['pieces'].values())}** pieces from the filesystem.",
             ephemeral=True)
         await log(self.bot, f"🔄 Puzzles synced from filesystem by {ctx.author.mention}.")
 

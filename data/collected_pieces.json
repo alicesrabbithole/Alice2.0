@@ -1,9 +1,15 @@
 {
     "puzzles": {
         "alice_test": {
+<<<<<<< HEAD
+            "display_name": "alice_test",
+            "full_image": "alice_test/alice_test_full.png",
+            "base_image": "alice_test/alice_test_base.png",
+=======
             "display_name": "Alice Test",
             "base_image": "alice_test/alice_test_base.png",
             "full_image": "alice_test/alice_test_full.png",
+>>>>>>> 483e108c8cdb8ad4b51c10ba1e546619dce62560
             "rows": 5,
             "cols": 5
         }
