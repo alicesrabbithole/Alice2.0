@@ -33,9 +33,6 @@ BACKUP_DIR = DATA_DIR / "backups"
 # The root directory where puzzle assets (images, metadata) are stored.
 PUZZLES_ROOT = Path("puzzles")
 
-# The file to store role-based permission assignments.
-PERMISSIONS_FILE = DATA_DIR / "permissions.json"
-
 # --- Puzzle & UI Settings ---
 # A custom emoji to use for puzzle-related messages.
 # Example: "<:aiwpiece:1433314933595967630>"
