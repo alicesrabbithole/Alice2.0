@@ -44,52 +44,57 @@ def backup_data():
 
 
 # --- File System Syncing ---
-
 def sync_from_fs(current_data: Dict[str, Any]) -> Dict[str, Any]:
     """
     Scans the puzzle directory and generates a fresh puzzle/piece structure,
     preserving existing collections and drop channel settings.
     """
     logger.info("Scanning puzzle directory and rebuilding data from file system...")
-    puzzles_data = {}
-    pieces_data = {}
+    puzzles_data: Dict[str, Any] = {}
+    pieces_data: Dict[str, Dict[str, str]] = {}
 
-    puzzle_root = config.PUZZLES_ROOT
+    puzzle_root = config.PUZZLES_ROOT  # e.g., Path("puzzles")
     if not puzzle_root.is_dir():
         logger.error(f"Puzzle root directory not found: {puzzle_root}")
         return current_data
 
     for puzzle_dir in puzzle_root.iterdir():
-        if not puzzle_dir.is_dir(): continue
-        puzzle_key = puzzle_dir.name
+        if not puzzle_dir.is_dir():
+            continue
 
+        puzzle_key = puzzle_dir.name
         display_name = puzzle_key.replace("_", " ").title()
         image_path = puzzle_dir / "puzzle_image.png"
         grid_size = [3, 3]  # Default
 
         meta_file = puzzle_dir / "meta.json"
         if meta_file.exists():
-            with open(meta_file, 'r') as f:
-                meta = json.load(f)
+            try:
+                with open(meta_file, 'r') as f:
+                    meta = json.load(f)
                 display_name = meta.get("display_name", display_name)
 
+                # Support either grid_size or explicit rows/cols, normalize for downstream use
                 grid_size = meta.get("grid_size", grid_size)
-                rows = meta.get("rows", grid_size)
-                cols = meta.get("cols", grid_size)
+                rows = meta.get("rows", grid_size[0] if isinstance(grid_size, list) else 3)
+                cols = meta.get("cols", grid_size[1] if isinstance(grid_size, list) else 3)
+            except Exception:
+                logger.exception(f"Failed reading meta.json for {puzzle_key}; using defaults.")
+                rows, cols = grid_size
 
-                meta["rows"] = rows
-                meta["cols"] = cols
-
+        # Store image_path RELATIVE TO PUZZLES_ROOT so it includes the slug (e.g. "alice_test/puzzle_image.png")
         puzzles_data[puzzle_key] = {
             "display_name": display_name,
             "image_path": str(image_path.relative_to(puzzle_root)).replace('\\', '/'),
-            "grid_size": grid_size
+            "rows": rows if isinstance(rows, int) else grid_size[0],
+            "cols": cols if isinstance(cols, int) else grid_size[1],
         }
 
+        # Collect piece paths RELATIVE TO PUZZLES_ROOT so they include the slug (e.g. "alice_test/pieces/p7.png")
         pieces_dir = puzzle_dir / "pieces"
         if pieces_dir.is_dir():
-            puzzle_pieces = {}
-            for piece_file in pieces_dir.glob("*.png"):
+            puzzle_pieces: Dict[str, str] = {}
+            for piece_file in sorted(pieces_dir.glob("*.png")):
                 stem = piece_file.stem
                 # normalize: "p12" -> "12", "12" -> "12"
                 if stem.startswith("p") and stem[1:].isdigit():
@@ -100,8 +105,12 @@ def sync_from_fs(current_data: Dict[str, Any]) -> Dict[str, Any]:
                 try:
                     piece_id = str(int(piece_id))
                 except ValueError:
-                    pass  # leave as-is if not numeric
-                puzzle_pieces[piece_id] = str(piece_file.relative_to(puzzle_root)).replace('\\', '/')
+                    # allow non-numeric IDs if present
+                    pass
+
+                rel_path = str(piece_file.relative_to(puzzle_root)).replace('\\', '/')
+                puzzle_pieces[piece_id] = rel_path
+
             pieces_data[puzzle_key] = puzzle_pieces
 
     # Preserve existing user collections and drop channel settings
@@ -175,3 +184,4 @@ def wipe_puzzle_from_all(bot_data: Dict[str, Any], puzzle_key: str) -> int:
             if not collections[user_id]:
                 del collections[user_id]
     return wiped_count
+
