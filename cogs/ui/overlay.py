@@ -21,7 +21,8 @@ except IOError:
 
 
 def render_progress_image(bot_data: Dict, puzzle_key: str, collected_piece_ids: List[str]) -> bytes:
-    """Renders a user's puzzle progress and a progress bar into a single image."""
+    logger.info(f"[DEBUG] render_progress_image called for puzzle_key='{puzzle_key}' with collected_piece_ids={collected_piece_ids}")
+
     puzzle_meta = bot_data.get("puzzles", {}).get(puzzle_key)
     piece_map = bot_data.get("pieces", {}).get(puzzle_key)
 
@@ -35,11 +36,9 @@ def render_progress_image(bot_data: Dict, puzzle_key: str, collected_piece_ids: 
     padding = 5
     total_height = img_height + bar_height + (padding * 2)
 
-    # Create the main canvas with Discord's background color
     final_img = Image.new("RGBA", (img_width, total_height), (49, 51, 56, 255))
     draw = ImageDraw.Draw(final_img)
 
-    # --- 1. Always paste base image first ---
     base_image_path = puzzle_meta.get("base_image")
     canvas = Image.new("RGBA", (img_width, img_height), (30, 30, 30, 255))
     if base_image_path:
@@ -55,7 +54,6 @@ def render_progress_image(bot_data: Dict, puzzle_key: str, collected_piece_ids: 
                 logger.exception("Failed to load base image.")
     puzzle_img = canvas
 
-    # --- 2. Paste collected pieces ---
     valid_ids = []
     for pid in collected_piece_ids:
         piece_path = piece_map.get(str(pid))
@@ -78,10 +76,8 @@ def render_progress_image(bot_data: Dict, puzzle_key: str, collected_piece_ids: 
         except Exception:
             logger.exception(f"Failed to paste piece {pid}.")
 
-    # Diagnostic log
     logger.info(f"User progress for {puzzle_key}: collected {len(valid_ids)} pieces -> {valid_ids}")
 
-    # --- 3. Overlay full image if complete ---
     total_pieces = len(piece_map)
     if len(collected_piece_ids) == total_pieces:
         full_image_path = puzzle_meta.get("full_image")
@@ -97,7 +93,6 @@ def render_progress_image(bot_data: Dict, puzzle_key: str, collected_piece_ids: 
 
     final_img.paste(puzzle_img, (0, 0))
 
-    # --- 4. Progress bar ---
     bar_y = img_height + padding
     ratio = len(collected_piece_ids) / total_pieces if total_pieces > 0 else 0
     draw.rectangle(

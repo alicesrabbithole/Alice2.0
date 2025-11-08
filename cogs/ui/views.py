@@ -90,17 +90,24 @@ class PuzzleGalleryView(discord.ui.View):
     async def generate_embed_and_file(self):
         puzzle_key = self.puzzle_keys[self.index]
         logger.info(f"[DEBUG] Generating embed for puzzle {puzzle_key} at index {self.index}")
+
         puzzle_meta = self.bot.data["puzzles"][puzzle_key]
         user_id = str(self.interaction.user.id)
         collected = self.bot.data.get("user_pieces", {}).get(user_id, {}).get(puzzle_key, [])
+
         logger.info(f"[DEBUG] Gallery user_id: {user_id}")
         logger.info(f"[DEBUG] user_pieces for user: {self.bot.data.get('user_pieces', {}).get(user_id, {})}")
         logger.info(f"[DEBUG] puzzle_key: {puzzle_key}")
         logger.info(f"[DEBUG] collected: {collected}")
+        logger.info(f"[DEBUG] puzzle_meta: {puzzle_meta}")
+
         total_pieces = len(self.bot.data["pieces"][puzzle_key])
+        logger.info(f"[DEBUG] total_pieces: {total_pieces}")
 
         # Render overlay with *all* collected pieces so far
         image_bytes = render_progress_image(self.bot.data, puzzle_key, collected)
+        logger.info(f"[DEBUG] image_bytes length: {len(image_bytes) if image_bytes else 'None'}")
+
         filename = f"{puzzle_key}_progress.png"
         file = discord.File(io.BytesIO(image_bytes), filename=filename)
 

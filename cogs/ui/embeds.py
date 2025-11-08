@@ -1,7 +1,15 @@
 import discord
 import io
+import logging
 
 def build_progress_embed(puzzle_meta, collected_piece_ids, total_pieces, image_bytes):
+    logger = logging.getLogger(__name__)
+    logger.info(f"[DEBUG] build_progress_embed called with:")
+    logger.info(f"[DEBUG] puzzle_meta: {puzzle_meta}")
+    logger.info(f"[DEBUG] collected_piece_ids: {collected_piece_ids}")
+    logger.info(f"[DEBUG] total_pieces: {total_pieces}")
+    logger.info(f"[DEBUG] image_bytes length: {len(image_bytes) if image_bytes else 'None'}")
+
     embed = discord.Embed(
         title=f"Progress for {puzzle_meta['display_name']}",
         description=f"Collected {len(collected_piece_ids)} / {total_pieces} pieces",

@@ -37,9 +37,14 @@ class PuzzlesCog(commands.Cog, name="Puzzles"):
         """Shows an interactive gallery of all puzzles the user has pieces for."""
         await ctx.defer(ephemeral=False)
         logger.info(f"[DEBUG] /gallery invoked by {ctx.author} ({ctx.author.id})")
-        user_puzzles = self.bot.data.get("user_pieces", {}).get(str(ctx.author.id), {})
+
+        user_pieces = self.bot.data.get("user_pieces", {})
+        user_puzzles = user_pieces.get(str(ctx.author.id), {})
+        logger.info(f"[DEBUG] user_pieces for {ctx.author.id}: {user_puzzles}")
 
         user_puzzle_keys = [key for key, pieces in user_puzzles.items() if pieces]
+        logger.info(f"[DEBUG] user_puzzles: {user_puzzles}")
+        logger.info(f"[DEBUG] user_puzzle_keys: {user_puzzle_keys}")
 
         if not user_puzzle_keys:
             return await ctx.send("You haven't collected any puzzle pieces yet! Go find some!", ephemeral=True)
@@ -47,6 +52,7 @@ class PuzzlesCog(commands.Cog, name="Puzzles"):
         user_puzzle_keys.sort(key=lambda key: get_puzzle_display_name(self.bot.data, key))
 
         view = PuzzleGalleryView(self.bot, ctx.interaction, user_puzzle_keys)
+        # Cannot log user_id, puzzle_key, collected yet here—they're defined inside the view
         embed, file = await view.generate_embed_and_file()  # generate_embed_and_file now returns 2 items
 
         await ctx.send(embed=embed, file=file, view=view, ephemeral=False)
