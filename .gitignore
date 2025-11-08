@@ -21,7 +21,3 @@ data/*
 
 # ...but DO track the main database file
 !data/collected_pieces.json
-
-
-# Ignore the keep_alive file if it exists
-keep_alive.py
