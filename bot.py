@@ -33,6 +33,9 @@ class AliceBot(commands.Bot):
             help_command=None  # We use our custom help command
         )
         self.data = load_data()
+        logger.info(f"[DEBUG] Loaded data keys: {list(self.data.keys())}")
+        logger.info(
+            f"[DEBUG] Sample user_pieces[1077240270791397388]: {self.data.get('user_pieces', {}).get('1077240270791397388', {})}")
         self.initial_extensions = [
             "cogs.admin_cog",
             "cogs.alice_help_cog",

@@ -4,18 +4,15 @@ from discord.ext import commands
 
 import config
 
-
 def setup_logging():
-    """Sets up the root logger for the bot."""
-    logging.basicConfig(
-        level=logging.INFO,
-        format='%(asctime)s [%(levelname)-8s] %(name)-20s: %(message)s',
-        datefmt='%Y-%m-%d %H:%M:%S'
-    )
+    """Configure logging for the bot.
+    This should only set specific log levels for discord internals,
+    since the root logger is set up in main.py.
+    """
+    # Do NOT call logging.basicConfig() here; it's already set up in main.py.
     # Suppress overly verbose logs from discord.py's HTTP and gateway layers
     logging.getLogger('discord.http').setLevel(logging.WARNING)
     logging.getLogger('discord.gateway').setLevel(logging.WARNING)
-
 
 async def log(bot: commands.Bot, message: str, embed: discord.Embed = None):
     """Sends a message or embed to the hard-coded log channel."""
