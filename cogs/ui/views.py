@@ -93,6 +93,10 @@ class PuzzleGalleryView(discord.ui.View):
         puzzle_meta = self.bot.data["puzzles"][puzzle_key]
         user_id = str(self.interaction.user.id)
         collected = self.bot.data.get("user_pieces", {}).get(user_id, {}).get(puzzle_key, [])
+        logger.info(f"[DEBUG] Gallery user_id: {user_id}")
+        logger.info(f"[DEBUG] user_pieces for user: {self.bot.data.get('user_pieces', {}).get(user_id, {})}")
+        logger.info(f"[DEBUG] puzzle_key: {puzzle_key}")
+        logger.info(f"[DEBUG] collected: {collected}")
         total_pieces = len(self.bot.data["pieces"][puzzle_key])
 
         # Render overlay with *all* collected pieces so far
