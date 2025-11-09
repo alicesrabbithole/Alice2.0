@@ -21,6 +21,7 @@ from utils.theme import Colors
 
 logger = logging.getLogger(__name__)
 
+
 class PuzzleDropsCog(commands.Cog, name="Puzzle Drops"):
     """Manages the automatic and manual dropping of puzzle pieces."""
 
@@ -38,7 +39,7 @@ class PuzzleDropsCog(commands.Cog, name="Puzzle Drops"):
     async def puzzle_autocomplete(
         self, interaction: discord.Interaction, current: str
     ) -> List[app_commands.Choice[str]]:
-        """Autocomplete for puzzle names."""
+        """Autocomplete for puzzle names, now safely using self.bot.data."""
         choices = []
         try:
             puzzles = self.bot.data.get("puzzles")
@@ -100,11 +101,7 @@ class PuzzleDropsCog(commands.Cog, name="Puzzle Drops"):
         raw_cfg = self.bot.data.get("drop_channels", {}).get(str(channel.id), {})
         claims_range = raw_cfg.get("claims_range", [1, 3])
         claim_limit = random.randint(claims_range[0], claims_range[1])
-
-        # get user_pieces dict from bot.data for this drop
-        user_pieces = self.bot.data.get("user_pieces", {})
-
-        view = DropView(self.bot, puzzle_key, display_name, piece_id, claim_limit, user_pieces)
+        view = DropView(self.bot, puzzle_key, display_name, piece_id, claim_limit)
 
         try:
             message = await channel.send(embed=embed, file=file, view=view)
@@ -275,6 +272,7 @@ class PuzzleDropsCog(commands.Cog, name="Puzzle Drops"):
                 inline=False
             )
         await ctx.send(embed=embed, ephemeral=True)
+
 
 # --- Cog entry point ---
 async def setup(bot: commands.Bot):
