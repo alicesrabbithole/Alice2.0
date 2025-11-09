@@ -20,7 +20,6 @@ class DropView(discord.ui.View):
         self.puzzle_key = puzzle_key
         self.puzzle_display_name = puzzle_display_name
         self.piece_id = piece_id
-        self.user_pieces = user_pieces # store user collected pieces here
         self.claim_limit = claim_limit
         self.claimants: List[discord.User] = []
         self.post_summary = False
