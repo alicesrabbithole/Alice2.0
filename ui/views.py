@@ -22,6 +22,7 @@ class DropView(discord.ui.View):
         self.piece_id = piece_id
         self.claim_limit = claim_limit
         self.claimants: List[discord.User] = []
+        self.post_summary = False
         self.message: Optional[discord.Message] = None
 
         # Set emoji for the button
@@ -37,14 +38,15 @@ class DropView(discord.ui.View):
         return discord.PartialEmoji(name=config.DEFAULT_EMOJI)
 
     async def on_timeout(self):
-        self.collect_button.disabled = True
-        self.collect_button.label = "Drop Expired"
+        # Remove the button from the view on timeout
+        self.remove_item(self.collect_button)
         if self.message:
             try:
                 await self.message.edit(view=self)
             except discord.NotFound:
                 pass  # Message was deleted, nothing to do
         await self.post_summary()
+        self.stop()
 
     async def post_summary(self):
         """Posts a summary of who collected the piece after the drop ends."""
