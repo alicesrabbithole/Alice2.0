@@ -15,7 +15,7 @@ class DropView(discord.ui.View):
     """The view for a puzzle piece drop, containing the 'Collect' button."""
 
     def __init__(self, bot, puzzle_key: str, puzzle_display_name: str, piece_id: str, claim_limit: int):
-        super().__init__(timeout=300.0)
+        super().__init__(timeout=30.0)
         self.bot = bot
         self.puzzle_key = puzzle_key
         self.puzzle_display_name = puzzle_display_name
