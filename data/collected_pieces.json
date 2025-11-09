@@ -2,8 +2,8 @@
     "puzzles": {
         "alice_test": {
 "display_name": "Alice Test",
-"base_image": "puzzles/alice_test/alice_test_base.png",
-"full_image": "puzzles/alice_test/alice_test_full.png",
+"base_image": "alice_test/alice_test_base.png",
+"full_image": "alice_test/alice_test_full.png",
             "rows": 5,
             "cols": 5
         }

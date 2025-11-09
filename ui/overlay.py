@@ -30,52 +30,50 @@ def render_progress_image(bot_data: Dict, puzzle_key: str, collected_piece_ids: 
     padding = 5
     total_height = img_height + bar_height + (padding * 2)
 
-    # Create the main canvas with Discord's background color
-    final_img = Image.new("RGBA", (img_width, total_height), (49, 51, 56, 255))
-    draw = ImageDraw.Draw(final_img)
-
     # --- Draw the Puzzle Image ---
     base_image_path = puzzle_meta.get("base_image")
-    try:
-        base_full_path = config.PUZZLES_ROOT / base_image_path if base_image_path else None
-        if base_full_path and base_full_path.exists():
-            puzzle_img = Image.open(base_full_path).convert("RGBA").resize((img_width, img_height), Image.Resampling.LANCZOS)
-        else:
-            puzzle_img = Image.new("RGBA", (img_width, img_height), (30, 30, 30, 255))
-    except Exception:
+    base_full_path = config.PUZZLES_ROOT / base_image_path if base_image_path else None
+    logger.info(f"Trying to open base image at: {base_full_path}")
+
+    if base_full_path and base_full_path.exists():
+        puzzle_img = Image.open(base_full_path).convert("RGBA").resize((img_width, img_height), Image.Resampling.LANCZOS)
+        logger.info(f"Loaded base image: {base_full_path}")
+    else:
+        logger.error(f"Base image not found at: {base_full_path}")
         puzzle_img = Image.new("RGBA", (img_width, img_height), (30, 30, 30, 255))
-        logger.exception("Failed to load base puzzle image.")
 
     # Paste collected pieces onto the base image
-    for piece_id in collected_piece_ids:
-        piece_path = piece_map.get(str(piece_id))
-        try:
-            piece_full_path = config.PUZZLES_ROOT / piece_path if piece_path else None
-            if piece_full_path and piece_full_path.exists():
+    # Ensure they are sorted by piece_id integer for grid order
+    numeric_piece_ids = [int(pid) for pid in collected_piece_ids if str(pid).isdigit()]
+    sorted_piece_ids = [str(pid) for pid in sorted(numeric_piece_ids)]
+    for idx, piece_id in enumerate(sorted_piece_ids):
+        piece_path = piece_map.get(piece_id)
+        piece_full_path = config.PUZZLES_ROOT / piece_path if piece_path else None
+        logger.info(f"Trying to paste piece {piece_id} from {piece_full_path}")
+        if piece_full_path and piece_full_path.exists():
+            try:
                 with Image.open(piece_full_path).convert("RGBA") as piece_img:
                     piece_img = piece_img.resize((tile_size, tile_size), Image.Resampling.LANCZOS)
-                    # Correct grid placement even if ids are non-sequential
-                    idx = list(piece_map.keys()).index(str(piece_id))
                     r, c = divmod(idx, cols)
                     puzzle_img.paste(piece_img, (c * tile_size, r * tile_size), piece_img)
-        except Exception:
-            logger.exception(f"Failed to process piece {piece_id} for puzzle {puzzle_key}.")
+            except Exception as ex:
+                logger.exception(f"Failed to process piece {piece_id} for puzzle {puzzle_key}: {ex}")
+        else:
+            logger.error(f"Missing piece image file: {piece_full_path}")
 
     # If the puzzle is complete, overlay the full image for better quality
     total_pieces = len(piece_map)
     is_complete = len(collected_piece_ids) == total_pieces
     if is_complete:
         full_path = puzzle_meta.get("full_image")
-        try:
-            full_full_path = config.PUZZLES_ROOT / full_path if full_path else None
-            if full_full_path and full_full_path.exists():
-                full_img = Image.open(full_full_path).convert("RGBA").resize((img_width, img_height), Image.Resampling.LANCZOS)
-                puzzle_img = full_img
-        except Exception:
-            logger.exception("Failed to load full puzzle image on completion.")
+        full_full_path = config.PUZZLES_ROOT / full_path if full_path else None
+        if full_full_path and full_full_path.exists():
+            full_img = Image.open(full_full_path).convert("RGBA").resize((img_width, img_height), Image.Resampling.LANCZOS)
+            puzzle_img = full_img
 
-    # Paste the final puzzle grid onto the main canvas
+    final_img = Image.new("RGBA", (img_width, total_height), (49, 51, 56, 255))
     final_img.paste(puzzle_img, (0, 0))
+    draw = ImageDraw.Draw(final_img)
 
     # --- Draw the Progress Bar ---
     bar_y = img_height + padding
@@ -93,7 +91,6 @@ def render_progress_image(bot_data: Dict, puzzle_key: str, collected_piece_ids: 
     text_w, text_h = text_bbox[2] - text_bbox[0], text_bbox[3] - text_bbox[1]
     draw.text(((img_width - text_w) / 2, bar_y + (bar_height - text_h) / 2), progress_text, font=FONT_SMALL, fill=(255, 255, 255))
 
-    # Save the final image to a buffer
     buffer = io.BytesIO()
     final_img.save(buffer, "PNG")
     buffer.seek(0)
