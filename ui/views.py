@@ -15,7 +15,7 @@ class DropView(discord.ui.View):
     """The view for a puzzle piece drop, containing the 'Collect' button."""
 
     def __init__(self, bot, puzzle_key: str, puzzle_display_name: str, piece_id: str, claim_limit: int):
-        super().__init__(timeout=300.0)
+        super().__init__(timeout=30.0)
         self.bot = bot
         self.puzzle_key = puzzle_key
         self.puzzle_display_name = puzzle_display_name
@@ -36,15 +36,46 @@ class DropView(discord.ui.View):
                 logger.warning(f"Could not parse custom emoji: {config.CUSTOM_EMOJI_STRING}. Falling back to default.")
         return discord.PartialEmoji(name=config.DEFAULT_EMOJI)
 
+    @discord.ui.button(label="Collect", style=discord.ButtonStyle.primary, custom_id="collect_button")
+    async def collect_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        """Triggered when a user claims the puzzle piece."""
+        # Prevent double-claim
+        if interaction.user in self.claimants:
+            await interaction.response.send_message("You already collected this piece!", ephemeral=True)
+            return
+        # Enforce claim limit
+        if len(self.claimants) >= self.claim_limit:
+            self.remove_item(button)  # Remove button after max claims
+            await interaction.response.send_message("This drop was already fully claimed!", ephemeral=True)
+            if self.message:
+                await self.message.edit(view=self)
+            await self.post_summary()
+            self.stop()
+            return
+
+        # Add claimant and notify
+        self.claimants.append(interaction.user)
+        await interaction.response.send_message(
+            f"You’ve collected piece `{self.piece_id}` of **{self.puzzle_display_name}**!", ephemeral=True)
+
+        # If claim limit reached, immediately end the drop and remove button
+        if len(self.claimants) >= self.claim_limit:
+            self.remove_item(button)
+            if self.message:
+                await self.message.edit(view=self)
+            await self.post_summary()
+            self.stop()
+
     async def on_timeout(self):
-        self.collect_button.disabled = True
-        self.collect_button.label = "Drop Expired"
+        # Remove the button after timeout
+        self.remove_item(self.collect_button)
         if self.message:
             try:
                 await self.message.edit(view=self)
             except discord.NotFound:
                 pass  # Message was deleted, nothing to do
         await self.post_summary()
+        self.stop()
 
     async def post_summary(self):
         """Posts a summary of who collected the piece after the drop ends."""
@@ -60,30 +91,11 @@ class DropView(discord.ui.View):
         except discord.HTTPException:
             pass
 
-    @discord.ui.button(label="Collect Piece", style=discord.ButtonStyle.primary)
-    async def collect_button(self, interaction: Interaction, button: discord.ui.Button):
-        if not add_piece_to_user(self.bot.data, interaction.user.id, self.puzzle_key, self.piece_id):
-            return await interaction.response.send_message("You already have this piece!", ephemeral=True)
-
-        save_data(self.bot.data)
-        self.claimants.append(interaction.user)
-        await interaction.response.send_message(
-            f"✅ You collected Piece `{self.piece_id}` for the **{self.puzzle_display_name}** puzzle!", ephemeral=True)
-
-        if len(self.claimants) >= self.claim_limit:
-            button.disabled = True
-            button.label = "Drop Fully Claimed"
-            if self.message:
-                await self.message.edit(view=self)
-            await self.post_summary()
-            self.stop()
-
-
 class PuzzleGalleryView(discord.ui.View):
     """A paginated view for browsing a user's collected puzzles."""
 
     def __init__(self, bot, interaction: Interaction, user_puzzle_keys: list[str]):
-        super().__init__(timeout=180.0)
+        super().__init__(timeout=300.0)
         self.bot = bot
         self.interaction = interaction
         self.user_puzzle_keys = user_puzzle_keys

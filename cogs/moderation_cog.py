@@ -77,9 +77,9 @@ class ModerationCog(commands.Cog, name="Moderation"):
 
         try:
             await member.add_roles(role, reason=f"Role added by {ctx.author}")
-            await ctx.send(f"{Emojis.SUCCESS} Added {role.mention} to {member.mention}.", ephemeral=True)
+            await ctx.send(f"{Emojis.SUCCESS} Added {role.mention} to {member.mention}.", ephemeral=False)
         except discord.Forbidden:
-            await ctx.send(f"{Emojis.FAILURE} Tell Alice to fix my permissions.", ephemeral=True)
+            await ctx.send(f"{Emojis.FAILURE} Tell Alice to fix my permissions.", ephemeral=False)
 
     @commands.hybrid_command(name="removerole", description="Remove a role from a member.")
     @commands.guild_only()
@@ -95,9 +95,9 @@ class ModerationCog(commands.Cog, name="Moderation"):
 
         try:
             await member.remove_roles(role, reason=f"Role removed by {ctx.author}")
-            await ctx.send(f"{Emojis.SUCCESS} Removed {role.mention} from {member.mention}.", ephemeral=True)
+            await ctx.send(f"{Emojis.SUCCESS} Removed {role.mention} from {member.mention}.", ephemeral=False)
         except discord.Forbidden:
-            await ctx.send(f"{Emojis.FAILURE} Tell Alice to fix my permissions.", ephemeral=True)
+            await ctx.send(f"{Emojis.FAILURE} Tell Alice to fix my permissions.", ephemeral=False)
 
 
 async def setup(bot: commands.Bot):

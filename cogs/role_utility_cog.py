@@ -20,7 +20,7 @@ class RoleUtilityCog(commands.Cog, name="Role Utilities"):
     @is_staff()
     async def roles(self, ctx: commands.Context):
         """Lists all roles in the server, split into categories."""
-        await ctx.defer(ephemeral=True)
+        await ctx.defer(ephemeral=False)
         # Exclude @everyone role
         all_roles = sorted(ctx.guild.roles[1:], key=lambda r: r.position, reverse=True)
 

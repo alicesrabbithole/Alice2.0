@@ -241,6 +241,33 @@ class PuzzleDropsCog(commands.Cog, name="Puzzle Drops"):
             f"🔧 Drop channel configured for **{display_name}** in `#{channel.name}` by `{ctx.author}`."
         )
 
+    @commands.command(name="remove_drop_channel")
+    async def remove_drop_channel(self, ctx, channel: discord.TextChannel):
+        data = ...  # Load from JSON or DB
+        removed = data["drop_channels"].pop(str(channel.id), None)
+        if removed:
+            # Save updated data
+            await ctx.send(f"Removed drop from {channel.mention}.")
+        else:
+            await ctx.send(f"{channel.mention} wasn’t set up for drops.")
+        # Save back to JSON
+
+    @commands.command(name="list_drop_settings")
+    async def list_drop_settings(self, ctx):
+        data = ...  # Load from JSON or DB
+        if not data["drop_channels"]:
+            await ctx.send("No drop channels configured.")
+            return
+        embed = discord.Embed(title="Active Drop Channels")
+        for cid, info in data["drop_channels"].items():
+            chan = ctx.guild.get_channel(int(cid))
+            channel_name = chan.mention if chan else f"ID {cid}"
+            embed.add_field(
+                name=channel_name,
+                value=f"Puzzle: {info.get('puzzle')}\nMode: {info.get('mode')}\nValue: {info.get('value')}\nNext Trigger: {info.get('next_trigger')}",
+                inline=False
+            )
+        await ctx.send(embed=embed)
 
 # --- Cog entry point ---
 async def setup(bot: commands.Bot):
