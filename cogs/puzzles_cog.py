@@ -2,7 +2,7 @@ import discord
 from discord.ext import commands
 from discord import app_commands
 import logging
-from typing import List, Optional
+from typing import List
 
 from utils.db_utils import resolve_puzzle_key, get_puzzle_display_name
 from ui.views import PuzzleGalleryView
