@@ -38,8 +38,13 @@ class DropView(discord.ui.View):
 
     @discord.ui.button(label="Collect", style=discord.ButtonStyle.primary, custom_id="collect_button")
     async def collect_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        """Triggered when a user claims the puzzle piece."""
-        # Prevent double-claim
+        user_id = str(interaction.user.id)
+        # Access your user_pieces mapping (however you load it)
+        user_pieces = ...  # load from DB or pass it to the View in __init__
+        owned_pieces = user_pieces.get(user_id, {}).get(self.puzzle_key, [])
+        if self.piece_id in owned_pieces:
+            await interaction.response.send_message("You already own this piece!", ephemeral=True)
+            return
         if interaction.user in self.claimants:
             await interaction.response.send_message("You already collected this piece!", ephemeral=True)
             return
