@@ -22,8 +22,8 @@ class DropView(discord.ui.View):
         self.piece_id = piece_id
         self.claim_limit = claim_limit
         self.claimants: List[discord.User] = []
-        self.post_summary = False
         self.message: Optional[discord.Message] = None
+        self.summary_sent = False # Only allows posting once
 
         # Set emoji for the button
         self.collect_button.emoji = self._get_partial_emoji()
@@ -44,15 +44,9 @@ class DropView(discord.ui.View):
             try:
                 await self.message.edit(view=self)
             except discord.NotFound:
-                pass  # Message was deleted, nothing to do
-        await self.post_summary()
-        self.stop()
-
-    async def post_summary(self):
-        if self.summary_posted:
-            return  # Already sent!
-        self.summary_posted = True
-        # ...the rest of your posting logic...
+                pass
+            await self.post_summary()
+            self.stop()
 
     @discord.ui.button(label="Collect Piece", style=discord.ButtonStyle.primary)
     async def collect_button(self, interaction: Interaction, button: discord.ui.Button):
@@ -70,6 +64,24 @@ class DropView(discord.ui.View):
                 await self.message.edit(view=self)
             await self.post_summary()
             self.stop()
+
+    async def post_summary(self):
+        """Posts a summary of who collected the piece after the drop ends."""
+        if self.summary_sent:
+            return  # Only send summary once
+        self.summary_sent = True
+
+        if not self.message:
+            return
+        if not self.claimants:
+            summary = f"The drop for the **{self.puzzle_display_name}** puzzle (Piece `{self.piece_id}`) timed out with no collectors."
+        else:
+            mentions = ', '.join(u.mention for u in self.claimants)
+            summary = f"Piece `{self.piece_id}` of the **{self.puzzle_display_name}** puzzle was collected by: {mentions}"
+        try:
+            await self.message.channel.send(summary, allowed_mentions=discord.AllowedMentions.none())
+        except discord.HTTPException:
+            pass
 
 class PuzzleGalleryView(discord.ui.View):
     """A paginated view for browsing a user's collected puzzles."""
