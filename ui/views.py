@@ -22,7 +22,6 @@ class DropView(discord.ui.View):
         self.piece_id = piece_id
         self.claim_limit = claim_limit
         self.claimants: List[discord.User] = []
-        self.post_summary = False
         self.message: Optional[discord.Message] = None
 
         # Set emoji for the button
@@ -50,17 +49,9 @@ class DropView(discord.ui.View):
 
     async def post_summary(self):
         """Posts a summary of who collected the piece after the drop ends."""
-        if not self.message:
+        if self.summary_posted:
             return
-        if not self.claimants:
-            summary = f"The drop for the **{self.puzzle_display_name}** puzzle (Piece `{self.piece_id}`) timed out with no collectors."
-        else:
-            mentions = ', '.join(u.mention for u in self.claimants)
-            summary = f"Piece `{self.piece_id}` of the **{self.puzzle_display_name}** puzzle was collected by: {mentions}"
-        try:
-            await self.message.channel.send(summary, allowed_mentions=discord.AllowedMentions.none())
-        except discord.HTTPException:
-            pass
+        self.summary_posted = True
 
     @discord.ui.button(label="Collect Piece", style=discord.ButtonStyle.primary)
     async def collect_button(self, interaction: Interaction, button: discord.ui.Button):
