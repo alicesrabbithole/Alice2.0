@@ -81,7 +81,7 @@ class PuzzleGalleryView(discord.ui.View):
     """A paginated view for browsing a user's collected puzzles."""
 
     def __init__(self, bot, interaction: Interaction, user_puzzle_keys: list[str]):
-        super().__init__(timeout=180.0)
+        super().__init__(timeout=300.0)
         self.bot = bot
         self.interaction = interaction
         self.user_puzzle_keys = user_puzzle_keys
