@@ -21,7 +21,6 @@ from utils.theme import Colors
 
 logger = logging.getLogger(__name__)
 
-
 class PuzzleDropsCog(commands.Cog, name="Puzzle Drops"):
     """Manages the automatic and manual dropping of puzzle pieces."""
 
@@ -39,7 +38,7 @@ class PuzzleDropsCog(commands.Cog, name="Puzzle Drops"):
     async def puzzle_autocomplete(
         self, interaction: discord.Interaction, current: str
     ) -> List[app_commands.Choice[str]]:
-        """Autocomplete for puzzle names, now safely using self.bot.data."""
+        """Autocomplete for puzzle names."""
         choices = []
         try:
             puzzles = self.bot.data.get("puzzles")
@@ -101,7 +100,11 @@ class PuzzleDropsCog(commands.Cog, name="Puzzle Drops"):
         raw_cfg = self.bot.data.get("drop_channels", {}).get(str(channel.id), {})
         claims_range = raw_cfg.get("claims_range", [1, 3])
         claim_limit = random.randint(claims_range[0], claims_range[1])
-        view = DropView(self.bot, puzzle_key, display_name, piece_id, claim_limit)
+
+        # get user_pieces dict from bot.data for this drop
+        user_pieces = self.bot.data.get("user_pieces", {})
+
+        view = DropView(self.bot, puzzle_key, display_name, piece_id, claim_limit, user_pieces)
 
         try:
             message = await channel.send(embed=embed, file=file, view=view)
@@ -241,25 +244,29 @@ class PuzzleDropsCog(commands.Cog, name="Puzzle Drops"):
             f"🔧 Drop channel configured for **{display_name}** in `#{channel.name}` by `{ctx.author}`."
         )
 
-    @commands.command(name="remove_drop_channel")
-    async def remove_drop_channel(self, ctx, channel: discord.TextChannel):
-        data = ...  # Load from JSON or DB
-        removed = data["drop_channels"].pop(str(channel.id), None)
+    @commands.hybrid_command(name="remove_drop_channel", description="Remove a channel from the drop list.")
+    @is_admin()
+    async def remove_drop_channel(self, ctx: commands.Context, channel: discord.TextChannel):
+        """Remove a channel from drop channels."""
+        data = self.bot.data
+        removed = data.setdefault("drop_channels", {}).pop(str(channel.id), None)
+        save_data(self.bot.data)
         if removed:
-            # Save updated data
-            await ctx.send(f"Removed drop from {channel.mention}.")
+            await ctx.send(f"✅ Removed drop from {channel.mention}.", ephemeral=True)
         else:
-            await ctx.send(f"{channel.mention} wasn’t set up for drops.")
-        # Save back to JSON
+            await ctx.send(f"❌ {channel.mention} wasn’t set up for drops.", ephemeral=True)
 
-    @commands.command(name="list_drop_settings")
-    async def list_drop_settings(self, ctx):
-        data = ...  # Load from JSON or DB
-        if not data["drop_channels"]:
-            await ctx.send("No drop channels configured.")
+    @commands.hybrid_command(name="list_drop_settings", description="List all current drop channel settings.")
+    @is_admin()
+    async def list_drop_settings(self, ctx: commands.Context):
+        """List all current drop channel settings."""
+        data = self.bot.data
+        drop_channels = data.get("drop_channels", {})
+        if not drop_channels:
+            await ctx.send("No drop channels configured.", ephemeral=True)
             return
         embed = discord.Embed(title="Active Drop Channels")
-        for cid, info in data["drop_channels"].items():
+        for cid, info in drop_channels.items():
             chan = ctx.guild.get_channel(int(cid))
             channel_name = chan.mention if chan else f"ID {cid}"
             embed.add_field(
@@ -267,7 +274,7 @@ class PuzzleDropsCog(commands.Cog, name="Puzzle Drops"):
                 value=f"Puzzle: {info.get('puzzle')}\nMode: {info.get('mode')}\nValue: {info.get('value')}\nNext Trigger: {info.get('next_trigger')}",
                 inline=False
             )
-        await ctx.send(embed=embed)
+        await ctx.send(embed=embed, ephemeral=True)
 
 # --- Cog entry point ---
 async def setup(bot: commands.Bot):
