@@ -14,18 +14,16 @@ logger = logging.getLogger(__name__)
 class DropView(discord.ui.View):
     """The view for a puzzle piece drop, containing the 'Collect' button."""
 
-    def __init__(self, bot, puzzle_key: str, puzzle_display_name: str, piece_id: str, claim_limit: int):
+    def __init__(self, bot, puzzle_key: str, puzzle_display_name: str, piece_id: str, claim_limit: int, user_pieces: dict):
         super().__init__(timeout=30.0)
         self.bot = bot
         self.puzzle_key = puzzle_key
         self.puzzle_display_name = puzzle_display_name
         self.piece_id = piece_id
         self.claim_limit = claim_limit
+        self.user_pieces = user_pieces  # <--- store actual mapping here!
         self.claimants: List[discord.User] = []
         self.message: Optional[discord.Message] = None
-
-        # Set emoji for the button
-        self.collect_button.emoji = self._get_partial_emoji()
 
     def _get_partial_emoji(self) -> discord.PartialEmoji:
         """Safely parses the custom emoji string."""
@@ -36,21 +34,22 @@ class DropView(discord.ui.View):
                 logger.warning(f"Could not parse custom emoji: {config.CUSTOM_EMOJI_STRING}. Falling back to default.")
         return discord.PartialEmoji(name=config.DEFAULT_EMOJI)
 
-    @discord.ui.button(label="Collect", style=discord.ButtonStyle.primary, custom_id="collect_button")
+    @discord.ui.button(label="Collect", style=discord.ButtonStyle.primary, custom_id="collect_button",
+                       emoji=config.CUSTOM_EMOJI_STRING or config.DEFAULT_EMOJI)
     async def collect_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         user_id = str(interaction.user.id)
-        # Access your user_pieces mapping (however you load it)
-        user_pieces = ...  # load from DB or pass it to the View in __init__
-        owned_pieces = user_pieces.get(user_id, {}).get(self.puzzle_key, [])
+        owned_pieces = self.user_pieces.get(user_id, {}).get(self.puzzle_key, [])
+
         if self.piece_id in owned_pieces:
             await interaction.response.send_message("You already own this piece!", ephemeral=True)
             return
+
         if interaction.user in self.claimants:
-            await interaction.response.send_message("You already collected this piece!", ephemeral=True)
+            await interaction.response.send_message("You already collected this piece during this drop!", ephemeral=True)
             return
-        # Enforce claim limit
+
         if len(self.claimants) >= self.claim_limit:
-            self.remove_item(button)  # Remove button after max claims
+            self.remove_item(button)
             await interaction.response.send_message("This drop was already fully claimed!", ephemeral=True)
             if self.message:
                 await self.message.edit(view=self)
@@ -58,12 +57,14 @@ class DropView(discord.ui.View):
             self.stop()
             return
 
-        # Add claimant and notify
+        # Mark the claim
         self.claimants.append(interaction.user)
         await interaction.response.send_message(
-            f"You’ve collected piece `{self.piece_id}` of **{self.puzzle_display_name}**!", ephemeral=True)
+            f"You’ve collected piece `{self.piece_id}` of **{self.puzzle_display_name}**!",
+            ephemeral=True
+        )
 
-        # If claim limit reached, immediately end the drop and remove button
+        # If claim limit reached, remove button & post summary immediately
         if len(self.claimants) >= self.claim_limit:
             self.remove_item(button)
             if self.message:
