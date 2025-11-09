@@ -5,7 +5,6 @@ import logging
 from typing import List, Optional
 
 from utils.db_utils import resolve_puzzle_key, get_puzzle_display_name
-from ui.overlay import render_progress_image
 from ui.views import PuzzleGalleryView
 from utils.theme import Emojis, Colors
 
