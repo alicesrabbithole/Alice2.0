@@ -1,12 +1,9 @@
 import discord
 import io
 import logging
-from utils.db_utils import get_user_pieces  # Correct import
+from utils.db_utils import get_user_pieces
 
-def build_progress_embed(
-        puzzle_meta, bot_data, user_id, puzzle_key,
-        total_pieces, image_bytes
-    ):
+def build_progress_embed(puzzle_meta, bot_data, user_id, puzzle_key, total_pieces, image_bytes):
     logger = logging.getLogger(__name__)
     logger.info("[DEBUG] build_progress_embed called with:")
     logger.info(f"[DEBUG] puzzle_meta: {puzzle_meta}")
@@ -17,9 +14,15 @@ def build_progress_embed(
     user_pieces = get_user_pieces(bot_data, user_id, puzzle_key)
     logger.info(f"[DEBUG] user_pieces: {user_pieces}")
 
+    description = (
+        f"🎉 Completed! {total_pieces} / {total_pieces} pieces collected"
+        if len(user_pieces) == total_pieces else
+        f"Collected {len(user_pieces)} / {total_pieces} pieces"
+    )
+
     embed = discord.Embed(
         title=f"Progress for {puzzle_meta['display_name']}",
-        description=f"Collected {len(user_pieces)} / {total_pieces} pieces",
+        description=description,
         color=discord.Color.blurple()
     )
 

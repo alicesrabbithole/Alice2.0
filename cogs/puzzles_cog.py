@@ -2,7 +2,7 @@ import discord
 from discord.ext import commands
 from discord import app_commands
 import logging
-from typing import List
+from typing import List, Optional
 
 from utils.db_utils import resolve_puzzle_key, get_puzzle_display_name
 from ui.overlay import render_progress_image
@@ -11,25 +11,20 @@ from utils.theme import Emojis, Colors
 
 logger = logging.getLogger(__name__)
 
-
 class PuzzlesCog(commands.Cog, name="Puzzles"):
     """Commands for viewing puzzle progress and leaderboards."""
 
     def __init__(self, bot: commands.Bot):
         self.bot = bot
 
-    async def puzzle_autocomplete(self, interaction: discord.Interaction, current: str) -> List[
-        app_commands.Choice[str]]:
+    async def puzzle_autocomplete(self, interaction: discord.Interaction, current: str) -> List[app_commands.Choice[str]]:
         """Autocomplete for puzzle names, showing the display name."""
         puzzles = self.bot.data.get("puzzles", {})
-        choices = []
-        for slug, meta in puzzles.items():
-            # --- THIS IS THE FIX FOR AUTOCOMPLETE ---
-            # Use the display_name for the user-facing name, and the slug for the internal value.
-            display_name = meta.get("display_name", slug)
-            if current.lower() in slug.lower() or current.lower() in display_name.lower():
-                choices.append(app_commands.Choice(name=display_name, value=slug))
-            # --- End of fix ---
+        choices = [
+            app_commands.Choice(name=meta.get("display_name", slug), value=slug)
+            for slug, meta in puzzles.items()
+            if current.lower() in slug.lower() or current.lower() in meta.get("display_name", slug).lower()
+        ]
         return choices[:25]
 
     @commands.hybrid_command(name="gallery", description="Browse through all the puzzles you have started.")
@@ -40,20 +35,15 @@ class PuzzlesCog(commands.Cog, name="Puzzles"):
 
         user_pieces = self.bot.data.get("user_pieces", {})
         user_puzzles = user_pieces.get(str(ctx.author.id), {})
-        logger.info(f"[DEBUG] user_pieces for {ctx.author.id}: {user_puzzles}")
 
         user_puzzle_keys = [key for key, pieces in user_puzzles.items() if pieces]
-        logger.info(f"[DEBUG] user_puzzles: {user_puzzles}")
-        logger.info(f"[DEBUG] user_puzzle_keys: {user_puzzle_keys}")
+        user_puzzle_keys.sort(key=lambda key: get_puzzle_display_name(self.bot.data, key))
 
         if not user_puzzle_keys:
             return await ctx.send("You haven't collected any puzzle pieces yet! Go find some!", ephemeral=True)
 
-        user_puzzle_keys.sort(key=lambda key: get_puzzle_display_name(self.bot.data, key))
-
         view = PuzzleGalleryView(self.bot, ctx.interaction, user_puzzle_keys)
-        # Cannot log user_id, puzzle_key, collected yet here—they're defined inside the view
-        embed, file = await view.generate_embed_and_file()  # generate_embed_and_file now returns 2 items
+        embed, file = await view.generate_embed_and_file()
 
         await ctx.send(embed=embed, file=file, view=view, ephemeral=False)
 
@@ -67,13 +57,11 @@ class PuzzlesCog(commands.Cog, name="Puzzles"):
             return await ctx.send(f"{Emojis.FAILURE} Puzzle not found: `{puzzle_name}`", ephemeral=True)
 
         all_user_pieces = self.bot.data.get("user_pieces", {})
-        leaderboard_data = []
-        for user_id, user_puzzles in all_user_pieces.items():
-            if puzzle_key in user_puzzles:
-                piece_count = len(user_puzzles[puzzle_key])
-                if piece_count > 0:
-                    leaderboard_data.append((int(user_id), piece_count))
-
+        leaderboard_data = [
+            (int(user_id), len(user_puzzles[puzzle_key]))
+            for user_id, user_puzzles in all_user_pieces.items()
+            if puzzle_key in user_puzzles and len(user_puzzles[puzzle_key]) > 0
+        ]
         leaderboard_data.sort(key=lambda x: (-x[1], x[0]))
 
         display_name = get_puzzle_display_name(self.bot.data, puzzle_key)
@@ -84,14 +72,12 @@ class PuzzlesCog(commands.Cog, name="Puzzles"):
         else:
             lines = []
             for i, (user_id, count) in enumerate(leaderboard_data[:20], start=1):
-                user = await self.bot.fetch_user(user_id) if self.bot.get_user(user_id) is None else self.bot.get_user(
-                    user_id)
+                user = self.bot.get_user(user_id) or await self.bot.fetch_user(user_id)
                 user_mention = user.mention if user else f"User (`{user_id}`)"
                 lines.append(f"**{i}.** {user_mention} - `{count}` pieces")
             embed.description = "\n".join(lines)
 
         await ctx.send(embed=embed, ephemeral=False)
-
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(PuzzlesCog(bot))
