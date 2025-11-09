@@ -48,6 +48,7 @@ def get_user_pieces(bot_data, user_id, puzzle_key):
     user_id_str = str(user_id)  # in case we get an int
     return bot_data.get("user_pieces", {}).get(user_id_str, {}).get(puzzle_key, [])
 
+
 # --- File System Syncing ---
 def sync_from_fs(current_data: Dict[str, Any]) -> Dict[str, Any]:
     """
