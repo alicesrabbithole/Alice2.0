@@ -20,8 +20,10 @@ class DropView(discord.ui.View):
         self.puzzle_key = puzzle_key
         self.puzzle_display_name = puzzle_display_name
         self.piece_id = piece_id
+        self.user_pieces = user_pieces # store user collected pieces here
         self.claim_limit = claim_limit
         self.claimants: List[discord.User] = []
+        self.post_summary = False
         self.message: Optional[discord.Message] = None
 
         # Set emoji for the button
@@ -48,10 +50,10 @@ class DropView(discord.ui.View):
         self.stop()
 
     async def post_summary(self):
-        """Posts a summary of who collected the piece after the drop ends."""
         if self.summary_posted:
-            return
+            return  # Already sent!
         self.summary_posted = True
+        # ...the rest of your posting logic...
 
     @discord.ui.button(label="Collect Piece", style=discord.ButtonStyle.primary)
     async def collect_button(self, interaction: Interaction, button: discord.ui.Button):
