@@ -1,0 +1,187 @@
+import discord
+from discord.ext import commands
+import re
+
+class TwentyoneQuestionsGame:
+    def __init__(self, answer, host):
+        self.answer = answer.lower()
+        self.host = host
+        self.max_questions = 21
+        self.questions_queue = []
+        self.answered_questions = []
+        self.guesses = []
+        self.active = True
+        self.winner = None
+
+    def add_question(self, author_id, question):
+        qid = len(self.questions_queue) + len(self.answered_questions) + 1
+        question_obj = {
+            "id": qid,
+            "author_id": author_id,
+            "question": question,
+            "status": "queued",
+            "answer_text": None
+        }
+        self.questions_queue.append(question_obj)
+        return qid
+
+    def answer_question(self, label, answer_text=None):
+        for i, q in enumerate(self.questions_queue):
+            if q["id"] == label:
+                q["status"] = "answered"
+                q["answer_text"] = answer_text
+                self.answered_questions.append(q)
+                del self.questions_queue[i]
+                return q
+        return None
+
+    def can_answer(self):
+        return len(self.answered_questions) < self.max_questions and self.active
+
+    def summary(self):
+        lines = [
+            f"Answered: {len(self.answered_questions)}/{self.max_questions}",
+            f"Pending questions: {len(self.questions_queue)}",
+            f"Guesses: {len(self.guesses)}"
+        ]
+        return "\n".join(lines)
+
+class TwentyoneQuestionsCog(commands.Cog):
+    def __init__(self, bot):
+        self.bot = bot
+        self.games = {}
+
+    @commands.hybrid_command(name='start21q', description='Start a game of 21 Questions (host must specify answer word, 5+ letters)')
+    async def start21q(self, ctx, word: str):
+        channel_id = ctx.channel.id
+        if channel_id in self.games and self.games[channel_id].active:
+            await ctx.respond("A game is already running in this channel! Use /end21q to end it.", ephemeral=True)
+            return
+
+        # Require a word from the author, don't allow random
+        if not word or len(word.strip()) < 5 or not word.strip().isalpha():
+            await ctx.respond("You must provide an answer word with at least 5 alphabetic letters.", ephemeral=True)
+            return
+
+        answer = word.strip().lower()
+        game = TwentyoneQuestionsGame(answer, host=ctx.author)
+        self.games[channel_id] = game
+        await ctx.respond(
+            f"🎮 Started 21 Questions!\n"
+            f"Word is host-selected.\n"
+            "Type **ask [your yes/no question]** to queue a question.\n"
+            "Type **guess [your guess]** to guess the word.\n"
+            "Type **listq** to view all pending questions.\n"
+            "Host (only): Reply with 'A1', 'A2', ... to answer Q1, Q2, ... (optionally include answer text, e.g. 'A1 yes')."
+            f"\nMax 21 questions will be counted!"
+        )
+
+    @commands.hybrid_command(name='end21q', description='End the current 21 Questions game and show the answer')
+    async def end21q(self, ctx):
+        channel_id = ctx.channel.id
+        game = self.games.get(channel_id)
+        if not game or not game.active:
+            await ctx.respond("No active 21 Questions game in this channel.")
+            return
+        game.active = False
+        await ctx.respond(f"Game ended. The word was: **{game.answer}**.")
+
+    @commands.hybrid_command(name='summary21q', description='Show the status summary for the current game')
+    async def summary21q(self, ctx):
+        channel_id = ctx.channel.id
+        game = self.games.get(channel_id)
+        if not game or not game.active:
+            await ctx.respond("No active game in this channel.")
+            return
+        await ctx.respond("Game status:\n" + game.summary())
+
+    @commands.hybrid_command(name='listq21q', description='List pending 21Q questions')
+    async def listq21q(self, ctx):
+        channel_id = ctx.channel.id
+        game = self.games.get(channel_id)
+        if not game or not game.active or not game.questions_queue:
+            await ctx.respond("No pending questions.")
+            return
+        lines = [
+            f"Q{q['id']}: \"{q['question']}\" (<@{q['author_id']}>)"
+            for q in game.questions_queue
+        ]
+        await ctx.respond("Pending questions:\n" + "\n".join(lines))
+
+    @commands.Cog.listener()
+    async def on_message(self, message):
+        if message.author.bot:
+            return
+        channel_id = message.channel.id
+        game = self.games.get(channel_id)
+        if not game or not game.active:
+            return
+
+        content = message.content.strip()
+
+        # Queue a Question (ask ...)
+        if content.lower().startswith("ask "):
+            if not game.can_answer():
+                await message.channel.send("❌ You've reached the 21 question limit! Time to guess!")
+                return
+            question = content[4:].strip()
+            if not question:
+                await message.channel.send("❌ Please provide a question after 'ask'.")
+                return
+            qid = game.add_question(message.author.id, question)
+            await message.channel.send(
+                f"Q{qid}: \"{question}\" ({message.author.mention}) added to queue.\n"
+                f"{game.host.mention}: Reply with 'A{qid}' when ready to count as answered."
+            )
+            # No DM sent
+
+        # Host Answers: 'A1', 'A2', ... Optionally with answer text
+        elif re.match(r'^a(\d{1,2})(\s+.+)?$', content.strip(), re.IGNORECASE):
+            if message.author != game.host:
+                return
+            match = re.match(r'^a(\d{1,2})(\s+(.+))?$', content.strip(), re.IGNORECASE)
+            if not match:
+                return
+            label = int(match.group(1))
+            answer_text = match.group(3) if match.group(3) else None
+
+            if not game.can_answer():
+                await message.channel.send("❌ You've already answered 21 questions! Time to guess!")
+                return
+            answered = game.answer_question(label, answer_text)
+            if answered:
+                n_remaining = game.max_questions - len(game.answered_questions)
+                reply = f"✅ Counted Q{label} as an official question."
+                if answer_text:
+                    reply += f" Host's answer: **{answer_text}**"
+                reply += f" ({n_remaining} questions left)"
+                await message.channel.send(reply)
+            else:
+                await message.channel.send(f"❌ No pending question with label Q{label}. Check the queue.")
+
+        # Guess the Answer
+        elif content.lower().startswith("guess "):
+            guess = content[6:].strip().lower()
+            if not guess:
+                await message.channel.send("❌ Please provide a word to guess after 'guess'.")
+                return
+            game.guesses.append({"author_id": message.author.id, "guess": guess})
+            if guess == game.answer:
+                game.active = False
+                game.winner = message.author
+                await message.channel.send(
+                    f"🎉 {message.author.mention} guessed the word: **{game.answer}** in "
+                    f"{len(game.answered_questions)} questions and {len(game.guesses)} guesses!"
+                )
+            else:
+                await message.channel.send(
+                    f"❌ {message.author.mention} guessed \"{guess}\". That's not correct."
+                )
+                if not game.can_answer():
+                    game.active = False
+                    await message.channel.send(
+                        f"Game over! You reached 21 questions without guessing the word. The answer was: **{game.answer}**."
+                    )
+
+async def setup(bot):
+    await bot.add_cog(TwentyoneQuestionsCog(bot))
