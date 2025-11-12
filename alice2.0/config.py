@@ -4,8 +4,6 @@ All IDs, paths, and settings should be managed from this file.
 """
 from pathlib import Path
 
-from utils.checks import STAFF_ROLE_ID
-
 # --- Core Bot Settings ---
 # Your Discord User ID. This is used to identify the bot owner.
 OWNER_ID = 1077240270791397388

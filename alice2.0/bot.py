@@ -43,10 +43,7 @@ class AliceBot(commands.Bot):
             "cogs.puzzle_drops_cog",
             "cogs.puzzles_cog",
             "cogs.role_utility_cog",
-            "cogs.sticky_cog",
-            "cogs.reminder_cog",
-            "games.wordle_cog",
-            "games.twentyone_questions_cog"
+            "cogs.sticky_cog"
         ]
 
     # --- THIS IS THE FIX ---
