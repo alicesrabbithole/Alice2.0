@@ -51,7 +51,7 @@ class TwentyoneQuestionsCog(commands.Cog):
         self.bot = bot
         self.games = {}
 
-    @commands.hybrid_command(name='start21q', description='Start a game of 21 Questions (host must specify answer word, 5+ letters)')
+    @commands.command(name='start21q', description='Start a game of 21 Questions (host must specify answer word, 5+ letters)')
     async def start21q(self, ctx, word: str):
         channel_id = ctx.channel.id
         if channel_id in self.games and self.games[channel_id].active:
@@ -76,7 +76,7 @@ class TwentyoneQuestionsCog(commands.Cog):
             f"\nMax 21 questions will be counted!"
         )
 
-    @commands.hybrid_command(name='end21q', description='End the current 21 Questions game and show the answer')
+    @commands.command(name='end21q', description='End the current 21 Questions game and show the answer')
     async def end21q(self, ctx):
         channel_id = ctx.channel.id
         game = self.games.get(channel_id)
@@ -86,7 +86,7 @@ class TwentyoneQuestionsCog(commands.Cog):
         game.active = False
         await ctx.respond(f"Game ended. The word was: **{game.answer}**.")
 
-    @commands.hybrid_command(name='summary21q', description='Show the status summary for the current game')
+    @commands.command(name='summary21q', description='Show the status summary for the current game')
     async def summary21q(self, ctx):
         channel_id = ctx.channel.id
         game = self.games.get(channel_id)
@@ -95,7 +95,7 @@ class TwentyoneQuestionsCog(commands.Cog):
             return
         await ctx.respond("Game status:\n" + game.summary())
 
-    @commands.hybrid_command(name='listq21q', description='List pending 21Q questions')
+    @commands.command()name='listq21q', description='List pending 21Q questions')
     async def listq21q(self, ctx):
         channel_id = ctx.channel.id
         game = self.games.get(channel_id)

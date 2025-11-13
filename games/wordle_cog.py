@@ -6,7 +6,9 @@ from utils.checks import STAFF_ROLE_ID  # This should be an integer representing
 
 ALLOWED_CHANNEL_ID = 1309962373846532159  # Replace this with your desired channel's ID
 
-DATA_PATH = os.path.join(os.path.dirname(__file__), '..', 'data', 'wordle-answers-alphabetical.txt')
+# Data paths for wordlists
+ANSWER_PATH = os.path.join(os.path.dirname(__file__), '..', 'data', 'wordle-answers-alphabetical.txt')
+ALLOWED_GUESS_PATH = os.path.join(os.path.dirname(__file__), '..', 'data', 'official_allowed_guesses.txt')
 KEYBOARD_ROWS = [
     "QWERTYUIOP",
     "ASDFGHJKL",
@@ -16,7 +18,7 @@ EMOJI_GREEN = "🟩"
 EMOJI_YELLOW = "🟨"
 EMOJI_GRAY = "⬜"
 
-def load_answers(path=DATA_PATH):
+def load_word_list(path):
     try:
         with open(path) as f:
             words = [line.strip().lower() for line in f if line.strip() and len(line.strip()) == 5 and line.strip().isalpha()]
@@ -24,7 +26,8 @@ def load_answers(path=DATA_PATH):
     except Exception:
         return []
 
-WORD_LIST = load_answers()
+ANSWERS_LIST = load_word_list(ANSWER_PATH)    # Only possible answers
+ALLOWED_GUESSES = set(ANSWERS_LIST) | set(load_word_list(ALLOWED_GUESS_PATH))  # All allowed guesses
 
 def wordle_feedback(guess, answer):
     # Returns list of 'green', 'yellow', 'gray' for each letter in guess
@@ -120,10 +123,10 @@ class WordleCog(commands.Cog):
 
         # Start a new wordle
         if content == "new wordle":
-            if not WORD_LIST:
+            if not ANSWERS_LIST:
                 await message.channel.send("No answers loaded for Wordle!")
                 return
-            self.games[channel_id] = WordleGame(random.choice(WORD_LIST))
+            self.games[channel_id] = WordleGame(random.choice(ANSWERS_LIST))
             await message.channel.send("New Wordle started! Make your guess with `guess abcde`.")
             return
 
@@ -140,8 +143,8 @@ class WordleCog(commands.Cog):
             if len(guess) != 5 or not guess.isalpha():
                 await message.channel.send("Your guess must be a 5-letter word.")
                 return
-            if guess not in WORD_LIST:
-                await message.channel.send("Not a valid Wordle answer word.")
+            if guess not in ALLOWED_GUESSES:
+                await message.channel.send("Not a valid Wordle guess.")
                 return
             fb = game.add_guess(guess)
             emoji_row = "".join(
