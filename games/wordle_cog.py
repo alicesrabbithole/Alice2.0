@@ -3,12 +3,11 @@ from discord.ext import commands
 import random
 import os
 from utils.checks import STAFF_ROLE_ID  # This should be an integer representing your staff role's ID
+from english_words import get_english_words_set
 
 ALLOWED_CHANNEL_ID = 1309962373846532159  # Replace this with your desired channel's ID
 
-# Data paths for wordlists
 ANSWER_PATH = os.path.join(os.path.dirname(__file__), '..', 'data', 'wordle-answers-alphabetical.txt')
-ALLOWED_GUESS_PATH = os.path.join(os.path.dirname(__file__), '..', 'data', 'official_allowed_guesses.txt')
 KEYBOARD_ROWS = [
     "QWERTYUIOP",
     "ASDFGHJKL",
@@ -26,33 +25,32 @@ def load_word_list(path):
     except Exception:
         return []
 
-ANSWERS_LIST = load_word_list(ANSWER_PATH)    # Only possible answers
-ALLOWED_GUESSES = set(ANSWERS_LIST) | set(load_word_list(ALLOWED_GUESS_PATH))  # All allowed guesses
+# Your official answers list (used for selecting the wordle answer)
+ANSWERS_LIST = load_word_list(ANSWER_PATH)
+
+# Build allowed guesses from english-words (nearly all common 5-letter English words)
+ENGLISH_WORDS = get_english_words_set(['web2'], lower=True)
+ALLOWED_GUESSES = set(word for word in ENGLISH_WORDS if len(word) == 5 and word.isalpha())
 
 def wordle_feedback(guess, answer):
-    # Returns list of 'green', 'yellow', 'gray' for each letter in guess
     feedback = ['gray'] * 5
     answer_chars = list(answer)
     guess_chars = list(guess)
-    # Mark greens
     for i in range(5):
         if guess_chars[i] == answer_chars[i]:
             feedback[i] = 'green'
-            answer_chars[i] = None  # Mark as used
+            answer_chars[i] = None
             guess_chars[i] = None
-    # Mark yellows
     for i in range(5):
         if guess_chars[i] and guess_chars[i] in answer_chars:
             feedback[i] = 'yellow'
-            # Mark only first occurrence as used
             idx = answer_chars.index(guess_chars[i])
             answer_chars[idx] = None
             guess_chars[i] = None
     return feedback
 
 def render_keyboard(guesses, feedbacks):
-    # Track per-letter status
-    status = {c: "" for row in KEYBOARD_ROWS for c in row}  # "" = unused
+    status = {c: "" for row in KEYBOARD_ROWS for c in row}
     for guess, fb in zip(guesses, feedbacks):
         for i, letter in enumerate(guess):
             up = letter.upper()
@@ -62,17 +60,15 @@ def render_keyboard(guesses, feedbacks):
                 if status[up] != EMOJI_GREEN:
                     status[up] = EMOJI_YELLOW
             elif fb[i] == 'gray':
-                # Mark as dark square for used gray letter
                 if status[up] not in (EMOJI_GREEN, EMOJI_YELLOW):
                     status[up] = "⬛"
-    # Render
     lines = []
     for row in KEYBOARD_ROWS:
         line = ""
         for c in row:
             block = status[c]
             if not block:
-                line += c  # unused letter plain
+                line += c
             else:
                 line += block + c
         lines.append(line)
@@ -144,7 +140,7 @@ class WordleCog(commands.Cog):
                 await message.channel.send("Your guess must be a 5-letter word.")
                 return
             if guess not in ALLOWED_GUESSES:
-                await message.channel.send("Not a valid Wordle guess.")
+                await message.channel.send("Not a valid English word!")
                 return
             fb = game.add_guess(guess)
             emoji_row = "".join(

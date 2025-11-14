@@ -35,6 +35,9 @@ class TwentyoneQuestionsGame:
                 return q
         return None
 
+    def can_ask(self):
+        return len(self.answered_questions) + len(self.questions_queue) < self.max_questions and self.active
+
     def can_answer(self):
         return len(self.answered_questions) < self.max_questions and self.active
 
@@ -55,23 +58,23 @@ class TwentyoneQuestionsCog(commands.Cog):
     async def start21q(self, ctx, word: str):
         channel_id = ctx.channel.id
         if channel_id in self.games and self.games[channel_id].active:
-            await ctx.respond("A game is already running in this channel! Use /end21q to end it.", ephemeral=True)
+            await ctx.send("A game is already running in this channel! Use `!end21q` to end it.")
             return
 
         # Require a word from the author, don't allow random
         if not word or len(word.strip()) < 5 or not word.strip().isalpha():
-            await ctx.respond("You must provide an answer word with at least 5 alphabetic letters.", ephemeral=True)
+            await ctx.send("You must provide an answer word with at least 5 alphabetic letters.")
             return
 
         answer = word.strip().lower()
         game = TwentyoneQuestionsGame(answer, host=ctx.author)
         self.games[channel_id] = game
-        await ctx.respond(
+        await ctx.send(
             f"🎮 Started 21 Questions!\n"
             f"Word is host-selected.\n"
             "Type **ask [your yes/no question]** to queue a question.\n"
             "Type **guess [your guess]** to guess the word.\n"
-            "Type **listq** to view all pending questions.\n"
+            "Type **listq21q** to view all pending questions.\n"
             "Host (only): Reply with 'A1', 'A2', ... to answer Q1, Q2, ... (optionally include answer text, e.g. 'A1 yes')."
             f"\nMax 21 questions will be counted!"
         )
@@ -81,32 +84,32 @@ class TwentyoneQuestionsCog(commands.Cog):
         channel_id = ctx.channel.id
         game = self.games.get(channel_id)
         if not game or not game.active:
-            await ctx.respond("No active 21 Questions game in this channel.")
+            await ctx.send("No active 21 Questions game in this channel.")
             return
         game.active = False
-        await ctx.respond(f"Game ended. The word was: **{game.answer}**.")
+        await ctx.send(f"Game ended. The word was: **{game.answer}**.")
 
     @commands.command(name='summary21q', description='Show the status summary for the current game')
     async def summary21q(self, ctx):
         channel_id = ctx.channel.id
         game = self.games.get(channel_id)
         if not game or not game.active:
-            await ctx.respond("No active game in this channel.")
+            await ctx.send("No active game in this channel.")
             return
-        await ctx.respond("Game status:\n" + game.summary())
+        await ctx.send("Game status:\n" + game.summary())
 
-    @commands.command()name='listq21q', description='List pending 21Q questions')
+    @commands.command(name='listq21q', description='List pending 21Q questions')
     async def listq21q(self, ctx):
         channel_id = ctx.channel.id
         game = self.games.get(channel_id)
         if not game or not game.active or not game.questions_queue:
-            await ctx.respond("No pending questions.")
+            await ctx.send("No pending questions.")
             return
         lines = [
             f"Q{q['id']}: \"{q['question']}\" (<@{q['author_id']}>)"
             for q in game.questions_queue
         ]
-        await ctx.respond("Pending questions:\n" + "\n".join(lines))
+        await ctx.send("Pending questions:\n" + "\n".join(lines))
 
     @commands.Cog.listener()
     async def on_message(self, message):
@@ -121,7 +124,7 @@ class TwentyoneQuestionsCog(commands.Cog):
 
         # Queue a Question (ask ...)
         if content.lower().startswith("ask "):
-            if not game.can_answer():
+            if not game.can_ask():
                 await message.channel.send("❌ You've reached the 21 question limit! Time to guess!")
                 return
             question = content[4:].strip()
@@ -133,7 +136,6 @@ class TwentyoneQuestionsCog(commands.Cog):
                 f"Q{qid}: \"{question}\" ({message.author.mention}) added to queue.\n"
                 f"{game.host.mention}: Reply with 'A{qid}' when ready to count as answered."
             )
-            # No DM sent
 
         # Host Answers: 'A1', 'A2', ... Optionally with answer text
         elif re.match(r'^a(\d{1,2})(\s+.+)?$', content.strip(), re.IGNORECASE):
@@ -177,7 +179,7 @@ class TwentyoneQuestionsCog(commands.Cog):
                 await message.channel.send(
                     f"❌ {message.author.mention} guessed \"{guess}\". That's not correct."
                 )
-                if not game.can_answer():
+                if not game.can_ask():
                     game.active = False
                     await message.channel.send(
                         f"Game over! You reached 21 questions without guessing the word. The answer was: **{game.answer}**."

@@ -1,18 +1,22 @@
 import discord
 from discord.ext import commands, tasks
-from discord import app_commands
 import json
 import os
 import re
 from datetime import datetime, timedelta
 import pytz
 
-REMINDERS_FILE = "data/reminders.json"
-TIMEZONES_FILE = "data/user_timezones.json"
+DATA_DIR = "data"
+REMINDERS_FILE = os.path.join(DATA_DIR, "reminders.json")
+TIMEZONES_FILE = os.path.join(DATA_DIR, "user_timezones.json")
+
+def ensure_dir(path):
+    if not os.path.exists(path):
+        os.makedirs(path, exist_ok=True)
 
 def load_json(path, default):
+    ensure_dir(os.path.dirname(path))
     if not os.path.exists(path):
-        # Create with default value if missing
         with open(path, 'w') as f:
             json.dump(default, f)
         return default
@@ -20,12 +24,12 @@ def load_json(path, default):
         with open(path, "r") as f:
             return json.load(f)
     except json.JSONDecodeError:
-        # File is empty or malformatted, reinitialize
         with open(path, 'w') as f:
             json.dump(default, f)
         return default
 
 def save_json(path, data):
+    ensure_dir(os.path.dirname(path))
     with open(path, "w") as f:
         json.dump(data, f, indent=2)
 
@@ -50,21 +54,23 @@ class ReminderCog(commands.Cog):
         name="remember",
         description="Set a reminder. E.g. /remember 10m Feed rabbit"
     )
-    @app_commands.describe(
+    @discord.app_commands.describe(
         time="When? (10m, 1h, 1d, 1p, 2:30pm, 2025-11-12 15:00)",
         message="What to remember"
     )
     async def remember(self, ctx, time: str, *, message: str):
         user_id = str(ctx.author.id)
         tzname = self.user_timezones.get(user_id, "UTC")
-        tz = pytz.timezone(tzname)
+        try:
+            tz = pytz.timezone(tzname)
+        except Exception:
+            tz = pytz.UTC
         parsed = self.parse_time(time, tz)
         if not parsed:
             return await ctx.send(
                 "❌ Invalid time! Try `10m`, `2h`, `1d`, `1p`, `2:30pm`, `15:45`, or `2025-11-12 15:45`.",
                 ephemeral=True)
         remind_dt = parsed
-        # Save reminder
         self.reminders.append({
             "user": user_id,
             "message": message,
@@ -77,7 +83,6 @@ class ReminderCog(commands.Cog):
         )
 
     def parse_time(self, time_str, tz):
-        # Patterns: 10m, 2h, 1d
         now = datetime.now(tz)
         match = re.match(r'^(\d+)([mhd])$', time_str.lower())
         if match:
@@ -86,7 +91,6 @@ class ReminderCog(commands.Cog):
             delta = {"m": timedelta(minutes=num), "h": timedelta(hours=num), "d": timedelta(days=num)}[unit]
             return now + delta
 
-        # Patterns: 1p, 2:30pm, 1pm
         match = re.match(r'^(\d{1,2})(:(\d{2}))?\s*([ap]m?)$', time_str.lower())
         if match:
             hour = int(match.group(1))
@@ -101,7 +105,6 @@ class ReminderCog(commands.Cog):
                 dt += timedelta(days=1)
             return dt
 
-        # Patterns: 15:45 (24hr time)
         match = re.match(r'^(\d{1,2}):(\d{2})$', time_str)
         if match:
             hour, minute = map(int, match.groups())
@@ -110,13 +113,12 @@ class ReminderCog(commands.Cog):
                 dt += timedelta(days=1)
             return dt
 
-        # Patterns: 2025-11-12 15:00 or 2025-11-12T15:00
         match = re.match(r'^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})$', time_str)
         if match:
             y, m, d, h, mi = map(int, match.groups())
             try:
                 dt = tz.localize(datetime(y, m, d, h, mi))
-            except Exception:  # Already localized?
+            except Exception:
                 dt = datetime(y, m, d, h, mi, tzinfo=tz)
             if dt <= now:
                 return None
@@ -128,7 +130,10 @@ class ReminderCog(commands.Cog):
         now_utc = datetime.utcnow().replace(tzinfo=pytz.UTC)
         changed = False
         for rem in self.reminders[:]:
-            remind_dt = datetime.fromisoformat(rem["remind_at_utc"])
+            try:
+                remind_dt = datetime.fromisoformat(rem["remind_at_utc"])
+            except Exception:
+                continue
             if now_utc >= remind_dt:
                 user = self.bot.get_user(int(rem["user"]))
                 if user:
