@@ -7,6 +7,7 @@ from english_words import get_english_words_set
 
 ALLOWED_CHANNEL_ID = 1309962373846532159  # Replace this with your desired channel's ID
 
+# Helper: get the full path reliably
 ANSWER_PATH = os.path.join(os.path.dirname(__file__), '..', 'data', 'wordle-answers-alphabetical.txt')
 KEYBOARD_ROWS = [
     "QWERTYUIOP",
@@ -25,7 +26,7 @@ def load_word_list(path):
     except Exception:
         return []
 
-# Your official answers list (used for selecting the wordle answer)
+# Official answers list
 ANSWERS_LIST = load_word_list(ANSWER_PATH)
 
 # Build allowed guesses from english-words (nearly all common 5-letter English words)
@@ -92,7 +93,7 @@ class WordleGame:
 class WordleCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        self.games = {}  # channel_id: WordleGame
+        self.games = {}
 
     @commands.Cog.listener()
     async def on_message(self, message):
