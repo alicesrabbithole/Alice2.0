@@ -4,3 +4,5 @@ psutil
 Pillow
 PyNaCl
 Flask
+english-words
+pytz
