@@ -22,6 +22,4 @@ data/*
 # ...but DO track the main database file
 !data/collected_pieces.json
 !data/reminders.json
-!data/stickies.json
-!data/user_timezones.json
-!data/wordle-answers-alphabetical.txt
+
