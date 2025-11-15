@@ -9,6 +9,8 @@ import config
 STICKY_DATA_FILE = config.DATA_DIR / "stickies.json"
 MESSAGE_THRESHOLD = 5
 
+# Set of excluded channel IDs (as strings) where stickies will NOT work.
+EXCLUDED_CHANNELS = set()  # Example: set(["123456789012345678", ...])
 
 class StickyCog(commands.Cog, name="Sticky Messages"):
     """Manages sticky messages that repost after a set number of messages."""
@@ -33,10 +35,16 @@ class StickyCog(commands.Cog, name="Sticky Messages"):
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
+        # Only check channels that are not excluded, and ignore DMs/bots
         if message.guild is None or message.author.bot:
             return
 
         channel_id = str(message.channel.id)
+        # Check if this channel is excluded
+        if channel_id in EXCLUDED_CHANNELS:
+            return
+
+        # If a sticky is set for the channel, do count/check logic
         if channel_id in self.stickies:
             self.message_counts[channel_id] = self.message_counts.get(channel_id, 0) + 1
             if self.message_counts[channel_id] >= MESSAGE_THRESHOLD:

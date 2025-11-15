@@ -24,5 +24,4 @@ data/*
 !data/reminders.json
 !data/stickies.json
 !data/user_timezones.json
-!data/valid_words.txt
 !data/wordle-answers-alphabetical.txt
