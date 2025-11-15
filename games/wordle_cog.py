@@ -7,7 +7,6 @@ from english_words import get_english_words_set
 
 ALLOWED_CHANNEL_ID = 1309962373846532159  # Replace this with your desired channel's ID
 
-# Helper: get the full path reliably
 ANSWER_PATH = os.path.join(os.path.dirname(__file__), '..', 'data', 'wordle-answers-alphabetical.txt')
 KEYBOARD_ROWS = [
     "QWERTYUIOP",
@@ -26,10 +25,10 @@ def load_word_list(path):
     except Exception:
         return []
 
-# Official answers list
+# Official answers list (for selecting answers)
 ANSWERS_LIST = load_word_list(ANSWER_PATH)
 
-# Build allowed guesses from english-words (nearly all common 5-letter English words)
+# Allowed guesses: all English 5-letter words
 ENGLISH_WORDS = get_english_words_set(['web2'], lower=True)
 ALLOWED_GUESSES = set(word for word in ENGLISH_WORDS if len(word) == 5 and word.isalpha())
 
