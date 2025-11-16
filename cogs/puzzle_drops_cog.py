@@ -168,11 +168,7 @@ class PuzzleDropsCog(commands.Cog, name="Puzzle Drops"):
     @app_commands.autocomplete(puzzle=puzzle_autocomplete)
     @is_admin()
     async def spawndrop(
-            self,
-            ctx: commands.Context,
-            puzzle: str,
-            channel: Optional[discord.TextChannel] = None,
-            piece: Optional[str] = None
+        self, ctx: commands.Context, puzzle: str, channel: Optional[discord.TextChannel] = None
     ):
         await ctx.defer(ephemeral=True)
         target_channel = channel or ctx.channel
@@ -186,19 +182,9 @@ class PuzzleDropsCog(commands.Cog, name="Puzzle Drops"):
         if not puzzle_key:
             return await ctx.send(f"❌ Puzzle not found: `{puzzle}`", ephemeral=True)
 
-        # If a piece is chosen, validate it exists!
-        chosen_piece = None
-        if piece is not None:
-            pieces_dict = self.bot.data.get("pieces", {}).get(puzzle_key, {})
-            if piece not in pieces_dict:
-                return await ctx.send(f"❌ Piece `{piece}` not found in `{puzzle_key}`.", ephemeral=True)
-            chosen_piece = piece
-
-        await self._spawn_drop(target_channel, puzzle_key, forced_piece=chosen_piece)
+        await self._spawn_drop(target_channel, puzzle_key)
         display_name = get_puzzle_display_name(self.bot.data, puzzle_key)
-        piece_info_text = f" (Piece `{chosen_piece}`)" if chosen_piece is not None else ""
-        await ctx.send(f"✅ Drop for **{display_name}**{piece_info_text} spawned in {target_channel.mention}.",
-                       ephemeral=True)
+        await ctx.send(f"✅ Drop for **{display_name}** spawned in {target_channel.mention}.", ephemeral=True)
 
     @commands.hybrid_command(name="setdropchannel", description="Configure a channel for automatic puzzle drops.")
     @app_commands.autocomplete(puzzle=puzzle_autocomplete)
@@ -254,38 +240,6 @@ class PuzzleDropsCog(commands.Cog, name="Puzzle Drops"):
             self.bot,
             f"🔧 Drop channel configured for **{display_name}** in `#{channel.name}` by `{ctx.author}`."
         )
-
-    @commands.hybrid_command(name="remove_drop_channel", description="Remove a channel from the drop list.")
-    @is_admin()
-    async def remove_drop_channel(self, ctx: commands.Context, channel: discord.TextChannel):
-        """Remove a channel from drop channels."""
-        data = self.bot.data
-        removed = data.setdefault("drop_channels", {}).pop(str(channel.id), None)
-        save_data(self.bot.data)
-        if removed:
-            await ctx.send(f"✅ Removed drop from {channel.mention}.", ephemeral=False)
-        else:
-            await ctx.send(f"❌ {channel.mention} wasn’t set up for drops.", ephemeral=False0)
-
-    @commands.hybrid_command(name="list_drop_settings", description="List all current drop channel settings.")
-    @is_admin()
-    async def list_drop_settings(self, ctx: commands.Context):
-        """List all current drop channel settings."""
-        data = self.bot.data
-        drop_channels = data.get("drop_channels", {})
-        if not drop_channels:
-            await ctx.send("No drop channels configured.", ephemeral=False)
-            return
-        embed = discord.Embed(title="Active Drop Channels")
-        for cid, info in drop_channels.items():
-            chan = ctx.guild.get_channel(int(cid))
-            channel_name = chan.mention if chan else f"ID {cid}"
-            embed.add_field(
-                name=channel_name,
-                value=f"Puzzle: {info.get('puzzle')}\nMode: {info.get('mode')}\nValue: {info.get('value')}\nNext Trigger: {info.get('next_trigger')}",
-                inline=False
-            )
-        await ctx.send(embed=embed, ephemeral=False)
 
 
 # --- Cog entry point ---

@@ -4,5 +4,10 @@ psutil
 Pillow
 PyNaCl
 Flask
+<<<<<<< HEAD
 english-words
 pytz
+=======
+pytz
+english-words
+>>>>>>> 4a652675af45445a71d76cbae18f3f77e5579a0b
