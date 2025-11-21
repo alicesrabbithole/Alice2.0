@@ -20,9 +20,5 @@ ENV/
 data/*
 
 # ...but DO track the main database file
-<<<<<<< HEAD
 !data/collected_pieces.json
 !data/reminders.json
-
-=======
->>>>>>> f61092216441d21ecc9743dc67f9690f8a223694
