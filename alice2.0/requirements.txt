@@ -1,6 +1,0 @@
-discord.py
-python-dotenv
-psutil
-Pillow
-PyNaCl
-Flask

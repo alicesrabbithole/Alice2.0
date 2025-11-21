@@ -25,10 +25,10 @@ def load_word_list(path):
     except Exception:
         return []
 
-# Your official answers list (used for selecting the wordle answer)
+# Official answers list (for selecting answers)
 ANSWERS_LIST = load_word_list(ANSWER_PATH)
 
-# Build allowed guesses from english-words (nearly all common 5-letter English words)
+# Allowed guesses: all English 5-letter words
 ENGLISH_WORDS = get_english_words_set(['web2'], lower=True)
 ALLOWED_GUESSES = set(word for word in ENGLISH_WORDS if len(word) == 5 and word.isalpha())
 
@@ -92,7 +92,7 @@ class WordleGame:
 class WordleCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        self.games = {}  # channel_id: WordleGame
+        self.games = {}
 
     @commands.Cog.listener()
     async def on_message(self, message):

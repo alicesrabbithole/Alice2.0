@@ -55,16 +55,15 @@ class TwentyoneQuestionsCog(commands.Cog):
         self.bot = bot
         self.games = {}
 
-    @commands.command(name='start21q', description='Start a game of 21 Questions (host must specify answer word, 5+ letters)')
+    @commands.hybrid_command(name='start21q', description='Start a game of 21 Questions (host must specify answer word, 5+ letters)')
     async def start21q(self, ctx, word: str):
         channel_id = ctx.channel.id
         if channel_id in self.games and self.games[channel_id].active:
-            await ctx.send("A game is already running in this channel! Use `!end21q` to end it.")
+            await ctx.send("A game is already running in this channel! Use `/end21q` to end it.", ephemeral=True)
             return
 
-        # Require a word from the author, don't allow random
         if not word or len(word.strip()) < 5 or not word.strip().isalpha():
-            await ctx.send("You must provide an answer word with at least 5 alphabetic letters.")
+            await ctx.send("You must provide an answer word with at least 5 alphabetic letters.", ephemeral=True)
             return
 
         answer = word.strip().lower()
@@ -77,45 +76,48 @@ class TwentyoneQuestionsCog(commands.Cog):
             "Type **guess [your guess]** to guess the word.\n"
             "Type **listq21q** to view all pending questions.\n"
             "Host (only): Reply with 'A1', 'A2', ... to answer Q1, Q2, ... (optionally include answer text, e.g. 'A1 yes')."
-            f"\nMax 21 questions will be counted!"
+            f"\nMax 21 questions will be counted!",
+            ephemeral=True
         )
 
-    @commands.command(name='end21q', description='End the current 21 Questions game and show the answer')
+    @commands.hybrid_command(name='end21q', description='End the current 21 Questions game and show the answer')
     async def end21q(self, ctx):
         channel_id = ctx.channel.id
         game = self.games.get(channel_id)
         if not game or not game.active:
-            await ctx.send("No active 21 Questions game in this channel.")
+            await ctx.send("No active 21 Questions game in this channel.", ephemeral=True)
             return
         game.active = False
-        await ctx.send(f"Game ended. The word was: **{game.answer}**.")
+        await ctx.send(f"Game ended. The word was: **{game.answer}**.", ephemeral=True)
 
-    @commands.command(name='summary21q', description='Show the status summary for the current game')
+    @commands.hybrid_command(name='summary21q', description='Show the status summary for the current game')
     async def summary21q(self, ctx):
         channel_id = ctx.channel.id
         game = self.games.get(channel_id)
         if not game or not game.active:
-            await ctx.send("No active game in this channel.")
+            await ctx.send("No active game in this channel.", ephemeral=True)
             return
-        await ctx.send("Game status:\n" + game.summary())
+        await ctx.send("Game status:\n" + game.summary(), ephemeral=True)
 
-    @commands.command(name='listq21q', description='List pending 21Q questions')
+    @commands.hybrid_command(name='listq21q', description='List pending 21Q questions')
     async def listq21q(self, ctx):
         channel_id = ctx.channel.id
         game = self.games.get(channel_id)
         if not game or not game.active or not game.questions_queue:
-            await ctx.send("No pending questions.")
+            await ctx.send("No pending questions.", ephemeral=True)
             return
         lines = [
             f"Q{q['id']}: \"{q['question']}\" (<@{q['author_id']}>)"
             for q in game.questions_queue
         ]
-        await ctx.send("Pending questions:\n" + "\n".join(lines))
+        await ctx.send("Pending questions:\n" + "\n".join(lines), ephemeral=True)
 
     @commands.Cog.listener()
     async def on_message(self, message):
-        if message.author.bot:
+        # Ignore bots and DMs
+        if message.author.bot or not message.guild:
             return
+
         channel_id = message.channel.id
         game = self.games.get(channel_id)
         if not game or not game.active:
@@ -136,16 +138,15 @@ class TwentyoneQuestionsCog(commands.Cog):
             await message.channel.send(
                 f"Q{qid}: \"{question}\" ({message.author.mention}) added to queue."
             )
+            return
 
         # Host Answers: 'A1', 'A2', ... Optionally with answer text
-        elif re.match(r'^a(\d{1,2})(\s+.+)?$', content.strip(), re.IGNORECASE):
+        match_ans = re.match(r'^a(\d{1,2})(\s+(.+))?$', content.strip(), re.IGNORECASE)
+        if match_ans:
             if message.author != game.host:
                 return
-            match = re.match(r'^a(\d{1,2})(\s+(.+))?$', content.strip(), re.IGNORECASE)
-            if not match:
-                return
-            label = int(match.group(1))
-            answer_text = match.group(3) if match.group(3) else None
+            label = int(match_ans.group(1))
+            answer_text = match_ans.group(3) if match_ans.group(3) else None
 
             if not game.can_answer():
                 await message.channel.send("❌ You've already answered 21 questions! Time to guess!")
@@ -162,9 +163,10 @@ class TwentyoneQuestionsCog(commands.Cog):
                 await message.channel.send(reply)
             else:
                 await message.channel.send(f"❌ No pending question with label Q{label}. Check the queue.")
+            return
 
-        # Guess the Answer
-        elif content.lower().startswith("guess "):
+        # Guess the answer
+        if content.lower().startswith("guess "):
             guess = content[6:].strip().lower()
             if not guess:
                 await message.channel.send("❌ Please provide a word to guess after 'guess'.")
@@ -186,6 +188,7 @@ class TwentyoneQuestionsCog(commands.Cog):
                     await message.channel.send(
                         f"Game over! You reached 21 questions without guessing the word. The answer was: **{game.answer}**."
                     )
+            return
 
     @commands.command(name="21qsum",
                       description="Show a summary of all answered questions in 21 Questions (staff only)")
