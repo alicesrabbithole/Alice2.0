@@ -5,7 +5,7 @@ import os
 from utils.checks import STAFF_ROLE_ID  # This should be an integer representing your staff role's ID
 from english_words import get_english_words_set
 
-ALLOWED_CHANNEL_ID = 1309962373846532159  # Replace this with your desired channel's ID
+ALLOWED_CHANNEL_IDS = (1309962373846532159, 1382445010988830852) # Replace this with your desired channel's ID
 
 ANSWER_PATH = os.path.join(os.path.dirname(__file__), '..', 'data', 'wordle-answers-alphabetical.txt')
 KEYBOARD_ROWS = [
@@ -96,7 +96,7 @@ class WordleCog(commands.Cog):
 
     @commands.Cog.listener()
     async def on_message(self, message):
-        if message.channel.id != ALLOWED_CHANNEL_ID:
+        if message.channel.id != ALLOWED_CHANNEL_IDS:
             return
         if message.author.bot:
             return
