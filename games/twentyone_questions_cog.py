@@ -36,7 +36,8 @@ class TwentyoneQuestionsGame:
         return None
 
     def can_ask(self):
-        return len(self.answered_questions) + len(self.questions_queue) < self.max_questions and self.active
+        # Only limit based on answers counted
+        return len(self.answered_questions) < self.max_questions and self.active
 
     def can_answer(self):
         return len(self.answered_questions) < self.max_questions and self.active
@@ -133,8 +134,7 @@ class TwentyoneQuestionsCog(commands.Cog):
                 return
             qid = game.add_question(message.author.id, question)
             await message.channel.send(
-                f"Q{qid}: \"{question}\" ({message.author.mention}) added to queue.\n"
-                f"{game.host.mention}: Reply with 'A{qid}' when ready to count as answered."
+                f"Q{qid}: \"{question}\" ({message.author.mention}) added to queue."
             )
 
         # Host Answers: 'A1', 'A2', ... Optionally with answer text
@@ -153,10 +153,12 @@ class TwentyoneQuestionsCog(commands.Cog):
             answered = game.answer_question(label, answer_text)
             if answered:
                 n_remaining = game.max_questions - len(game.answered_questions)
-                reply = f"✅ Counted Q{label} as an official question."
-                if answer_text:
-                    reply += f" Host's answer: **{answer_text}**"
-                reply += f" ({n_remaining} questions left)"
+                # Show the Q and A together
+                reply = (
+                        f'Q{label} "{answered["question"]}"'
+                        + (f' A: {answer_text}' if answer_text else '')
+                        + f" ({n_remaining} questions left)"
+                )
                 await message.channel.send(reply)
             else:
                 await message.channel.send(f"❌ No pending question with label Q{label}. Check the queue.")
@@ -184,6 +186,39 @@ class TwentyoneQuestionsCog(commands.Cog):
                     await message.channel.send(
                         f"Game over! You reached 21 questions without guessing the word. The answer was: **{game.answer}**."
                     )
+
+    @commands.command(name="21qsum",
+                      description="Show a summary of all answered questions in 21 Questions (staff only)")
+    @commands.has_permissions(manage_guild=True)  # Or use administrator=True for admin-only
+    async def qsum21q(self, ctx):
+        channel_id = ctx.channel.id
+        game = self.games.get(channel_id)
+        if not game or not game.active:
+            await ctx.send("No active 21 Questions game in this channel.")
+            return
+        if not game.answered_questions:
+            await ctx.send("No questions have been answered yet.")
+            return
+
+        # Limit usage to STAFF ONLY (extra check, in case you want double-verification)
+        if not (ctx.author.guild_permissions.manage_guild or ctx.author.guild_permissions.administrator):
+            await ctx.send("This command is restricted to staff members.")
+            return
+
+        # Preparing Q/A list string
+        qa_lines = []
+        for q in game.answered_questions:
+            qa_lines.append(
+                f"**Q{q['id']}**: \"{q['question']}\"\n**A:** {q['answer_text'] if q['answer_text'] else '*no answer provided*'}\n")
+
+        embed = discord.Embed(
+            title="Answered Questions - 21 Questions",
+            description="\n".join(qa_lines),
+            color=discord.Color.purple()
+        )
+        embed.set_footer(text=f"{len(game.answered_questions)} questions answered out of {game.max_questions}")
+
+        await ctx.send(embed=embed)
 
 async def setup(bot):
     await bot.add_cog(TwentyoneQuestionsCog(bot))
