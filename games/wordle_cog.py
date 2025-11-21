@@ -2,10 +2,11 @@ import discord
 from discord.ext import commands
 import random
 import os
-from utils.checks import STAFF_ROLE_ID  # This should be an integer representing your staff role's ID
+from typing import List, Dict, Optional, Tuple
 from english_words import get_english_words_set
 
-ALLOWED_CHANNEL_IDS = (1309962373846532159, 1382445010988830852) # Replace this with your desired channel's ID
+ALLOWED_CHANNEL_IDS = [1309962373846532159, 1382445010988830852]
+STAFF_ROLE_ID = 123456789123456789  # Replace with your actual staff role ID
 
 ANSWER_PATH = os.path.join(os.path.dirname(__file__), '..', 'data', 'wordle-answers-alphabetical.txt')
 KEYBOARD_ROWS = [
@@ -17,30 +18,31 @@ EMOJI_GREEN = "🟩"
 EMOJI_YELLOW = "🟨"
 EMOJI_GRAY = "⬜"
 
-def load_word_list(path):
+def load_word_list(path: str) -> List[str]:
     try:
         with open(path) as f:
-            words = [line.strip().lower() for line in f if line.strip() and len(line.strip()) == 5 and line.strip().isalpha()]
+            words = [line.strip().lower()
+                     for line in f
+                     if line.strip() and len(line.strip()) == 5 and line.strip().isalpha()]
         return words
     except Exception:
         return []
 
-# Official answers list (for selecting answers)
-ANSWERS_LIST = load_word_list(ANSWER_PATH)
-
-# Allowed guesses: all English 5-letter words
+ANSWERS_LIST: List[str] = load_word_list(ANSWER_PATH)
 ENGLISH_WORDS = get_english_words_set(['web2'], lower=True)
 ALLOWED_GUESSES = set(word for word in ENGLISH_WORDS if len(word) == 5 and word.isalpha())
 
-def wordle_feedback(guess, answer):
+def wordle_feedback(guess: str, answer: str) -> List[str]:
     feedback = ['gray'] * 5
     answer_chars = list(answer)
     guess_chars = list(guess)
+    # Green pass
     for i in range(5):
         if guess_chars[i] == answer_chars[i]:
             feedback[i] = 'green'
             answer_chars[i] = None
             guess_chars[i] = None
+    # Yellow pass
     for i in range(5):
         if guess_chars[i] and guess_chars[i] in answer_chars:
             feedback[i] = 'yellow'
@@ -49,7 +51,7 @@ def wordle_feedback(guess, answer):
             guess_chars[i] = None
     return feedback
 
-def render_keyboard(guesses, feedbacks):
+def render_keyboard(guesses: List[str], feedbacks: List[List[str]]) -> str:
     status = {c: "" for row in KEYBOARD_ROWS for c in row}
     for guess, fb in zip(guesses, feedbacks):
         for i, letter in enumerate(guess):
@@ -75,39 +77,45 @@ def render_keyboard(guesses, feedbacks):
     return "\n".join(lines)
 
 class WordleGame:
-    def __init__(self, answer):
-        self.answer = answer
-        self.guesses = []
-        self.feedbacks = []
+    def __init__(self, answer: str):
+        self.answer: str = answer
+        self.guesses: List[str] = []
+        self.feedbacks: List[List[str]] = []
 
-    def add_guess(self, guess):
+    def add_guess(self, guess: str) -> List[str]:
         fb = wordle_feedback(guess, self.answer)
         self.guesses.append(guess)
         self.feedbacks.append(fb)
         return fb
 
-    def is_solved(self):
+    def is_solved(self) -> bool:
         return self.guesses and self.guesses[-1] == self.answer
 
 class WordleCog(commands.Cog):
-    def __init__(self, bot):
+    def __init__(self, bot: commands.Bot):
         self.bot = bot
-        self.games = {}
+        self.games: Dict[int, WordleGame] = {}
+
+    def is_allowed_channel(self, channel_id: int) -> bool:
+        return channel_id in ALLOWED_CHANNEL_IDS
 
     @commands.Cog.listener()
-    async def on_message(self, message):
-        if message.channel.id != ALLOWED_CHANNEL_IDS:
-            return
+    async def on_message(self, message: discord.Message):
         if message.author.bot:
             return
-
         channel_id = message.channel.id
         content = message.content.strip().lower()
+        # Only respond in allowed channels
+        if not self.is_allowed_channel(channel_id):
+            return
 
-        # Staff-only Wordle reset
+        # ---- STAFF RESET ----
         if content == "resetwordle":
-            staff_role = discord.utils.get(message.author.roles, id=STAFF_ROLE_ID)
-            if not staff_role:
+            # Check for staff role or relevant permissions
+            is_staff = any(r.id == STAFF_ROLE_ID for r in getattr(message.author, "roles", [])) \
+                or message.author.guild_permissions.manage_guild \
+                or message.author.guild_permissions.administrator
+            if not is_staff:
                 await message.channel.send("You do not have permission to reset Wordle.")
                 return
             if channel_id in self.games:
@@ -117,7 +125,7 @@ class WordleCog(commands.Cog):
                 await message.channel.send("No Wordle game to reset in this channel.")
             return
 
-        # Start a new wordle
+        # ---- NEW GAME ----
         if content == "new wordle":
             if not ANSWERS_LIST:
                 await message.channel.send("No answers loaded for Wordle!")
@@ -126,14 +134,14 @@ class WordleCog(commands.Cog):
             await message.channel.send("New Wordle started! Make your guess with `guess abcde`.")
             return
 
-        # Ensure game exists for guess/status
+        # ---- Ensure game exists ----
         game = self.games.get(channel_id)
         if not game:
             if content.startswith("guess") or content == "wordle status":
                 await message.channel.send("No Wordle running! Type `new wordle` to start.")
             return
 
-        # Process Guess
+        # ---- GUESS ----
         if content.startswith("guess "):
             guess = content[6:].strip().lower()
             if len(guess) != 5 or not guess.isalpha():
@@ -152,7 +160,7 @@ class WordleCog(commands.Cog):
                 del self.games[channel_id]
             return
 
-        # Status Command
+        # ---- STATUS ----
         if content == "wordle status":
             keyboard_art = render_keyboard(game.guesses, game.feedbacks)
             guess_lines = [
@@ -166,5 +174,26 @@ class WordleCog(commands.Cog):
             )
             return
 
-async def setup(bot):
+    # Example: add a wordle status command as well!
+    @commands.command(name="wordle_status", help="Show your Wordle status (guesses and keyboard)")
+    async def wordle_status_cmd(self, ctx: commands.Context):
+        if not self.is_allowed_channel(ctx.channel.id):
+            await ctx.send("This command can't be used in this channel.")
+            return
+        game = self.games.get(ctx.channel.id)
+        if not game:
+            await ctx.send("No Wordle running! Type `new wordle` to start.")
+            return
+        keyboard_art = render_keyboard(game.guesses, game.feedbacks)
+        guess_lines = [
+            f"`{g.upper()}`  " +
+            "".join(EMOJI_GREEN if x == 'green' else EMOJI_YELLOW if x == 'yellow' else EMOJI_GRAY for x in fb)
+            for g, fb in zip(game.guesses, game.feedbacks)
+        ]
+        status_text = "\n".join(guess_lines) if guess_lines else "No guesses yet."
+        await ctx.send(
+            f"Wordle status:\n{status_text}\n\n**Keyboard:**\n```\n{keyboard_art}\n```"
+        )
+
+async def setup(bot: commands.Bot):
     await bot.add_cog(WordleCog(bot))
