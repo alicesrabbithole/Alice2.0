@@ -5,7 +5,7 @@ import os
 from typing import List, Dict, Optional, Tuple
 from english_words import get_english_words_set
 
-ALLOWED_CHANNEL_IDS = [1309962373846532159, 1382445010988830852]
+ALLOWED_CHANNEL_IDS = [1309962373846532159, 1382445010988830852, 1309962375058690071]
 STAFF_ROLE_ID = 123456789123456789  # Replace with your actual staff role ID
 
 ANSWER_PATH = os.path.join(os.path.dirname(__file__), '..', 'data', 'wordle-answers-alphabetical.txt')
