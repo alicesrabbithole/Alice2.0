@@ -18,3 +18,6 @@ ENV/
 # --- Alice Bot Specific ---
 # Ignore contents of data directory...
 data/*
+
+# ...but DO track the main database file
+!data/collected_pieces.json
