@@ -11,6 +11,8 @@ STAFF_ROLE_ID = 123456789123456789  # Replace with your actual staff role ID
 ANSWER_PATH = os.path.join(os.path.dirname(__file__), '..', 'data', 'wordle-answers-alphabetical.txt')
 GUESS_PATH = os.path.join(os.path.dirname(__file__), '..', 'data', 'wordle-guesses.txt')
 
+print(f"GUESS_PATH used: {GUESS_PATH}")
+
 KEYBOARD_ROWS = [
     "QWERTYUIOP",
     "ASDFGHJKL",
@@ -25,6 +27,12 @@ def load_word_list(path: str) -> List[str]:
                 for line in f
                 if line.strip() and len(line.strip()) == 5 and line.strip().isalpha()
             ]
+        print(f"Loaded {len(words)} words from {path}")
+        # Check if 'sleep' is present, and if there are any weird words with spaces
+        print(f"'sleep' in word list: {'sleep' in words}")
+        for w in words:
+            if ' ' in w or '\t' in w or not w.isalpha() or len(w) != 5:
+                print(f"Weird entry: {repr(w)}")
         return words
     except Exception as e:
         print(f"Failed to load words from {path}: {e}")
@@ -32,6 +40,8 @@ def load_word_list(path: str) -> List[str]:
 
 ANSWERS_LIST: List[str] = load_word_list(ANSWER_PATH)
 ALLOWED_GUESSES: set = set(load_word_list(GUESS_PATH))
+print(f"ALLOWED_GUESSES loaded: {len(ALLOWED_GUESSES)} entries.")
+print(f"'sleep' in ALLOWED_GUESSES: {'sleep' in ALLOWED_GUESSES}")
 
 def wordle_feedback(guess: str, answer: str) -> List[str]:
     feedback = ['gray'] * 5
@@ -170,11 +180,13 @@ class WordleCog(commands.Cog):
         # GUESS
         if content.startswith("guess "):
             guess = content[6:].strip().lower()
+            print(f"User guess: '{guess}' (type: {type(guess)})")
+            print(f"Guess in ALLOWED_GUESSES? {guess in ALLOWED_GUESSES}")
             if len(guess) != 5 or not guess.isalpha():
                 await message.channel.send("Your guess must be a 5-letter word.")
                 return
             if guess not in ALLOWED_GUESSES:
-                await message.channel.send("Not a valid English word!")
+                await message.channel.send(f"Not a valid English word! (Debug: '{guess}' not in {len(ALLOWED_GUESSES)} words.)")
                 return
             fb = game.add_guess(guess)
             try:
@@ -190,7 +202,9 @@ class WordleCog(commands.Cog):
                     f"Image could not be generated: {e}"
                 )
             if game.is_solved():
-                await message.channel.send(f"🎉 Solved! The word was **{game.answer.upper()}**. Total guesses: {len(game.guesses)}")
+                await message.channel.send(
+                    f"🎉 Solved! The word was **{game.answer.upper()}**. Total guesses: {len(game.guesses)}"
+                )
                 del self.games[channel_id]
             return
 
