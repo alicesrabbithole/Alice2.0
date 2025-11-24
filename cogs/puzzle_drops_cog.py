@@ -241,6 +241,32 @@ class PuzzleDropsCog(commands.Cog, name="Puzzle Drops"):
             f"🔧 Drop channel configured for **{display_name}** in `#{channel.name}` by `{ctx.author}`."
         )
 
+    @commands.hybrid_command(
+        name="removedropchannel",
+        description="Remove a channel from automatic puzzle drops."
+    )
+    @is_admin()
+    async def removedropchannel(
+            self,
+            ctx: commands.Context,
+            channel: discord.TextChannel
+    ):
+        drop_channels = self.bot.data.get("drop_channels", {})
+        if str(channel.id) not in drop_channels:
+            return await ctx.send(
+                f"❌ {channel.mention} is not configured as a drop channel.",
+                ephemeral=True
+            )
+        del drop_channels[str(channel.id)]
+        save_data(self.bot.data)
+        await ctx.send(
+            f"✅ Drops have been disabled for {channel.mention}.",
+            ephemeral=False
+        )
+        await log(
+            self.bot,
+            f"🗑️ Drop channel removed: `#{channel.name}` by `{ctx.author}`."
+        )
 
 # --- Cog entry point ---
 async def setup(bot: commands.Bot):
