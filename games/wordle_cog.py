@@ -9,7 +9,7 @@ ALLOWED_CHANNEL_IDS = [1309962373846532159, 1382445010988830852, 130996237505869
 STAFF_ROLE_ID = 123456789123456789  # Replace with your actual staff role ID
 
 ANSWER_PATH = os.path.join(os.path.dirname(__file__), '..', 'data', 'wordle-answers-alphabetical.txt')
-GUESS_PATH = os.path.join(os.path.dirname(__file__), '..', 'data', 'wordle-guessesgit .txt')  # singular!
+GUESS_PATH = os.path.join(os.path.dirname(__file__), '..', 'data', 'wordle-guesses .txt')  # singular!
 
 KEYBOARD_ROWS = [
     "QWERTYUIOP",
