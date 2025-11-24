@@ -9,7 +9,7 @@ ALLOWED_CHANNEL_IDS = [1309962373846532159, 1382445010988830852, 130996237505869
 STAFF_ROLE_ID = 123456789123456789  # Replace with your actual staff role ID
 
 ANSWER_PATH = os.path.join(os.path.dirname(__file__), '..', 'data', 'wordle-answers-alphabetical.txt')
-GUESS_PATH = os.path.join(os.path.dirname(__file__), '..', 'data', 'wordle-guesses .txt')  # singular!
+GUESS_PATH = os.path.join(os.path.dirname(__file__), '..', 'data', 'wordle-guesses.txt')
 
 KEYBOARD_ROWS = [
     "QWERTYUIOP",
@@ -20,9 +20,11 @@ KEYBOARD_ROWS = [
 def load_word_list(path: str) -> List[str]:
     try:
         with open(path, encoding="utf-8") as f:
-            words = [line.strip().lower()
-                     for line in f
-                     if line.strip() and len(line.strip()) == 5 and line.strip().isalpha()]
+            words = [
+                line.strip().lower()
+                for line in f
+                if line.strip() and len(line.strip()) == 5 and line.strip().isalpha()
+            ]
         return words
     except Exception as e:
         print(f"Failed to load words from {path}: {e}")
