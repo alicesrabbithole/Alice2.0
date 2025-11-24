@@ -72,24 +72,17 @@ def get_letter_image(letter: str, color: str) -> str:
     folder = os.path.join(os.path.dirname(__file__), '..', 'wordle_letters', color)
     return os.path.join(folder, filename)
 
-def compose_board(guesses: List[str], feedbacks: List[List[str]], max_rows: int = 6) -> Image.Image:
-    # Each guess is a row; pad up to max_rows if fewer guesses
+def compose_board(guesses: List[str], feedbacks: List[List[str]]) -> Image.Image:
+    n_rows = max(1, len(guesses))  # Always at least 1 row so the board isn't blank
     board_rows = []
-    for i in range(max_rows):
-        if i < len(guesses):
-            row_imgs = [
-                Image.open(get_letter_image(letter, color)).resize(STANDARD_SIZE, Image.LANCZOS)
-                for letter, color in zip(guesses[i], feedbacks[i])
-            ]
-        else:
-            # Use gray 'a' tiles for blanks
-            row_imgs = [
-                Image.open(get_letter_image("a", "gray")).resize(STANDARD_SIZE, Image.LANCZOS)
-                for _ in range(5)
-            ]
+    for i in range(n_rows):
+        row_imgs = [
+            Image.open(get_letter_image(letter, color)).resize(STANDARD_SIZE, Image.LANCZOS)
+            for letter, color in zip(guesses[i], feedbacks[i])
+        ]
         board_rows.append(row_imgs)
     w, h = STANDARD_SIZE
-    canvas = Image.new('RGBA', (w * 5, h * max_rows))
+    canvas = Image.new('RGBA', (w * 5, h * n_rows))
     for row_idx, row_imgs in enumerate(board_rows):
         for col_idx, img in enumerate(row_imgs):
             canvas.paste(img, (col_idx * w, row_idx * h))
