@@ -11,6 +11,7 @@ STAFF_ROLE_ID = 123456789123456789  # Replace with your actual staff role ID
 ANSWER_PATH = os.path.join(os.path.dirname(__file__), '..', 'data', 'wordle-answers-alphabetical.txt')
 GUESS_PATH = os.path.join(os.path.dirname(__file__), '..', 'data', 'wordle-guesses.txt')
 STANDARD_SIZE = (24, 24)
+MAX_GUESSES = 10
 
 print(f"GUESS_PATH used: {GUESS_PATH}")
 
@@ -73,7 +74,7 @@ def get_letter_image(letter: str, color: str) -> str:
     return os.path.join(folder, filename)
 
 def compose_board(guesses: List[str], feedbacks: List[List[str]]) -> Image.Image:
-    n_rows = max(1, len(guesses))  # Always at least 1 row so the board isn't blank
+    n_rows = max(1, min(len(guesses), MAX_GUESSES))
     board_rows = []
     for i in range(n_rows):
         row_imgs = [
@@ -194,7 +195,8 @@ class WordleCog(commands.Cog):
                 await message.channel.send("Your guess must be a 5-letter word.")
                 return
             if guess not in ALLOWED_GUESSES:
-                await message.channel.send(f"Not a valid English word!")
+                await message.channel.send(
+                    f"Not a valid English word! (Debug: '{guess}' not in {len(ALLOWED_GUESSES)} words.)")
                 return
             fb = game.add_guess(guess)
             try:
@@ -214,7 +216,13 @@ class WordleCog(commands.Cog):
                     f"🎉 Solved! The word was **{game.answer.upper()}**. Total guesses: {len(game.guesses)}"
                 )
                 del self.games[channel_id]
-            return
+                return
+            if len(game.guesses) >= MAX_GUESSES:
+                await message.channel.send(
+                    f"❌ Out of guesses! The word was **{game.answer.upper()}**."
+                )
+                del self.games[channel_id]
+                return
 
         # STATUS
         if content == "wordle status":
