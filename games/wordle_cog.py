@@ -9,7 +9,8 @@ ALLOWED_CHANNEL_IDS = [1309962373846532159, 1382445010988830852, 130996237505869
 STAFF_ROLE_ID = 123456789123456789  # Replace with your actual staff role ID
 
 ANSWER_PATH = os.path.join(os.path.dirname(__file__), '..', 'data', 'wordle-answers-alphabetical.txt')
-GUESS_PATH = os.path.join(os.path.dirname(__file__), '..', 'data', 'wordle-guesses.txt')
+GUESS_PATH = os.path.join(os.path.dirname(__file__), '..', 'data', 'wordle-guessesgit .txt')  # singular!
+
 KEYBOARD_ROWS = [
     "QWERTYUIOP",
     "ASDFGHJKL",
@@ -18,12 +19,13 @@ KEYBOARD_ROWS = [
 
 def load_word_list(path: str) -> List[str]:
     try:
-        with open(path) as f:
+        with open(path, encoding="utf-8") as f:
             words = [line.strip().lower()
                      for line in f
                      if line.strip() and len(line.strip()) == 5 and line.strip().isalpha()]
         return words
-    except Exception:
+    except Exception as e:
+        print(f"Failed to load words from {path}: {e}")
         return []
 
 ANSWERS_LIST: List[str] = load_word_list(ANSWER_PATH)
@@ -49,8 +51,14 @@ def wordle_feedback(guess: str, answer: str) -> List[str]:
     return feedback
 
 def get_letter_image(letter: str, color: str) -> str:
-    filename = f"{color}/{letter.lower()}.png"
-    return os.path.join(os.path.dirname(__file__), '..', 'wordle_letters', filename)
+    letter = letter.lower()
+    # image file scheme: basea.png for white, graya.png for gray, greena.png for green, yellowa.png for yellow
+    if color == "white":
+        filename = f"base{letter}.png"
+    else:
+        filename = f"{color}{letter}.png"
+    folder = os.path.join(os.path.dirname(__file__), '..', 'wordle_letters', color)
+    return os.path.join(folder, filename)
 
 def compose_row(guess: str, feedback: List[str]) -> Image.Image:
     imgs = [
