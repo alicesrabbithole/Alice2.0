@@ -10,6 +10,7 @@ STAFF_ROLE_ID = 123456789123456789  # Replace with your actual staff role ID
 
 ANSWER_PATH = os.path.join(os.path.dirname(__file__), '..', 'data', 'wordle-answers-alphabetical.txt')
 GUESS_PATH = os.path.join(os.path.dirname(__file__), '..', 'data', 'wordle-guesses.txt')
+STANDARD_SIZE = (48, 48)
 
 print(f"GUESS_PATH used: {GUESS_PATH}")
 
@@ -74,10 +75,10 @@ def get_letter_image(letter: str, color: str) -> str:
 
 def compose_row(guess: str, feedback: List[str]) -> Image.Image:
     imgs = [
-        Image.open(get_letter_image(letter, color))
+        Image.open(get_letter_image(letter, color)).resize(STANDARD_SIZE, Image.LANCZOS)
         for letter, color in zip(guess, feedback)
     ]
-    w, h = imgs[0].size
+    w, h = STANDARD_SIZE
     canvas = Image.new('RGBA', (w * 5, h))
     for i, img in enumerate(imgs):
         canvas.paste(img, (i * w, 0))
@@ -101,13 +102,16 @@ def compute_keyboard_status(guesses: List[str], feedbacks: List[List[str]]) -> D
 def compose_keyboard(key_status: Dict[str, str]) -> Image.Image:
     row_imgs = []
     for row in KEYBOARD_ROWS:
-        imgs = [Image.open(get_letter_image(ch, key_status.get(ch, "white"))) for ch in row]
-        w, h = imgs[0].size
+        imgs = [
+            Image.open(get_letter_image(ch, key_status.get(ch, "white"))).resize(STANDARD_SIZE, Image.LANCZOS)
+            for ch in row
+        ]
+        w, h = STANDARD_SIZE
         canvas_row = Image.new('RGBA', (w * len(row), h))
         for i, img in enumerate(imgs):
             canvas_row.paste(img, (i * w, 0))
         row_imgs.append(canvas_row)
-    total_height = sum(row.height for row in row_imgs)
+    total_height = h * len(row_imgs)
     canvas = Image.new('RGBA', (row_imgs[0].width, total_height))
     y_offset = 0
     for row_img in row_imgs:
