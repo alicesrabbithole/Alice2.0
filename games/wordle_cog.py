@@ -10,7 +10,7 @@ STAFF_ROLE_ID = 123456789123456789  # Replace with your actual staff role ID
 
 ANSWER_PATH = os.path.join(os.path.dirname(__file__), '..', 'data', 'wordle-answers-alphabetical.txt')
 GUESS_PATH = os.path.join(os.path.dirname(__file__), '..', 'data', 'wordle-guesses.txt')
-STANDARD_SIZE = (48, 48)
+STANDARD_SIZE = (24, 24)
 
 print(f"GUESS_PATH used: {GUESS_PATH}")
 
@@ -29,7 +29,6 @@ def load_word_list(path: str) -> List[str]:
                 if line.strip() and len(line.strip()) == 5 and line.strip().isalpha()
             ]
         print(f"Loaded {len(words)} words from {path}")
-        # Check if 'sleep' is present, and if there are any weird words with spaces
         print(f"'sleep' in word list: {'sleep' in words}")
         for w in words:
             if ' ' in w or '\t' in w or not w.isalpha() or len(w) != 5:
@@ -64,7 +63,7 @@ def wordle_feedback(guess: str, answer: str) -> List[str]:
     return feedback
 
 def get_letter_image(letter: str, color: str) -> str:
-    letter = letter.lower()
+    letter = letter.lower() if letter.isalpha() else "a"
     # image file scheme: basea.png for white, graya.png for gray, greena.png for green, yellowa.png for yellow
     if color == "white":
         filename = f"base{letter}.png"
@@ -73,15 +72,27 @@ def get_letter_image(letter: str, color: str) -> str:
     folder = os.path.join(os.path.dirname(__file__), '..', 'wordle_letters', color)
     return os.path.join(folder, filename)
 
-def compose_row(guess: str, feedback: List[str]) -> Image.Image:
-    imgs = [
-        Image.open(get_letter_image(letter, color)).resize(STANDARD_SIZE, Image.LANCZOS)
-        for letter, color in zip(guess, feedback)
-    ]
+def compose_board(guesses: List[str], feedbacks: List[List[str]], max_rows: int = 6) -> Image.Image:
+    # Each guess is a row; pad up to max_rows if fewer guesses
+    board_rows = []
+    for i in range(max_rows):
+        if i < len(guesses):
+            row_imgs = [
+                Image.open(get_letter_image(letter, color)).resize(STANDARD_SIZE, Image.LANCZOS)
+                for letter, color in zip(guesses[i], feedbacks[i])
+            ]
+        else:
+            # Use gray 'a' tiles for blanks
+            row_imgs = [
+                Image.open(get_letter_image("a", "gray")).resize(STANDARD_SIZE, Image.LANCZOS)
+                for _ in range(5)
+            ]
+        board_rows.append(row_imgs)
     w, h = STANDARD_SIZE
-    canvas = Image.new('RGBA', (w * 5, h))
-    for i, img in enumerate(imgs):
-        canvas.paste(img, (i * w, 0))
+    canvas = Image.new('RGBA', (w * 5, h * max_rows))
+    for row_idx, row_imgs in enumerate(board_rows):
+        for col_idx, img in enumerate(row_imgs):
+            canvas.paste(img, (col_idx * w, row_idx * h))
     return canvas
 
 def compute_keyboard_status(guesses: List[str], feedbacks: List[List[str]]) -> Dict[str, str]:
@@ -190,13 +201,13 @@ class WordleCog(commands.Cog):
                 await message.channel.send("Your guess must be a 5-letter word.")
                 return
             if guess not in ALLOWED_GUESSES:
-                await message.channel.send(f"Not a valid English word! (Debug: '{guess}' not in {len(ALLOWED_GUESSES)} words.)")
+                await message.channel.send(f"Not a valid English word!")
                 return
             fb = game.add_guess(guess)
             try:
-                row_img = compose_row(guess, fb)
-                img_path = "wordle_row.png"
-                row_img.save(img_path)
+                board_img = compose_board(game.guesses, game.feedbacks)
+                img_path = "wordle_board.png"
+                board_img.save(img_path)
                 await message.channel.send(
                     file=discord.File(img_path)
                 )
