@@ -148,7 +148,7 @@ class RollingCog(commands.Cog):
             or member.guild_permissions.administrator
         )
 
-    @commands.hybrid_command(name="roll_start_game", description="Host: Start a new roll game (optional minutes). Channel-specific.")
+    @commands.hybrid_command(name="roll_start", description="Host: Start a new roll game (optional minutes). Channel-specific.")
     async def roll_start_game(self, ctx, minutes: int = None):
         if not self.is_staff(ctx.author):
             await ctx.send("You do not have permission to start new games.")
@@ -158,7 +158,7 @@ class RollingCog(commands.Cog):
         self.last_host[channel_id] = ctx.author.id
         self.leaderboards[str(channel_id)] = {}
         save_leaderboards(self.leaderboards)
-        msg = f"**New roll game started in this channel!** Leaderboard reset. Type **start rolling** to play ({MAX_ROLLS} rolls)."
+        msg = f"**A new game has startedl!** Type **start rolling** to play."
         end_time = None
         if minutes and minutes > 0:
             end_time = datetime.utcnow() + timedelta(minutes=minutes)
@@ -176,9 +176,7 @@ class RollingCog(commands.Cog):
             game["active"] = False
             leaderboard_msg = await self.post_leaderboard(channel_id, channel)
             host_tag = f"<@{host_id}>" if host_id else ""
-            await channel.send(f"⏰ Roll game ended (timer expired)! No new rolls can be started. {host_tag}")
-            if leaderboard_msg:
-                await channel.send("Final leaderboard posted above.")
+            await channel.send(f"⏰ {host_tag}, your game has ended! {host_tag}")
 
     async def post_leaderboard(self, channel_id, channel):
         scores = self.leaderboards.get(str(channel_id), {})
@@ -197,7 +195,7 @@ class RollingCog(commands.Cog):
         if score is None:
             await ctx.send("You have no recorded score in this channel. Type **start rolling** and play!")
         else:
-            await ctx.send(f"Your best roll-{MAX_ROLLS}x score in this channel: **{score}**")
+            await ctx.send(f"Your best score - **{score}**")
 
     @commands.hybrid_command(name="roll_leaderboard", description="Show roll game leaderboard. Channel-specific.")
     async def roll_leaderboard(self, ctx):
