@@ -9,18 +9,15 @@ from utils.checks import STAFF_ROLE_ID
 
 DB_FILE = os.path.join(os.path.dirname(__file__), '..', 'data', 'roll_leaderboard.json')
 
-
 def load_leaderboard():
     if not os.path.exists(DB_FILE):
         return {}
     with open(DB_FILE, "r", encoding="utf-8") as f:
         return json.load(f)
 
-
 def save_leaderboard(lb):
     with open(DB_FILE, "w", encoding="utf-8") as f:
         json.dump(lb, f)
-
 
 def format_remaining(end_time):
     if not end_time:
@@ -33,7 +30,6 @@ def format_remaining(end_time):
         return f"Time left: {minutes // 60}h {minutes % 60}m"
     return f"Time left: {minutes}m {seconds}s"
 
-
 class PersonalRollView(discord.ui.View):
     def __init__(self, cog, user_id, game_end_time=None):
         super().__init__(timeout=None)
@@ -43,9 +39,24 @@ class PersonalRollView(discord.ui.View):
         self.finished = False
         self.game_end_time = game_end_time
 
+    def build_panel_message(self, member):
+        panel = f"{member.mention}'s Roll-5x Game!\n"
+        if self.rolls:
+            panel += f"Rolls: {' '.join(map(str, self.rolls))}\n"
+            panel += f"Current total: **{sum(self.rolls)}**\n"
+        else:
+            panel += "Click 🎲 to start!"
+        panel += "\nPerfect score: 50."
+        if self.game_end_time:
+            panel += f"\n{format_remaining(self.game_end_time)}"
+        if self.finished:
+            score = sum(self.rolls)
+            perfect = " 🎉 Perfect!" if score == 50 else ""
+            panel += f"\n**DONE! Your total: {score}{perfect}**"
+        return panel
+
     @discord.ui.button(label="Roll 1-10 🎲", style=discord.ButtonStyle.primary)
     async def roll(self, interaction: discord.Interaction, button: discord.ui.Button):
-        # Game active check
         guild_id = interaction.guild.id
         game = self.cog.active_games.get(guild_id)
         game_ended = game and game.get("end_time") and datetime.utcnow() > game["end_time"]
@@ -54,15 +65,13 @@ class PersonalRollView(discord.ui.View):
         if not game_active:
             await interaction.response.send_message("Game ended!", ephemeral=True)
             self.disable_all_items()
-            await interaction.message.edit(view=self)
+            await interaction.message.edit(view=self, content=self.build_panel_message(interaction.user))
             return
         if interaction.user.id != self.user_id:
-            await interaction.response.send_message("This is not your game. Type 'start rolling' for your own!",
-                                                    ephemeral=True)
+            await interaction.response.send_message("This is not your game. Type 'start rolling' for your own!", ephemeral=True)
             return
         if self.finished:
-            await interaction.response.send_message("Your game is done. Type 'start rolling' for a new game.",
-                                                    ephemeral=True)
+            await interaction.response.send_message("Your game is done. Type 'start rolling' for a new game.", ephemeral=True)
             return
         if len(self.rolls) >= 5:
             await interaction.response.send_message("You've finished your 5 rolls!", ephemeral=True)
@@ -70,22 +79,18 @@ class PersonalRollView(discord.ui.View):
         roll = random.randint(1, 10)
         self.rolls.append(roll)
         if len(self.rolls) == 5:
-            score = sum(self.rolls)
             self.finished = True
+            score = sum(self.rolls)
             self.cog.update_leaderboard(self.user_id, score)
-            perfect = " 🎉 Perfect!" if score == 50 else ""
-            await interaction.response.send_message(
-                f"Roll #{len(self.rolls)}: {roll}\nAll done! Your total: **{score}**.{perfect}", ephemeral=True
-            )
             self.disable_all_items()
-            await interaction.message.edit(view=self)
-        else:
-            await interaction.response.send_message(
-                f"Roll #{len(self.rolls)}: {roll}\nCurrent total: **{sum(self.rolls)}**", ephemeral=True
+            await interaction.response.edit_message(content=self.build_panel_message(interaction.user), view=self)
+            await interaction.followup.send(
+                f"All done! Your total: **{score}**{' 🎉 Perfect!' if score == 50 else ''}", ephemeral=True
             )
+        else:
+            await interaction.response.edit_message(content=self.build_panel_message(interaction.user), view=self)
 
-
-class PersonalRollGameCog(commands.Cog):
+class RollingCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.leaderboard = load_leaderboard()
@@ -97,9 +102,9 @@ class PersonalRollGameCog(commands.Cog):
 
     def is_staff(self, member):
         return (
-                any(r.id == STAFF_ROLE_ID for r in getattr(member, "roles", []))
-                or member.guild_permissions.manage_guild
-                or member.guild_permissions.administrator
+            any(r.id == STAFF_ROLE_ID for r in getattr(member, "roles", []))
+            or member.guild_permissions.manage_guild
+            or member.guild_permissions.administrator
         )
 
     @commands.hybrid_command(name="roll_start_game",
@@ -175,18 +180,12 @@ class PersonalRollGameCog(commands.Cog):
         end_time = game.get("end_time") if game else None
         now = datetime.utcnow()
         if not game or not game.get("active", False) or (end_time and now > end_time):
-            await message.channel.send("No active roll game in this server. Ask a host to use /roll_start_game!",
-                                       delete_after=20)
+            await message.channel.send("No active roll game in this server. Ask a host to use /roll_start_game!", delete_after=20)
             return
 
         user_id = message.author.id
-        time_str = format_remaining(end_time)
-        panel_msg = f"{message.author.mention} started a Roll-5x Game!\nClick your button to roll up to 5 times.\nPerfect score: 50."
-        if time_str:
-            panel_msg += f"\n{time_str}"
         view = PersonalRollView(self, user_id, game_end_time=end_time)
-        await message.channel.send(panel_msg, view=view)
-
+        await message.channel.send(view.build_panel_message(message.author), view=view)
 
 async def setup(bot):
-    await bot.add_cog(PersonalRollGameCog(bot))
+    await bot.add_cog(RollingCog(bot))
