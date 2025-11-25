@@ -5,18 +5,19 @@ import os
 import json
 import asyncio
 from datetime import datetime, timedelta
+from collections import defaultdict
 from utils.checks import STAFF_ROLE_ID
 
 DB_FILE = os.path.join(os.path.dirname(__file__), '..', 'data', 'roll_leaderboard.json')
 MAX_ROLLS = 10
 
-def load_leaderboard():
+def load_leaderboards():
     if not os.path.exists(DB_FILE):
         return {}
     with open(DB_FILE, "r", encoding="utf-8") as f:
         return json.load(f)
 
-def save_leaderboard(lb):
+def save_leaderboards(lb):
     with open(DB_FILE, "w", encoding="utf-8") as f:
         json.dump(lb, f)
 
@@ -31,17 +32,23 @@ def format_remaining(end_time):
         return f"Time left: {minutes // 60}h {minutes % 60}m"
     return f"Time left: {minutes}m {seconds}s"
 
+def pretty_rolls(rolls):
+    if not rolls:
+        return ""
+    return " | ".join(f"**{x}**" for x in rolls)
+
 class PersonalRollView(discord.ui.View):
-    def __init__(self, cog, user_id, game_end_time=None):
+    def __init__(self, cog, user_id, channel_id, game_end_time=None):
         super().__init__(timeout=None)
         self.cog = cog
         self.user_id = user_id
+        self.channel_id = channel_id
         self.game_end_time = game_end_time
         self.rolls = []
         self.finished = False
         # Add restart button, starts disabled; will enable on finish
         self.restart_btn = discord.ui.Button(
-            label="Restart Game", style=discord.ButtonStyle.success, disabled=True
+            label="Restart Game", style=discord.ButtonStyle.secondary, disabled=True
         )
         self.restart_btn.callback = self.restart_callback
         self.add_item(self.restart_btn)
@@ -49,8 +56,8 @@ class PersonalRollView(discord.ui.View):
     def build_panel_message(self, member):
         panel = f"{member.mention}'s Roll-{MAX_ROLLS}x Game!\n"
         if self.rolls:
-            panel += f"Rolls: {' '.join(map(str, self.rolls))}\n"
-            panel += f"Current total: **{sum(self.rolls)}**\n"
+            panel += f"Rolls: {pretty_rolls(self.rolls)}\n"
+            panel += f"Current total: __**{sum(self.rolls)}**__\n"
         else:
             panel += "Click 🎲 to start!\n"
         panel += f"Perfect score: {MAX_ROLLS * 10}."
@@ -62,10 +69,10 @@ class PersonalRollView(discord.ui.View):
             panel += f"\n**DONE! Your total: {score}{perfect}**"
         return panel
 
-    @discord.ui.button(label="Roll 1-10 🎲", style=discord.ButtonStyle.primary)
+    @discord.ui.button(label="Roll 1-10 🎲", style=discord.ButtonStyle.secondary)
     async def roll(self, interaction: discord.Interaction, button: discord.ui.Button):
-        guild_id = interaction.guild.id
-        game = self.cog.active_games.get(guild_id)
+        channel_id = interaction.channel.id
+        game = self.cog.active_games.get(channel_id)
         game_ended = game and game.get("end_time") and datetime.utcnow() > game["end_time"]
         game_active = game and game.get("active", False) and not game_ended
 
@@ -76,7 +83,7 @@ class PersonalRollView(discord.ui.View):
             return
 
         if interaction.user.id != self.user_id:
-            await interaction.response.send_message("This is not your game. Type 'start rolling' for your own!", ephemeral=True)
+            await interaction.response.send_message("This is not your game. Type 'start rolling' in this channel for your own!", ephemeral=True)
             return
 
         if self.finished:
@@ -93,10 +100,10 @@ class PersonalRollView(discord.ui.View):
         if len(self.rolls) == MAX_ROLLS:
             self.finished = True
             score = sum(self.rolls)
-            self.cog.update_leaderboard(self.user_id, score)
+            self.cog.update_leaderboard(self.channel_id, self.user_id, score)
             # Edit panel: disable roll button, enable restart
             self.children[0].disabled = True  # Roll button
-            self.children[0].style = discord.ButtonStyle.secondary  # gray
+            self.children[0].style = discord.ButtonStyle.secondary
             self.restart_btn.disabled = False
             await self.edit_panel(interaction)
         else:
@@ -110,7 +117,7 @@ class PersonalRollView(discord.ui.View):
         self.rolls = []
         self.finished = False
         self.children[0].disabled = False
-        self.children[0].style = discord.ButtonStyle.primary
+        self.children[0].style = discord.ButtonStyle.secondary
         self.restart_btn.disabled = True
         await self.edit_panel(interaction)
 
@@ -122,12 +129,17 @@ class PersonalRollView(discord.ui.View):
 class RollingCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        self.leaderboard = load_leaderboard()
-        self.active_games = {}  # server_id : {"active": bool, "end_time": datetime|None}
+        self.leaderboards = load_leaderboards()  # channel_id: {user_id: score}
+        self.active_games = {}  # channel_id : {"active": bool, "end_time": datetime|None}
+        self.last_host = {}     # channel_id : host_id
 
-    def update_leaderboard(self, user_id, score):
-        self.leaderboard[str(user_id)] = score
-        save_leaderboard(self.leaderboard)
+    def update_leaderboard(self, channel_id, user_id, score):
+        cid = str(channel_id)
+        uid = str(user_id)
+        if cid not in self.leaderboards:
+            self.leaderboards[cid] = {}
+        self.leaderboards[cid][uid] = score
+        save_leaderboards(self.leaderboards)
 
     def is_staff(self, member):
         return (
@@ -136,57 +148,75 @@ class RollingCog(commands.Cog):
             or member.guild_permissions.administrator
         )
 
-    @commands.hybrid_command(name="roll_start_game", description="Host: Start a new roll game (optional minutes)")
+    @commands.hybrid_command(name="roll_start_game", description="Host: Start a new roll game (optional minutes). Channel-specific.")
     async def roll_start_game(self, ctx, minutes: int = None):
         if not self.is_staff(ctx.author):
             await ctx.send("You do not have permission to start new games.")
             return
-        server_id = ctx.guild.id
-        self.active_games[server_id] = {"active": True}
-        self.leaderboard = {}
-        save_leaderboard(self.leaderboard)
-        msg = f"**New roll game started!** Leaderboard reset. Type **start rolling** to play ({MAX_ROLLS} rolls)."
+        channel_id = ctx.channel.id
+        self.active_games[channel_id] = {"active": True}
+        self.last_host[channel_id] = ctx.author.id
+        self.leaderboards[str(channel_id)] = {}
+        save_leaderboards(self.leaderboards)
+        msg = f"**New roll game started in this channel!** Leaderboard reset. Type **start rolling** to play ({MAX_ROLLS} rolls)."
         end_time = None
         if minutes and minutes > 0:
             end_time = datetime.utcnow() + timedelta(minutes=minutes)
-            self.active_games[server_id]["end_time"] = end_time
+            self.active_games[channel_id]["end_time"] = end_time
             msg += f"\nGame ends in {minutes} minutes."
-            self.bot.loop.create_task(self.auto_end_game(server_id, end_time, ctx.channel))
+            self.bot.loop.create_task(self.auto_end_game(channel_id, end_time, ctx.channel))
         await ctx.send(msg)
 
-    async def auto_end_game(self, server_id, end_time, channel):
+    async def auto_end_game(self, channel_id, end_time, channel):
         seconds = max(1, int((end_time - datetime.utcnow()).total_seconds()))
         await asyncio.sleep(seconds)
-        game = self.active_games.get(server_id)
+        game = self.active_games.get(channel_id)
+        host_id = self.last_host.get(channel_id)
         if game and game.get("active", False):
             game["active"] = False
-            await channel.send("⏰ Roll game ended (timer expired)! No new rolls can be started.")
+            leaderboard_msg = await self.post_leaderboard(channel_id, channel)
+            host_tag = f"<@{host_id}>" if host_id else ""
+            await channel.send(f"⏰ Roll game ended (timer expired)! No new rolls can be started. {host_tag}")
+            if leaderboard_msg:
+                await channel.send("Final leaderboard posted above.")
 
-    @commands.hybrid_command(name="roll_score", description="Check your best roll score")
-    async def roll_score(self, ctx):
-        score = self.leaderboard.get(str(ctx.author.id))
-        if score is None:
-            await ctx.send("You have no recorded score. Type **start rolling** and play!")
-        else:
-            await ctx.send(f"Your best roll-{MAX_ROLLS}x score: **{score}**")
-
-    @commands.hybrid_command(name="roll_leaderboard", description="Show roll game leaderboard")
-    async def roll_leaderboard(self, ctx):
-        if not self.leaderboard:
-            await ctx.send("No scores yet!")
-            return
-        sorted_lb = sorted(self.leaderboard.items(), key=lambda kv: kv[1], reverse=True)
+    async def post_leaderboard(self, channel_id, channel):
+        scores = self.leaderboards.get(str(channel_id), {})
+        if not scores:
+            await channel.send("No scores for this game!")
+            return None
+        sorted_lb = sorted(scores.items(), key=lambda kv: kv[1], reverse=True)
         text = "\n".join(f"<@{uid}>: {score}" for uid, score in sorted_lb)
-        await ctx.send(f"**Leaderboard:**\n{text}")
+        msg = await channel.send(f"**Final Leaderboard:**\n{text}")
+        return msg
 
-    @commands.hybrid_command(name="roll_leaderboard_reset", description="Host: Reset the roll game leaderboard")
+    @commands.hybrid_command(name="roll_score", description="Check your best roll score. Channel-specific.")
+    async def roll_score(self, ctx):
+        scores = self.leaderboards.get(str(ctx.channel.id), {})
+        score = scores.get(str(ctx.author.id))
+        if score is None:
+            await ctx.send("You have no recorded score in this channel. Type **start rolling** and play!")
+        else:
+            await ctx.send(f"Your best roll-{MAX_ROLLS}x score in this channel: **{score}**")
+
+    @commands.hybrid_command(name="roll_leaderboard", description="Show roll game leaderboard. Channel-specific.")
+    async def roll_leaderboard(self, ctx):
+        scores = self.leaderboards.get(str(ctx.channel.id), {})
+        if not scores:
+            await ctx.send("No scores yet in this channel!")
+            return
+        sorted_lb = sorted(scores.items(), key=lambda kv: kv[1], reverse=True)
+        text = "\n".join(f"<@{uid}>: {score}" for uid, score in sorted_lb)
+        await ctx.send(f"**Leaderboard for this channel:**\n{text}")
+
+    @commands.hybrid_command(name="roll_leaderboard_reset", description="Host: Reset the roll game leaderboard for this channel")
     async def roll_leaderboard_reset(self, ctx):
         if not self.is_staff(ctx.author):
             await ctx.send("You do not have permission to reset the leaderboard.")
             return
-        self.leaderboard = {}
-        save_leaderboard(self.leaderboard)
-        await ctx.send("Roll game leaderboard has been reset.")
+        self.leaderboards[str(ctx.channel.id)] = {}
+        save_leaderboards(self.leaderboards)
+        await ctx.send("Roll game leaderboard has been reset for this channel.")
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
@@ -198,18 +228,18 @@ class RollingCog(commands.Cog):
         if not message.guild:
             await message.channel.send("Rolling games can only be started in servers.")
             return
-        server_id = message.guild.id
-        game = self.active_games.get(server_id)
+        channel_id = message.channel.id
+        game = self.active_games.get(channel_id)
         end_time = game.get("end_time") if game else None
         now = datetime.utcnow()
         if not game or not game.get("active", False) or (end_time and now > end_time):
             await message.channel.send(
-                "No active roll game in this server. Ask a host to use /roll_start_game!",
+                "No active roll game in this channel. Ask a host to use /roll_start_game!",
                 delete_after=20
             )
             return
         user_id = message.author.id
-        view = PersonalRollView(self, user_id, game_end_time=end_time)
+        view = PersonalRollView(self, user_id, channel_id, game_end_time=end_time)
         await message.channel.send(view.build_panel_message(message.author), view=view)
 
 async def setup(bot):
