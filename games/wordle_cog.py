@@ -113,25 +113,27 @@ def compose_keyboard(key_status: Dict[str, str]) -> Image.Image:
 
     row_imgs = []
     for row in KEYBOARD_ROWS:
-        imgs = []
-        for ch in row:
-            if str(ch).lower() == 'blank':
-                blank_path = os.path.join(os.path.dirname(__file__), '..', 'wordle_letters', 'white', 'blank.png')
-                img = Image.open(blank_path).resize(STANDARD_SIZE, Image.LANCZOS)
-            else:
-                img = Image.open(get_letter_image(ch, key_status.get(str(ch).upper(), "white"))).resize(STANDARD_SIZE, Image.LANCZOS)
-            imgs.append(img)
         # Center row with transparent pads if needed
-        num_blanks = max_row_len - len(imgs)
+        num_blanks = max_row_len - len(row)
         pad_left = num_blanks // 2 + (num_blanks % 2)
         pad_right = num_blanks // 2
         pad_img = Image.new('RGBA', (w, h), (0, 0, 0, 0))  # fully transparent pad
-        padded_imgs = [pad_img] * pad_left + imgs + [pad_img] * pad_right
+
+        padded_row = [pad_img] * pad_left + row + [pad_img] * pad_right
+
         # Compose the row
         row_img_width = w * max_row_len + key_spacing * (max_row_len - 1)
         canvas_row = Image.new('RGBA', (row_img_width, h), (0, 0, 0, 0))
         x_offset = 0
-        for img in padded_imgs:
+        for ch in padded_row:
+            if isinstance(ch, Image.Image):
+                img = ch
+            elif str(ch).lower() == 'blank':
+                # Don't paste anything—advance x_offset by (w + key_spacing)
+                x_offset += w + key_spacing
+                continue
+            else:
+                img = Image.open(get_letter_image(ch, key_status.get(str(ch).upper(), "white"))).resize(STANDARD_SIZE, Image.LANCZOS)
             canvas_row.paste(img, (x_offset, 0))
             x_offset += w + key_spacing
         row_imgs.append(canvas_row)
