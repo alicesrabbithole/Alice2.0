@@ -3,10 +3,9 @@ from discord.ext import commands
 import re
 import json
 import os
+from config import OWNER_ID
 
 GAMES_SAVE_PATH = "games.json"
-
-OWNER_ID = 123456789012345678  # <-- Change to your Discord user ID
 
 class TwentyoneQuestionsGame:
     def __init__(self, answer, host_id):
@@ -102,7 +101,6 @@ def create_cyan_label_embed(label, question):
         description=f"Queued Q{label}: {question}",
         color=0x00FFFF  # true cyan hex
     )
-    embed.set_footer(text="-#")
     return embed
 
 def create_summary_embed(game):
@@ -145,25 +143,30 @@ class TwentyoneQuestionsCog(commands.Cog):
             f"Word is host-selected.\n"
             "Type **ask [your yes/no question]** to queue a question.\n"
             "Type **guess [your guess]** to guess the word.\n"
-            "Type **listq21q** to view all pending questions.\n"
-            "Type **summary21q** to view answered Q&As.\n"
-            "Host (only): Reply with 'A1', 'A2', ... to answer Q1, Q2, ... (optionally include answer text, e.g. 'A1 yes')."
-            f"\nMax 21 questions will be counted!"
         )
 
-    @commands.hybrid_command(name='end21q', description='End the current 21 Questions game and show the answer')
+        # Ephemeral details for the host only
+        await ctx.send(
+            "Type **listq21q** to view all pending questions.\n"
+            "Type **summary21q** to view answered Q&As.\n"
+            "Host (only): Reply with 'A1', 'A2', ... to answer Q1, Q2, ... (optionally include answer text, e.g. 'A1 yes').\n"
+            "Max 21 questions will be counted!",
+            ephemeral=True
+        )
+
+    @commands.hybrid_command(name='end21q', description='End the current 21 Questions game')
     async def end21q(self, ctx):
         channel_id = ctx.channel.id
         game = self.games.get(channel_id)
         if not game or not game.active:
-            await ctx.send("No active 21 Questions game in this channel.")
+            await ctx.send("No active 21 Questions game in this channel.", ephemeral=True)
             return
         if ctx.author.id != game.host_id and ctx.author.id != OWNER_ID:
-            await ctx.send("Only the host or owner can end this game.")
+            await ctx.send("Only the host or owner can end this game.", ephemeral=True)
             return
         game.active = False
         save_games(self.games)
-        await ctx.send(f"Game ended. The word was: **{game.answer}**.")
+        await ctx.send("Game ended.")
 
     @commands.hybrid_command(name='summary21q', description='Show the status summary for the current game')
     async def summary21q(self, ctx):
@@ -262,13 +265,19 @@ class TwentyoneQuestionsCog(commands.Cog):
                 await message.channel.send(
                     f"❌ {message.author.mention} guessed \"{guess}\". That's not correct."
                 )
-                if not game.can_ask():
-                    game.active = False
-                    save_games(self.games)
-                    await message.channel.send(
-                        f"Game over! You reached 21 questions without guessing the word. The answer was: **{game.answer}**."
-                    )
+
+    @commands.hybrid_command(name='21qreveal',
+                             description='Reveal the answer for the current 21 Questions game (host/owner only)')
+    async def qreveal21q(self, ctx):
+        channel_id = ctx.channel.id
+        game = self.games.get(channel_id)
+        if not game or not game.active:
+            await ctx.send("No active 21 Questions game in this channel.", ephemeral=True)
             return
+        if ctx.author.id != game.host_id and ctx.author.id != OWNER_ID:
+            await ctx.send("Only the host or owner can reveal the answer.", ephemeral=True)
+            return
+        await ctx.send(f"The word/answer was: **{game.answer}**", ephemeral=True)
 
 async def setup(bot):
     await bot.add_cog(TwentyoneQuestionsCog(bot))

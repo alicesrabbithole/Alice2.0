@@ -21,13 +21,18 @@ from utils.theme import Colors
 
 logger = logging.getLogger(__name__)
 
+FREQUENCY_RANDOM_RANGES = {
+    "high": (2 * 60, 7 * 60),  # 2–7 min
+    "medium": (8 * 60, 15 * 60),  # 8–15 min
+    "low": (16 * 60, 30 * 60),  # 16–30 min
+}
 
 class PuzzleDropsCog(commands.Cog, name="Puzzle Drops"):
     """Manages the automatic and manual dropping of puzzle pieces."""
 
     DEFAULT_DROP_MODE = "timer"
-    DEFAULT_DROP_TIMER_MINUTES = 60
-    DEFAULT_DROP_MESSAGE_COUNT = 100
+    DEFAULT_DROP_TIMER_MINUTES = 15
+    DEFAULT_DROP_MESSAGE_COUNT = 40
 
     def __init__(self, bot: commands.Bot):
         self.bot = bot
@@ -119,14 +124,23 @@ class PuzzleDropsCog(commands.Cog, name="Puzzle Drops"):
         for ch_id_str, raw_cfg in drop_channels.items():
             if raw_cfg.get("mode") != "timer":
                 continue
+
             last_drop_str = raw_cfg.get("last_drop_time")
             if not last_drop_str:
                 raw_cfg["last_drop_time"] = now.isoformat()
+                # For a frequency mode, randomly set next_trigger
+                if "frequency_mode" in raw_cfg and raw_cfg["frequency_mode"] in FREQUENCY_RANDOM_RANGES:
+                    min_secs, max_secs = FREQUENCY_RANDOM_RANGES[raw_cfg["frequency_mode"]]
+                    raw_cfg["next_trigger"] = random.randint(min_secs, max_secs)
+                else:
+                    raw_cfg["next_trigger"] = raw_cfg.get("value", 3600)
                 data_changed = True
                 continue
+
             try:
                 last_drop_time = datetime.fromisoformat(last_drop_str)
-                seconds_to_wait = raw_cfg.get("value", 3600)
+                # -- Scheduler checks next_trigger (random interval) --
+                seconds_to_wait = raw_cfg.get("next_trigger", raw_cfg.get("value", 3600))
                 if now >= last_drop_time + timedelta(seconds=seconds_to_wait):
                     channel = self.bot.get_channel(int(ch_id_str))
                     if not channel:
@@ -134,15 +148,28 @@ class PuzzleDropsCog(commands.Cog, name="Puzzle Drops"):
                     puzzle_slug = raw_cfg.get("puzzle")
                     if not puzzle_slug:
                         continue
+
                     if puzzle_slug == "all_puzzles":
                         all_puzzles = list(self.bot.data.get("puzzles", {}).keys())
                         puzzle_key = random.choice(all_puzzles) if all_puzzles else None
                     else:
                         puzzle_key = resolve_puzzle_key(self.bot.data, puzzle_slug)
+
                     if puzzle_key:
                         await self._spawn_drop(channel, puzzle_key)
                         raw_cfg["last_drop_time"] = now.isoformat()
                         data_changed = True
+
+                        # -------------- STEP 3: RANDOMIZE NEXT INTERVAL IF IN FREQUENCY MODE --------------
+                        if "frequency_mode" in raw_cfg and raw_cfg["frequency_mode"] in FREQUENCY_RANDOM_RANGES:
+                            min_secs, max_secs = FREQUENCY_RANDOM_RANGES[raw_cfg["frequency_mode"]]
+                            raw_cfg["next_trigger"] = random.randint(min_secs, max_secs)
+                            logger.info(
+                                f"Next randomized drop for {raw_cfg['frequency_mode']} "
+                                f"set to {raw_cfg['next_trigger']} seconds"
+                            )
+                        else:
+                            raw_cfg["next_trigger"] = raw_cfg.get("value", 3600)
             except (ValueError, TypeError) as e:
                 logger.error(f"Could not process drop channel {ch_id_str}: {e}")
                 continue
@@ -204,25 +231,41 @@ class PuzzleDropsCog(commands.Cog, name="Puzzle Drops"):
                 return await ctx.send(f"❌ Puzzle not found: `{puzzle}`", ephemeral=False)
 
         final_mode = mode or self.DEFAULT_DROP_MODE
-        if final_mode == "timer":
+
+        final_mode = mode or self.DEFAULT_DROP_MODE
+        if final_mode in FREQUENCY_RANDOM_RANGES:
+            min_secs, max_secs = FREQUENCY_RANDOM_RANGES[final_mode]
+            next_trigger = random.randint(min_secs, max_secs)
+            # For display:
+            final_value = f"{min_secs // 60}-{max_secs // 60}"
+            value_display = final_value
+            unit_display = "minutes"
+            # Create drop config...
+        elif final_mode == "timer":
             final_value = (value * 60) if value is not None else (self.DEFAULT_DROP_TIMER_MINUTES * 60)
             value_display = value if value is not None else self.DEFAULT_DROP_TIMER_MINUTES
             unit_display = "minutes"
+            next_trigger = final_value
         elif final_mode == "messages":
             final_value = value if value is not None else self.DEFAULT_DROP_MESSAGE_COUNT
             value_display = final_value
             unit_display = "messages"
+            next_trigger = final_value
         else:
-            return await ctx.send(f"❌ Invalid mode `{final_mode}`. Use 'timer' or 'messages'.", ephemeral=True)
+            return await ctx.send(
+                f"❌ Invalid mode `{final_mode}`. Use 'timer', 'messages', or a frequency preset ('low', 'medium', 'high').",
+                ephemeral=True)
 
+        # Now, use these variables safely in your config and message:
         drop_channels = self.bot.data.setdefault("drop_channels", {})
         drop_channels[str(channel.id)] = {
             "puzzle": puzzle,
-            "mode": final_mode,
+            "mode": "timer" if final_mode in FREQUENCY_RANDOM_RANGES or final_mode == "timer" else "messages",
             "value": final_value,
             "last_drop_time": datetime.now(timezone.utc).isoformat(),
             "message_count": 0,
-            "next_trigger": final_value if final_mode == "messages" else 0
+            "next_trigger": next_trigger,
+            "frequency_mode": final_mode if final_mode in FREQUENCY_RANDOM_RANGES else None,
         }
         save_data(self.bot.data)
 
@@ -233,8 +276,7 @@ class PuzzleDropsCog(commands.Cog, name="Puzzle Drops"):
         )
         await ctx.send(
             f"✅ Drops for **{display_name}** are now configured in {channel.mention}.\n"
-            f"Mode: `{final_mode}` | Every: `{value_display} {unit_display}`.",
-            ephemeral=False
+            f"Mode: `{final_mode}` | Every: `{value_display} {unit_display}`."
         )
         await log(
             self.bot,
