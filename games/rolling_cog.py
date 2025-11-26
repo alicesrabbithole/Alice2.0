@@ -181,10 +181,13 @@ class RollingCog(commands.Cog):
             else:
                 leaderboard_text = "No scores for this game!"
 
-            # Compose one message for host + leaderboard
             host_tag = f"<@{host_id}>" if host_id else ""
-            msg = f"__{host_tag} - Your game has ended.__\n\nFinal Leaderboard:\n{leaderboard_text}"
-            await channel.send(msg)
+            embed = discord.Embed(
+                title="Game Ended!",
+                description=f"__{host_tag} - Your game has ended.__\n\n**Final Leaderboard:**\n{leaderboard_text}",
+                color=discord.Color.purple()  # purple embed
+            )
+            await channel.send(embed=embed)
 
     @commands.hybrid_command(name="roll_leaderboard", description="Show roll game leaderboard. Channel-specific.")
     async def roll_leaderboard(self, ctx):
