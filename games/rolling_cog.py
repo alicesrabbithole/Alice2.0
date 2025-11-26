@@ -33,20 +33,8 @@ def format_remaining(end_time):
     return f"Time left: {minutes}m {seconds}s"
 
 def pretty_rolls(rolls):
-    # Bigger spaces, numbers bold
-    if not rolls:
-        return ""
-    return "  |  ".join(f"**{x}**" for x in rolls)
-
-def get_best_score(scores, user_id):
-    # scores is {user_id: score}
-    # Get best score in this channel, excluding current attempt
-    if not scores:
-        return None
-    # (If single attempt, use that)
-    best = max(v for v in scores.values()) if scores else None
-    user_best = scores.get(str(user_id))
-    return best
+    # Show dice emoji, big bold numbers, separated by -
+    return "🎲 " + " - ".join(f"**{x}**" for x in rolls) if rolls else ""
 
 class PersonalRollView(discord.ui.View):
     def __init__(self, cog, user_id, channel_id, game_end_time=None):
@@ -65,16 +53,18 @@ class PersonalRollView(discord.ui.View):
         self.add_item(self.restart_btn)
 
     def build_panel_message(self, member):
+        # Get only this user's best score in this channel
         scores = self.cog.leaderboards.get(str(self.channel_id), {})
-        best_score = max(scores.values()) if scores else None
-        panel = f"{member.mention}'s rolls:\n"  # Title
-        panel += pretty_rolls(self.rolls) + "\n"  # <-- Two \n\n newlines here for vertical space
-
-        # Result line with separation
+        user_best = scores.get(str(self.user_id), '-')
+        panel = f"{member.mention}'s rolls:\n"
+        # Page break line for clarity
+        panel += "─────────────\n"
+        panel += pretty_rolls(self.rolls) + "\n\n"
+        # Page break line for clarity
+        panel += "─────────────\n"
         score_str = f"Current total: {sum(self.rolls) if self.rolls else 0}"
-        best_str = f"Best score: {best_score if best_score else '-'}"
+        best_str = f"Best score: {user_best}"
         panel += f"{score_str}   |   {best_str}"
-
         return panel
 
     @discord.ui.button(label="Roll 1-10 🎲", style=discord.ButtonStyle.secondary)
@@ -146,8 +136,11 @@ class RollingCog(commands.Cog):
         uid = str(user_id)
         if cid not in self.leaderboards:
             self.leaderboards[cid] = {}
-        self.leaderboards[cid][uid] = score
-        save_leaderboards(self.leaderboards)
+        # Only update if it's the user's best score
+        old_best = self.leaderboards[cid].get(uid, 0)
+        if score > old_best:
+            self.leaderboards[cid][uid] = score
+            save_leaderboards(self.leaderboards)
 
     def is_staff(self, member):
         return (
@@ -166,7 +159,7 @@ class RollingCog(commands.Cog):
         self.last_host[channel_id] = ctx.author.id
         self.leaderboards[str(channel_id)] = {}
         save_leaderboards(self.leaderboards)
-        msg = f"**A new game has startedl!** Type **start rolling** to play."
+        msg = f"**A new game has started!** Type **start rolling** to play."
         end_time = None
         if minutes and minutes > 0:
             end_time = datetime.utcnow() + timedelta(minutes=minutes)
@@ -240,7 +233,7 @@ class RollingCog(commands.Cog):
         now = datetime.utcnow()
         if not game or not game.get("active", False) or (end_time and now > end_time):
             await message.channel.send(
-                "No active roll game in this channel. Ask a host to use /roll_start_game!",
+                "No active roll game in this channel. Ask a host to use /roll_start!",
                 delete_after=20
             )
             return
