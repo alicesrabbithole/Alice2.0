@@ -66,24 +66,15 @@ class PersonalRollView(discord.ui.View):
 
     def build_panel_message(self, member):
         scores = self.cog.leaderboards.get(str(self.channel_id), {})
-        best_score = get_best_score(scores, self.user_id)
-        panel = f"{member.mention}'s Roll-{MAX_ROLLS}x Game!\n"
-        if self.rolls:
-            panel += f"Rolls: {pretty_rolls(self.rolls)}\n"
-            panel += f"Current total: __**{sum(self.rolls)}**__\n"
-        else:
-            panel += "Click 🎲 to start!\n"
-        panel += f"Perfect score: 100."
-        if self.game_end_time:
-            panel += f"\n{format_remaining(self.game_end_time)}"
-        if self.finished:
-            score = sum(self.rolls)
-            perfect = " 🎉 Perfect!" if score == 100 else ""
-            # Enough spaces to right-align best score visually. Tweak spaces as needed.
-            best_disp = f"{score}{perfect}" if not best_score else f"{score}{perfect}" + " " * 18 + f"Best this game: {best_score}"
-            panel += f"\n**DONE! Your total: {best_disp}**"
-        elif best_score:
-            panel += f"\nBest this game: {best_score}"
+        best_score = max(scores.values()) if scores else None
+        panel = f"{member.mention}'s rolls:\n"  # Title
+        panel += pretty_rolls(self.rolls) + "\n"  # <-- Two \n\n newlines here for vertical space
+
+        # Result line with separation
+        score_str = f"Current total: {sum(self.rolls) if self.rolls else 0}"
+        best_str = f"Best score: {best_score if best_score else '-'}"
+        panel += f"{score_str}   |   {best_str}"
+
         return panel
 
     @discord.ui.button(label="Roll 1-10 🎲", style=discord.ButtonStyle.secondary)
