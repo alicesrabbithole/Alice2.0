@@ -7,7 +7,7 @@ from datetime import datetime, timedelta
 import pytz
 
 DATA_DIR = "data"
-REMINDERS_FILE = os.path.join(DATA_DIR, "reminders.json")
+REMINDERS_FILE = os.path.join(DATA_DIR, "utilities.json")
 TIMEZONES_FILE = os.path.join(DATA_DIR, "user_timezones.json")
 
 def ensure_dir(path):
