@@ -4,9 +4,9 @@ import random
 import os
 from typing import List, Dict, Optional
 from PIL import Image
+from utils.checks import STAFF_ROLE_ID
 
-ALLOWED_CHANNEL_IDS = [1309962373846532159, 1382445010988830852, 1309962375058690071,1326781309892431883]
-STAFF_ROLE_ID = 123456789123456789  # Replace with your actual staff role ID
+ALLOWED_CHANNEL_IDS = [1382445010988830852, 1309962375058690071,1326781309892431883, 1352882876747616317]
 
 ANSWER_PATH = os.path.join(os.path.dirname(__file__), '..', 'data', 'wordle-answers-alphabetical.txt')
 GUESS_PATH = os.path.join(os.path.dirname(__file__), '..', 'data', 'wordle-guesses.txt')
