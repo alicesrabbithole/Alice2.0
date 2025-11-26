@@ -105,9 +105,9 @@ def compute_keyboard_status(guesses: List[str], feedbacks: List[List[str]]) -> D
     return status
 
 def compose_keyboard(key_status: Dict[str, str]) -> Image.Image:
-    key_spacing = 6
-    row_spacing = 12
-    scale_factor = 0.9
+    key_spacing = 6           # space between keys horizontally (pixels)
+    row_spacing = 12          # space between rows vertically (pixels)
+    scale_factor = 0.9        # overall scale-down for Discord display
     w, h = STANDARD_SIZE
     max_row_len = max(len(row) for row in KEYBOARD_ROWS)
 
@@ -119,16 +119,15 @@ def compose_keyboard(key_status: Dict[str, str]) -> Image.Image:
                 blank_path = os.path.join(os.path.dirname(__file__), '..', 'wordle_letters', 'white', 'blank.png')
                 img = Image.open(blank_path).resize(STANDARD_SIZE, Image.LANCZOS)
             else:
-                img = Image.open(get_letter_image(ch, key_status.get(str(ch).upper(), "white"))).resize(STANDARD_SIZE,
-                                                                                                        Image.LANCZOS)
+                img = Image.open(get_letter_image(ch, key_status.get(str(ch).upper(), "white"))).resize(STANDARD_SIZE, Image.LANCZOS)
             imgs.append(img)
-        # Pad left/right for centering
+        # Center row with transparent pads if needed
         num_blanks = max_row_len - len(imgs)
         pad_left = num_blanks // 2 + (num_blanks % 2)
         pad_right = num_blanks // 2
-        pad_img = Image.new('RGBA', (w, h), (0, 0, 0, 0))
+        pad_img = Image.new('RGBA', (w, h), (0, 0, 0, 0))  # fully transparent pad
         padded_imgs = [pad_img] * pad_left + imgs + [pad_img] * pad_right
-        # Row image (with spacing)
+        # Compose the row
         row_img_width = w * max_row_len + key_spacing * (max_row_len - 1)
         canvas_row = Image.new('RGBA', (row_img_width, h), (0, 0, 0, 0))
         x_offset = 0
@@ -137,19 +136,22 @@ def compose_keyboard(key_status: Dict[str, str]) -> Image.Image:
             x_offset += w + key_spacing
         row_imgs.append(canvas_row)
 
-    # REMOVE spacebar row – NO spacebar added!
-
+    # Stack the keyboard rows with vertical spacing
     total_height = h * len(row_imgs) + row_spacing * (len(row_imgs) - 1)
     composite = Image.new('RGBA', (row_imgs[0].width, total_height), (0, 0, 0, 0))
     y_offset = 0
     for row_img in row_imgs:
-        composite.paste(row_img, ((composite.width - row_img.width) // 2, y_offset))
+        composite.paste(row_img, ((composite.width - row_img.width) // 2, y_offset))  # extra centering if ever needed
         y_offset += row_img.height + row_spacing
+
+    # Optional: scale the keyboard for Discord’s message box
     scaled_size = (int(composite.width * scale_factor), int(composite.height * scale_factor))
     composite = composite.resize(scaled_size, Image.LANCZOS)
+    # Add transparent padding for clean Discord appearance
     bg_pad = 8
     final_canvas = Image.new('RGBA', (scaled_size[0] + bg_pad*2, scaled_size[1] + bg_pad*2), (0, 0, 0, 0))
     final_canvas.paste(composite, (bg_pad, bg_pad))
+
     return final_canvas
 
 class WordleGame:
