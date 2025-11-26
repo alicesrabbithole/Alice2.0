@@ -172,19 +172,19 @@ class RollingCog(commands.Cog):
         host_id = self.last_host.get(channel_id)
         if game and game.get("active", False):
             game["active"] = False
-            leaderboard_msg = await self.post_leaderboard(channel_id, channel)
-            host_tag = f"<@{host_id}>" if host_id else ""
-            await channel.send(f"⏰ {host_tag}, your game has ended! {host_tag}")
 
-    async def post_leaderboard(self, channel_id, channel):
-        scores = self.leaderboards.get(str(channel_id), {})
-        if not scores:
-            await channel.send("No scores for this game!")
-            return None
-        sorted_lb = sorted(scores.items(), key=lambda kv: kv[1], reverse=True)
-        text = "\n".join(f"<@{uid}>: {score}" for uid, score in sorted_lb)
-        msg = await channel.send(f"**Final Leaderboard:**\n{text}")
-        return msg
+            # Build leaderboard text
+            scores = self.leaderboards.get(str(channel_id), {})
+            if scores:
+                sorted_lb = sorted(scores.items(), key=lambda kv: kv[1], reverse=True)
+                leaderboard_text = "\n".join(f"<@{uid}>: {score}" for uid, score in sorted_lb)
+            else:
+                leaderboard_text = "No scores for this game!"
+
+            # Compose one message for host + leaderboard
+            host_tag = f"<@{host_id}>" if host_id else ""
+            msg = f"__{host_tag} - Your game has ended.__\n\nFinal Leaderboard:\n{leaderboard_text}"
+            await channel.send(msg)
 
     @commands.hybrid_command(name="roll_leaderboard", description="Show roll game leaderboard. Channel-specific.")
     async def roll_leaderboard(self, ctx):
