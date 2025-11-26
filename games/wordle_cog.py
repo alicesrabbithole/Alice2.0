@@ -105,51 +105,47 @@ def compute_keyboard_status(guesses: List[str], feedbacks: List[List[str]]) -> D
     return status
 
 def compose_keyboard(key_status: Dict[str, str]) -> Image.Image:
-    # --- config ---
-    key_spacing = 6            # horizontal space between keys (pixels)
-    row_spacing = 12           # vertical space between rows (pixels)
-    scale_factor = 0.9         # scale entire keyboard down (from full width)
+    key_spacing = 6
+    row_spacing = 12
+    scale_factor = 0.9
     w, h = STANDARD_SIZE
     max_row_len = max(len(row) for row in KEYBOARD_ROWS)
-    # prep images per row, add proper left/right blank pads
+
     row_imgs = []
     for row in KEYBOARD_ROWS:
-        imgs = [
-            Image.open(get_letter_image(ch, key_status.get(ch, "white"))).resize(STANDARD_SIZE, Image.LANCZOS)
-            for ch in row
-        ]
+        imgs = []
+        for ch in row:
+            if ch.lower() == 'blank':
+                blank_path = os.path.join(os.path.dirname(__file__), '..', 'wordle_letters', 'white', 'blank.png')
+                img = Image.open(blank_path).resize(STANDARD_SIZE, Image.LANCZOS)
+            else:
+                img = Image.open(get_letter_image(ch, key_status.get(ch.upper(), "white"))).resize(STANDARD_SIZE, Image.LANCZOS)
+            imgs.append(img)
+        # Pad left/right for centering
         num_blanks = max_row_len - len(imgs)
         pad_left = num_blanks // 2 + (num_blanks % 2)
         pad_right = num_blanks // 2
         pad_img = Image.new('RGBA', (w, h), (0, 0, 0, 0))
         padded_imgs = [pad_img] * pad_left + imgs + [pad_img] * pad_right
-        # Compose row with horizontal space between keys (even pad_img gets spacing)
+        # Row image (with spacing)
         row_img_width = w * max_row_len + key_spacing * (max_row_len - 1)
-        canvas_row = Image.new('RGBA', (row_img_width, h))
+        canvas_row = Image.new('RGBA', (row_img_width, h), (0, 0, 0, 0))
         x_offset = 0
         for img in padded_imgs:
             canvas_row.paste(img, (x_offset, 0))
             x_offset += w + key_spacing
         row_imgs.append(canvas_row)
-    # spacebar row, centered and padded
-    spacebar_img_path = os.path.join(os.path.dirname(__file__), '..', 'wordle_letters', 'white', 'spacebar.png')
-    spacebar_row_width = w * max_row_len + key_spacing * (max_row_len - 1)
-    if os.path.exists(spacebar_img_path):
-        spacebar_img = Image.open(spacebar_img_path).resize((spacebar_row_width, h), Image.LANCZOS)
-    else:
-        spacebar_img = Image.new('RGBA', (spacebar_row_width, h), (0, 0, 0, 0))
-    row_imgs.append(spacebar_img)
-    # vertical stacking with vertical padding between all rows
+
+    # REMOVE spacebar row – NO spacebar added!
+
     total_height = h * len(row_imgs) + row_spacing * (len(row_imgs) - 1)
     composite = Image.new('RGBA', (row_imgs[0].width, total_height), (0, 0, 0, 0))
     y_offset = 0
     for row_img in row_imgs:
         composite.paste(row_img, ((composite.width - row_img.width) // 2, y_offset))
         y_offset += row_img.height + row_spacing
-    # shrink (scale) keyboard
     scaled_size = (int(composite.width * scale_factor), int(composite.height * scale_factor))
     composite = composite.resize(scaled_size, Image.LANCZOS)
-    # add final centering on a slightly bigger canvas (optional)
     bg_pad = 8
     final_canvas = Image.new('RGBA', (scaled_size[0] + bg_pad*2, scaled_size[1] + bg_pad*2), (0, 0, 0, 0))
     final_canvas.paste(composite, (bg_pad, bg_pad))
