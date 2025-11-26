@@ -115,11 +115,12 @@ def compose_keyboard(key_status: Dict[str, str]) -> Image.Image:
     for row in KEYBOARD_ROWS:
         imgs = []
         for ch in row:
-            if ch.lower() == 'blank':
+            if str(ch).lower() == 'blank':
                 blank_path = os.path.join(os.path.dirname(__file__), '..', 'wordle_letters', 'white', 'blank.png')
                 img = Image.open(blank_path).resize(STANDARD_SIZE, Image.LANCZOS)
             else:
-                img = Image.open(get_letter_image(ch, key_status.get(ch.upper(), "white"))).resize(STANDARD_SIZE, Image.LANCZOS)
+                img = Image.open(get_letter_image(ch, key_status.get(str(ch).upper(), "white"))).resize(STANDARD_SIZE,
+                                                                                                        Image.LANCZOS)
             imgs.append(img)
         # Pad left/right for centering
         num_blanks = max_row_len - len(imgs)
