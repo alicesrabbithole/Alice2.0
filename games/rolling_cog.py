@@ -57,8 +57,8 @@ class PersonalRollView(discord.ui.View):
         # Find highest score in current channel
         score_to_beat = max(scores.values()) if scores else '-'
         panel = f"**__{member.mention}'s rolls:__**\n"
-        panel += "─────────────\n"
         panel += pretty_rolls(self.rolls) + "\n\n"
+        panel += "─────────────\n"
         score_str = f"Current total: {sum(self.rolls) if self.rolls else 0}"
         beat_str = f"Score to beat: {score_to_beat}"
         panel += f"{score_str}   |   {beat_str}"
