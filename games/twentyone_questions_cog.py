@@ -141,8 +141,13 @@ class TwentyoneQuestionsCog(commands.Cog):
     async def end21q(self, ctx):
         channel_id = ctx.channel.id
         game = self.games.get(channel_id)
+        # CHANGE THIS TO YOUR OWN DISCORD USER ID
+        OWNER_ID = 123456789012345678
         if not game or not game.active:
             await ctx.send("No active 21 Questions game in this channel.", ephemeral=True)
+            return
+        if ctx.author.id != game.host_id and ctx.author.id != OWNER_ID:
+            await ctx.send("Only the host or owner can end this game.", ephemeral=True)
             return
         game.active = False
         save_games(self.games)
@@ -193,6 +198,7 @@ class TwentyoneQuestionsCog(commands.Cog):
                 return
             qid = game.add_question(message.author.id, question)
             save_games(self.games)
+            await message.channel.send(f"Queued Q{qid}: \"{question}\" for the host to answer.")
             return
 
         # Host Answers: 'A1', 'A2', ... Optionally with answer text

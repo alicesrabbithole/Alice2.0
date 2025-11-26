@@ -154,5 +154,9 @@ class GiveawayCog(commands.Cog):
             embed.set_image(url=giveaway.image_url)
         await ctx.send(embed=embed)
 
+    @commands.hybrid_command(name="ping", description="Test if bot is alive.")
+    async def ping(self, ctx):
+        await ctx.send("Pong!", ephemeral=True)
+
 async def setup(bot):
     await bot.add_cog(GiveawayCog(bot))
