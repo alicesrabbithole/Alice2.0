@@ -6,6 +6,8 @@ import os
 
 GAMES_SAVE_PATH = "games.json"
 
+OWNER_ID = 123456789012345678  # <-- Change to your Discord user ID
+
 class TwentyoneQuestionsGame:
     def __init__(self, answer, host_id):
         self.answer = answer.lower()
@@ -44,14 +46,6 @@ class TwentyoneQuestionsGame:
 
     def can_answer(self):
         return len(self.answered_questions) < self.max_questions and self.active
-
-    def summary(self):
-        lines = [
-            f"Answered: {len(self.answered_questions)}/{self.max_questions}",
-            f"Pending questions: {len(self.questions_queue)}",
-            f"Guesses: {len(self.guesses)}"
-        ]
-        return "\n".join(lines)
 
     def to_dict(self):
         return {
@@ -104,8 +98,28 @@ def create_answer_embed(label, question, answer_text, questions_left):
     return embed
 
 def create_cyan_label_embed(label, question):
-    embed = discord.Embed(color=0x00FFFF) #Cyan Embed
-    embed.set_footer(text=f"-# Q{label}: {question}")
+    embed = discord.Embed(
+        description=f"Queued Q{label}: {question}",
+        color=0x00FFFF  # true cyan hex
+    )
+    embed.set_footer(text="-#")
+    return embed
+
+def create_summary_embed(game):
+    if not game.answered_questions:
+        desc = "*No questions have been answered yet.*"
+    else:
+        qa_lines = [
+            f"**Q{q['id']}**: {q['question']}\n**A:** {q['answer_text'] if q['answer_text'] else '*no answer provided*'}"
+            for q in game.answered_questions
+        ]
+        desc = "\n\n".join(qa_lines)
+    embed = discord.Embed(
+        title="21 Questions - Summary",
+        description=desc,
+        color=discord.Color.purple()
+    )
+    embed.set_footer(text=f"{len(game.answered_questions)} questions answered out of {game.max_questions}")
     return embed
 
 class TwentyoneQuestionsCog(commands.Cog):
@@ -117,10 +131,10 @@ class TwentyoneQuestionsCog(commands.Cog):
     async def start21q(self, ctx, word: str):
         channel_id = ctx.channel.id
         if channel_id in self.games and self.games[channel_id].active:
-            await ctx.send("A game is already running in this channel! Use `/end21q` to end it.", ephemeral=True)
+            await ctx.send("A game is already running in this channel! Use `/end21q` to end it.")
             return
         if not word or len(word.strip()) < 5 or not word.strip().isalpha():
-            await ctx.send("You must provide an answer word with at least 5 alphabetic letters.", ephemeral=True)
+            await ctx.send("You must provide an answer word with at least 5 alphabetic letters.")
             return
         answer = word.strip().lower()
         game = TwentyoneQuestionsGame(answer, host_id=ctx.author.id)
@@ -132,48 +146,53 @@ class TwentyoneQuestionsCog(commands.Cog):
             "Type **ask [your yes/no question]** to queue a question.\n"
             "Type **guess [your guess]** to guess the word.\n"
             "Type **listq21q** to view all pending questions.\n"
+            "Type **summary21q** to view answered Q&As.\n"
             "Host (only): Reply with 'A1', 'A2', ... to answer Q1, Q2, ... (optionally include answer text, e.g. 'A1 yes')."
-            f"\nMax 21 questions will be counted!",
-            ephemeral=True
+            f"\nMax 21 questions will be counted!"
         )
 
     @commands.hybrid_command(name='end21q', description='End the current 21 Questions game and show the answer')
     async def end21q(self, ctx):
         channel_id = ctx.channel.id
         game = self.games.get(channel_id)
-        # CHANGE THIS TO YOUR OWN DISCORD USER ID
-        OWNER_ID = 123456789012345678
         if not game or not game.active:
-            await ctx.send("No active 21 Questions game in this channel.", ephemeral=True)
+            await ctx.send("No active 21 Questions game in this channel.")
             return
         if ctx.author.id != game.host_id and ctx.author.id != OWNER_ID:
-            await ctx.send("Only the host or owner can end this game.", ephemeral=True)
+            await ctx.send("Only the host or owner can end this game.")
             return
         game.active = False
         save_games(self.games)
-        await ctx.send(f"Game ended. The word was: **{game.answer}**.", ephemeral=True)
+        await ctx.send(f"Game ended. The word was: **{game.answer}**.")
 
     @commands.hybrid_command(name='summary21q', description='Show the status summary for the current game')
     async def summary21q(self, ctx):
         channel_id = ctx.channel.id
         game = self.games.get(channel_id)
         if not game or not game.active:
-            await ctx.send("No active game in this channel.", ephemeral=True)
+            await ctx.send("No active game in this channel.")
             return
-        await ctx.send("Game status:\n" + game.summary(), ephemeral=True)
+        summary_embed = create_summary_embed(game)
+        await ctx.send(embed=summary_embed)
 
     @commands.hybrid_command(name='listq21q', description='List pending 21Q questions')
     async def listq21q(self, ctx):
         channel_id = ctx.channel.id
         game = self.games.get(channel_id)
         if not game or not game.active or not game.questions_queue:
-            await ctx.send("No pending questions.", ephemeral=True)
+            await ctx.send("No pending questions.")
             return
         lines = [
             f"Q{q['id']}: \"{q['question']}\" (<@{q['author_id']}>)"
             for q in game.questions_queue
         ]
-        await ctx.send("Pending questions:\n" + "\n".join(lines), ephemeral=True)
+        embed = discord.Embed(
+            title="Pending Questions",
+            description="\n".join(lines),
+            color=0x00FFFF
+        )
+        embed.set_footer(text=f"{len(game.questions_queue)} pending question(s)")
+        await ctx.send(embed=embed)
 
     @commands.Cog.listener()
     async def on_message(self, message):
@@ -198,7 +217,8 @@ class TwentyoneQuestionsCog(commands.Cog):
                 return
             qid = game.add_question(message.author.id, question)
             save_games(self.games)
-            await message.channel.send(f"Queued Q{qid}: \"{question}\" for the host to answer.")
+            cyan_embed = create_cyan_label_embed(qid, question)
+            await message.channel.send(embed=cyan_embed)
             return
 
         # Host Answers: 'A1', 'A2', ... Optionally with answer text
@@ -217,9 +237,7 @@ class TwentyoneQuestionsCog(commands.Cog):
             if answered:
                 n_remaining = game.max_questions - len(game.answered_questions)
                 answer_embed = create_answer_embed(label, answered['question'], answer_text, n_remaining)
-                cyan_embed = create_cyan_label_embed(label, answered['question'])
                 await message.channel.send(embed=answer_embed)
-                await message.channel.send(embed=cyan_embed)
             else:
                 await message.channel.send(f"❌ No pending question with label Q{label}. Check the queue.")
             return
@@ -251,34 +269,6 @@ class TwentyoneQuestionsCog(commands.Cog):
                         f"Game over! You reached 21 questions without guessing the word. The answer was: **{game.answer}**."
                     )
             return
-
-    @commands.command(name="21qsum",
-                      description="Show a summary of all answered questions in 21 Questions (staff only)")
-    @commands.has_permissions(manage_guild=True)
-    async def qsum21q(self, ctx):
-        channel_id = ctx.channel.id
-        game = self.games.get(channel_id)
-        if not game or not game.active:
-            await ctx.send("No active 21 Questions game in this channel.")
-            return
-        if not game.answered_questions:
-            await ctx.send("No questions have been answered yet.")
-            return
-        if not (ctx.author.guild_permissions.manage_guild or ctx.author.guild_permissions.administrator):
-            await ctx.send("This command is restricted to staff members.")
-            return
-        qa_lines = []
-        for q in game.answered_questions:
-            qa_lines.append(
-                f"**Q{q['id']}**: {q['question']}\n**A:** {q['answer_text'] if q['answer_text'] else '*no answer provided*'}"
-            )
-        embed = discord.Embed(
-            title="Answered Questions - 21 Questions",
-            description="\n\n".join(qa_lines),
-            color=discord.Color.purple()
-        )
-        embed.set_footer(text=f"{len(game.answered_questions)} questions answered out of {game.max_questions}")
-        await ctx.send(embed=embed)
 
 async def setup(bot):
     await bot.add_cog(TwentyoneQuestionsCog(bot))
