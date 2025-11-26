@@ -33,9 +33,20 @@ def format_remaining(end_time):
     return f"Time left: {minutes}m {seconds}s"
 
 def pretty_rolls(rolls):
+    # Bigger spaces, numbers bold
     if not rolls:
         return ""
-    return " | ".join(f"**{x}**" for x in rolls)
+    return "  |  ".join(f"**{x}**" for x in rolls)
+
+def get_best_score(scores, user_id):
+    # scores is {user_id: score}
+    # Get best score in this channel, excluding current attempt
+    if not scores:
+        return None
+    # (If single attempt, use that)
+    best = max(v for v in scores.values()) if scores else None
+    user_best = scores.get(str(user_id))
+    return best
 
 class PersonalRollView(discord.ui.View):
     def __init__(self, cog, user_id, channel_id, game_end_time=None):
@@ -54,19 +65,25 @@ class PersonalRollView(discord.ui.View):
         self.add_item(self.restart_btn)
 
     def build_panel_message(self, member):
+        scores = self.cog.leaderboards.get(str(self.channel_id), {})
+        best_score = get_best_score(scores, self.user_id)
         panel = f"{member.mention}'s Roll-{MAX_ROLLS}x Game!\n"
         if self.rolls:
             panel += f"Rolls: {pretty_rolls(self.rolls)}\n"
             panel += f"Current total: __**{sum(self.rolls)}**__\n"
         else:
             panel += "Click 🎲 to start!\n"
-        panel += f"Perfect score: {MAX_ROLLS * 10}."
+        panel += f"Perfect score: 100."
         if self.game_end_time:
             panel += f"\n{format_remaining(self.game_end_time)}"
         if self.finished:
             score = sum(self.rolls)
-            perfect = " 🎉 Perfect!" if score == MAX_ROLLS * 10 else ""
-            panel += f"\n**DONE! Your total: {score}{perfect}**"
+            perfect = " 🎉 Perfect!" if score == 100 else ""
+            # Enough spaces to right-align best score visually. Tweak spaces as needed.
+            best_disp = f"{score}{perfect}" if not best_score else f"{score}{perfect}" + " " * 18 + f"Best this game: {best_score}"
+            panel += f"\n**DONE! Your total: {best_disp}**"
+        elif best_score:
+            panel += f"\nBest this game: {best_score}"
         return panel
 
     @discord.ui.button(label="Roll 1-10 🎲", style=discord.ButtonStyle.secondary)
