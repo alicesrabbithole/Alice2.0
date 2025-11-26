@@ -10,7 +10,7 @@ STAFF_ROLE_ID = 123456789123456789  # Replace with your actual staff role ID
 
 ANSWER_PATH = os.path.join(os.path.dirname(__file__), '..', 'data', 'wordle-answers-alphabetical.txt')
 GUESS_PATH = os.path.join(os.path.dirname(__file__), '..', 'data', 'wordle-guesses.txt')
-STANDARD_SIZE = (24, 24)
+STANDARD_SIZE = (20, 20)
 MAX_GUESSES = 10
 
 print(f"GUESS_PATH used: {GUESS_PATH}")
@@ -106,18 +106,34 @@ def compute_keyboard_status(guesses: List[str], feedbacks: List[List[str]]) -> D
 
 def compose_keyboard(key_status: Dict[str, str]) -> Image.Image:
     row_imgs = []
+    max_row_len = max(len(row) for row in KEYBOARD_ROWS)
+    w, h = STANDARD_SIZE
+
     for row in KEYBOARD_ROWS:
         imgs = [
             Image.open(get_letter_image(ch, key_status.get(ch, "white"))).resize(STANDARD_SIZE, Image.LANCZOS)
             for ch in row
         ]
-        w, h = STANDARD_SIZE
-        canvas_row = Image.new('RGBA', (w * len(row), h))
-        for i, img in enumerate(imgs):
+        # Pad left/right to center each row
+        pad_left = (max_row_len - len(imgs)) // 2
+        pad_right = max_row_len - len(imgs) - pad_left
+        pad_img = Image.new('RGBA', (w, h), (0, 0, 0, 0))
+        padded_imgs = [pad_img] * pad_left + imgs + [pad_img] * pad_right
+        canvas_row = Image.new('RGBA', (w * max_row_len, h))
+        for i, img in enumerate(padded_imgs):
             canvas_row.paste(img, (i * w, 0))
         row_imgs.append(canvas_row)
+
+    # Load your spacebar image from /wordle_letters/white/spacebar.png
+    spacebar_img_path = os.path.join(os.path.dirname(__file__), '..', 'wordle_letters', 'white', 'spacebar.png')
+    if os.path.exists(spacebar_img_path):
+        spacebar_img = Image.open(spacebar_img_path).resize((w * max_row_len, h), Image.LANCZOS)
+    else:
+        spacebar_img = Image.new('RGBA', (w * max_row_len, h), (0, 0, 0, 0))
+    row_imgs.append(spacebar_img)
+
     total_height = h * len(row_imgs)
-    canvas = Image.new('RGBA', (row_imgs[0].width, total_height))
+    canvas = Image.new('RGBA', (w * max_row_len, total_height))
     y_offset = 0
     for row_img in row_imgs:
         canvas.paste(row_img, (0, y_offset))
