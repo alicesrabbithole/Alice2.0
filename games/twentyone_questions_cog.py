@@ -36,7 +36,6 @@ class TwentyoneQuestionsGame:
         return None
 
     def can_ask(self):
-        # Only limit based on answers counted
         return len(self.answered_questions) < self.max_questions and self.active
 
     def can_answer(self):
@@ -61,11 +60,9 @@ class TwentyoneQuestionsCog(commands.Cog):
         if channel_id in self.games and self.games[channel_id].active:
             await ctx.send("A game is already running in this channel! Use `/end21q` to end it.", ephemeral=True)
             return
-
         if not word or len(word.strip()) < 5 or not word.strip().isalpha():
             await ctx.send("You must provide an answer word with at least 5 alphabetic letters.", ephemeral=True)
             return
-
         answer = word.strip().lower()
         game = TwentyoneQuestionsGame(answer, host=ctx.author)
         self.games[channel_id] = game
@@ -114,7 +111,6 @@ class TwentyoneQuestionsCog(commands.Cog):
 
     @commands.Cog.listener()
     async def on_message(self, message):
-        # Ignore bots and DMs
         if message.author.bot or not message.guild:
             return
 
@@ -135,9 +131,7 @@ class TwentyoneQuestionsCog(commands.Cog):
                 await message.channel.send("❌ Please provide a question after 'ask'.")
                 return
             qid = game.add_question(message.author.id, question)
-            await message.channel.send(
-                f"Q{qid}: \"{question}\" ({message.author.mention}) added to queue."
-            )
+            # NO queue confirmation message sent.
             return
 
         # Host Answers: 'A1', 'A2', ... Optionally with answer text
@@ -154,13 +148,17 @@ class TwentyoneQuestionsCog(commands.Cog):
             answered = game.answer_question(label, answer_text)
             if answered:
                 n_remaining = game.max_questions - len(game.answered_questions)
-                # Show the Q and A together
-                reply = (
-                        f'Q{label} "{answered["question"]}"'
-                        + (f' A: {answer_text}' if answer_text else '')
-                        + f" ({n_remaining} questions left)"
+                # Embed answer in purple
+                embed = discord.Embed(
+                    title=f"21Q Answered",
+                    description=(
+                        f"**Q{label}:** {answered['question']}\n"
+                        f"**A:** {answer_text if answer_text else '*no answer*'}"
+                    ),
+                    color=discord.Color.purple()
                 )
-                await message.channel.send(reply)
+                embed.set_footer(text=f"{n_remaining} questions left")
+                await message.channel.send(embed=embed)
             else:
                 await message.channel.send(f"❌ No pending question with label Q{label}. Check the queue.")
             return
@@ -192,7 +190,7 @@ class TwentyoneQuestionsCog(commands.Cog):
 
     @commands.command(name="21qsum",
                       description="Show a summary of all answered questions in 21 Questions (staff only)")
-    @commands.has_permissions(manage_guild=True)  # Or use administrator=True for admin-only
+    @commands.has_permissions(manage_guild=True)
     async def qsum21q(self, ctx):
         channel_id = ctx.channel.id
         game = self.games.get(channel_id)
@@ -202,25 +200,21 @@ class TwentyoneQuestionsCog(commands.Cog):
         if not game.answered_questions:
             await ctx.send("No questions have been answered yet.")
             return
-
-        # Limit usage to STAFF ONLY (extra check, in case you want double-verification)
         if not (ctx.author.guild_permissions.manage_guild or ctx.author.guild_permissions.administrator):
             await ctx.send("This command is restricted to staff members.")
             return
-
-        # Preparing Q/A list string
+        # Build one purple embed for all answered Q/A
         qa_lines = []
         for q in game.answered_questions:
             qa_lines.append(
-                f"**Q{q['id']}**: \"{q['question']}\"\n**A:** {q['answer_text'] if q['answer_text'] else '*no answer provided*'}\n")
-
+                f"**Q{q['id']}**: {q['question']}\n**A:** {q['answer_text'] if q['answer_text'] else '*no answer provided*'}"
+            )
         embed = discord.Embed(
             title="Answered Questions - 21 Questions",
-            description="\n".join(qa_lines),
+            description="\n\n".join(qa_lines),
             color=discord.Color.purple()
         )
         embed.set_footer(text=f"{len(game.answered_questions)} questions answered out of {game.max_questions}")
-
         await ctx.send(embed=embed)
 
 async def setup(bot):
