@@ -34,7 +34,7 @@ def format_remaining(end_time):
 
 def pretty_rolls(rolls):
     # Show dice emoji, big bold numbers, separated by -
-    return "🎲 " + " - ".join(f"**{x}**" for x in rolls) if rolls else ""
+    return " - ".join(f"**{x}**" for x in rolls) if rolls else ""
 
 class PersonalRollView(discord.ui.View):
     def __init__(self, cog, user_id, channel_id, game_end_time=None):
@@ -59,7 +59,7 @@ class PersonalRollView(discord.ui.View):
         panel = f"{member.mention}'s rolls:\n"
         # Page break line for clarity
         panel += "─────────────\n"
-        panel += pretty_rolls(self.rolls) + "\n\n"
+        panel += pretty_rolls(self.rolls) + "\n"
         # Page break line for clarity
         panel += "─────────────\n"
         score_str = f"Current total: {sum(self.rolls) if self.rolls else 0}"
@@ -159,7 +159,8 @@ class RollingCog(commands.Cog):
         self.last_host[channel_id] = ctx.author.id
         self.leaderboards[str(channel_id)] = {}
         save_leaderboards(self.leaderboards)
-        msg = f"**A new game has started!** Type **start rolling** to play."
+        msg = (f"**A new game has started! Perfect score is 100. \n" 
+               f"** Type **start rolling** to play.")
         end_time = None
         if minutes and minutes > 0:
             end_time = datetime.utcnow() + timedelta(minutes=minutes)
@@ -188,15 +189,6 @@ class RollingCog(commands.Cog):
         text = "\n".join(f"<@{uid}>: {score}" for uid, score in sorted_lb)
         msg = await channel.send(f"**Final Leaderboard:**\n{text}")
         return msg
-
-    @commands.hybrid_command(name="roll_score", description="Check your best roll score. Channel-specific.")
-    async def roll_score(self, ctx):
-        scores = self.leaderboards.get(str(ctx.channel.id), {})
-        score = scores.get(str(ctx.author.id))
-        if score is None:
-            await ctx.send("You have no recorded score in this channel. Type **start rolling** and play!")
-        else:
-            await ctx.send(f"Your best score - **{score}**")
 
     @commands.hybrid_command(name="roll_leaderboard", description="Show roll game leaderboard. Channel-specific.")
     async def roll_leaderboard(self, ctx):
