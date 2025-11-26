@@ -56,12 +56,11 @@ class PersonalRollView(discord.ui.View):
         # Get only this user's best score in this channel
         scores = self.cog.leaderboards.get(str(self.channel_id), {})
         user_best = scores.get(str(self.user_id), '-')
-        panel = f"{member.mention}'s rolls:\n"
+        panel = f"__{member.mention}'s rolls:__\n"
         # Page break line for clarity
-        panel += "─────────────\n"
         panel += pretty_rolls(self.rolls) + "\n"
         # Page break line for clarity
-        panel += "─────────────\n"
+        panel += "──────────────────────────\n"
         score_str = f"Current total: {sum(self.rolls) if self.rolls else 0}"
         best_str = f"Best score: {user_best}"
         panel += f"{score_str}   |   {best_str}"
@@ -159,8 +158,7 @@ class RollingCog(commands.Cog):
         self.last_host[channel_id] = ctx.author.id
         self.leaderboards[str(channel_id)] = {}
         save_leaderboards(self.leaderboards)
-        msg = (f"**A new game has started! Perfect score is 100. \n" 
-               f"** Type **start rolling** to play.")
+        msg = (f"**A new game has started! Perfect score is 100. \n"f"** Type **start rolling** to play.")
         end_time = None
         if minutes and minutes > 0:
             end_time = datetime.utcnow() + timedelta(minutes=minutes)
