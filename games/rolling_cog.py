@@ -205,7 +205,7 @@ class RollingCog(commands.Cog):
                 self.active_panels.pop(panel_key, None)
         # Alice theme
         embed = discord.Embed(
-            title="<:die1aiw:1344348732442935296> A New Wonderland Rolling Game Has Begun! <:die1aiw:1344348732442935296>",
+            title="A New Wonderland Rolling Game Has Begun!",
             description=(
                 "Hello, dreamers! The perfect score is **100**.\n"
                 "Ready for adventure? Click below for your private panel <a:whiterabbit_gif:1328740902432276500>"
@@ -213,8 +213,8 @@ class RollingCog(commands.Cog):
             color=discord.Color.purple()
         )
         if ctx.author.avatar:
-            embed.set_author(name="Queen Alice", icon_url=str(ctx.author.avatar.url))
-            embed.set_thumbnail(url=str(ctx.author.avatar.url))
+            embed.set_author(icon_url=str(ctx.author.avatar.url))
+            embed.set_thumbnail(url="https://cdn.discordapp.com/attachments/1309962373846532159/1443432386732757123/Aiwdice.png?ex=69290caa&is=6927bb2a&hm=dded477a1d04745957dd25bbe5b0c84b8faff9cbe54e8851655caaf15d2202b0&")
         else:
             embed.set_author(name="Queen Alice")
         embed.set_footer(text="Good Luck!")
