@@ -192,9 +192,11 @@ class RollingCog(commands.Cog):
         game = self.active_games.get(channel_id)
         now = datetime.utcnow()
         end_time = game.get("end_time") if game else None
-        if game and game.get("active", False) and (not end_time or now <= end_time):
-            await ctx.send("A rolling game is already running in this channel! Wait for it to finish before starting a new one.")
-            return
+        # End and cleanup any active game first
+        if game and game.get("active", False):
+            await self.force_end_game(channel_id, ctx.channel)
+
+        # Always start a fresh game (reset leaderboard)
         self.active_games[channel_id] = {"active": True}
         self.last_host[channel_id] = ctx.author.id
         self.leaderboards[str(channel_id)] = {}
@@ -213,18 +215,16 @@ class RollingCog(commands.Cog):
             color=discord.Color.purple()
         )
         if ctx.author.avatar:
-            embed.set_author(icon_url=str(ctx.author.avatar.url))
-            embed.set_thumbnail(url="https://cdn.discordapp.com/attachments/1309962373846532159/1443432386732757123/Aiwdice.png?ex=69290caa&is=6927bb2a&hm=dded477a1d04745957dd25bbe5b0c84b8faff9cbe54e8851655caaf15d2202b0&")
-        else:
-            embed.set_author(name="Queen Alice")
-        embed.set_footer(text="Good Luck!")
-        if minutes and minutes > 0:
-            end_time = now + timedelta(minutes=minutes)
-            self.active_games[channel_id]["end_time"] = end_time
-            embed.add_field(name="Game Ends", value=f"{minutes} minutes", inline=False)
-            self.bot.loop.create_task(self.auto_end_game(channel_id, end_time, ctx.channel))
-        view = JoinGameView(self, channel_id, game_end_time=end_time)
-        await ctx.send(embed=embed, view=view)
+            embed.set_thumbnail(
+                url="https://cdn.discordapp.com/attachments/1309962373846532159/1443432386732757123/Aiwdice.png?ex=69290caa&is=6927bb2a&hm=dded477a1d04745957dd25bbe5b0c84b8faff9cbe54e8851655caaf15d2202b0&")
+            embed.set_footer(text="Good luck!")
+            if minutes and minutes > 0:
+                end_time = now + timedelta(minutes=minutes)
+                self.active_games[channel_id]["end_time"] = end_time
+                embed.add_field(name="Game Ends", value=f"{minutes} minutes", inline=False)
+                self.bot.loop.create_task(self.auto_end_game(channel_id, end_time, ctx.channel))
+            view = JoinGameView(self, channel_id, game_end_time=end_time)
+            await ctx.send(embed=embed, view=view)
 
     async def auto_end_game(self, channel_id, end_time, channel):
         seconds = max(1, int((end_time - datetime.utcnow()).total_seconds()))
@@ -246,6 +246,24 @@ class RollingCog(commands.Cog):
             for panel_key in list(self.active_panels):
                 if panel_key[0] == channel_id:
                     self.active_panels[panel_key]["active"] = False
+
+    async def force_end_game(self, channel_id, channel):
+        host_id = self.last_host.get(channel_id)
+        self.active_games[channel_id] = {"active": False}
+        sorted_lb = sorted(self.leaderboards.get(str(channel_id), {}).items(), key=lambda kv: kv[1], reverse=True)
+        leaderboard_text = "\n".join(
+            f"<@{uid}>: {score}" for uid, score in sorted_lb) if sorted_lb else "No scores for this game!"
+        host_tag = f"<@{host_id}>" if host_id else ""
+        embed = discord.Embed(
+            title="Game Ended!",
+            description=f"__{host_tag} - The game has ended.__\n\n**Final Leaderboard:**\n{leaderboard_text}",
+            color=discord.Color.purple()
+        )
+        await channel.send(embed=embed)
+        # Mark all panels in this channel inactive
+        for panel_key in list(self.active_panels):
+            if panel_key[0] == channel_id:
+                self.active_panels[panel_key]["active"] = False
 
     @commands.hybrid_command(name="roll_leaderboard", description="Show roll game leaderboard.")
     async def roll_leaderboard(self, ctx):
@@ -277,6 +295,18 @@ class RollingCog(commands.Cog):
         self.leaderboards[str(ctx.channel.id)] = {}
         save_leaderboards(self.leaderboards)
         await ctx.send("Roll game leaderboard has been reset for this channel.")
+
+    @commands.hybrid_command(name="roll_reset",
+                             description="Host: Immediately end any rolling game and clear all panels and scores for this channel.")
+    async def roll_reset(self, ctx):
+        channel_id = ctx.channel.id
+        if not self.is_staff(ctx.author):
+            await ctx.send("You do not have permission to reset the game in this channel.")
+            return
+        await self.force_end_game(channel_id, ctx.channel)
+        self.leaderboards[str(channel_id)] = {}
+        save_leaderboards(self.leaderboards)
+        await ctx.send("The rolling game and leaderboard have been fully reset in this channel.")
 
 async def setup(bot):
     await bot.add_cog(RollingCog(bot))
