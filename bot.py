@@ -49,7 +49,8 @@ class AliceBot(commands.Bot):
             "games.twentyone_questions_cog",
             "games.rolling_cog",
             "cogs.giveaway_cog",
-            "cogs.afk_cog"
+            "cogs.afk_cog",
+            "cogs.global_message_leaderboard_cog"
         ]
 
     # --- THIS IS THE FIX ---
