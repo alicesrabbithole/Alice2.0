@@ -256,7 +256,7 @@ class RollingCog(commands.Cog):
         host_tag = f"<@{host_id}>" if host_id else ""
         embed = discord.Embed(
             title="Game Ended!",
-            description=f"__{host_tag} - The game has ended.__\n\n**Final Leaderboard:**\n{leaderboard_text}",
+            description=f"__{host_tag}\n**Final Leaderboard:**\n{leaderboard_text}",
             color=discord.Color.purple()
         )
         await channel.send(embed=embed)
