@@ -267,6 +267,9 @@ class RollingCog(commands.Cog):
 
     @commands.hybrid_command(name="roll_leaderboard", description="Show roll game leaderboard.")
     async def roll_leaderboard(self, ctx):
+        if not self.is_staff(ctx.author):  # restrict to staff only
+            await ctx.send("You do not have permission to view the leaderboard.", ephemeral=True)
+            return
         scores = self.leaderboards.get(str(ctx.channel.id), {})
         if not scores:
             await ctx.send("No scores yet in this channel!")
@@ -281,9 +284,9 @@ class RollingCog(commands.Cog):
                 entry = f"**#{idx}** <@{uid}>: {score}"
             lines.append(entry)
         embed = discord.Embed(
-            title="Leaderboard for this channel",
+            title="__Top Rolling Scores:__",
             description="\n".join(lines),
-            color=discord.Color.gold()
+            color=discord.Color.purple()
         )
         await ctx.send(embed=embed)
 
