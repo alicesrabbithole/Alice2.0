@@ -1,5 +1,12 @@
 {
-    "display_name": "Happy Thanksgiving",
-    "rows": 5,
-    "cols": 5
+    "happy_thanksgiving": {
+        "display_name": "Happy Thanksgiving",
+        "color": "0xffa500",
+        "ping_role_id": 1443655423948230709,
+        "reward_role_id": 1443655705461653534,
+        "base_image": "happy_thanksgiving/happy_thanksgiving_base.png",
+        "full_image": "happy_thanksgiving/happy_thanksgiving_full.png",
+        "rows": 5,
+        "cols": 5
+    }
 }
