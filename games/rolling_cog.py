@@ -140,7 +140,7 @@ class JoinGameView(discord.ui.View):
         self.channel_id = channel_id
         self.game_end_time = game_end_time
 
-    @discord.ui.button(label="Start Rolling", style=discord.ButtonStyle.secondary)
+    @discord.ui.button(label="🐇 Hop In!", style=discord.ButtonStyle.secondary)
     async def join(self, interaction: discord.Interaction, button: discord.ui.Button):
         user_id = interaction.user.id
         panel_key = (self.channel_id, user_id)
@@ -203,14 +203,28 @@ class RollingCog(commands.Cog):
         for panel_key in list(self.active_panels):
             if panel_key[0] == channel_id:
                 self.active_panels.pop(panel_key, None)
-        msg = "**A new game has started! Perfect score is 100.**"
+        # Alice theme
+        embed = discord.Embed(
+            title="<:die1aiw:1344348732442935296> A New Wonderland Rolling Game Has Begun! <:die1aiw:1344348732442935296>",
+            description=(
+                "Hello, dreamers! The perfect score is **100**.\n"
+                "Ready for adventure? Click below for your private panel <a:whiterabbit_gif:1328740902432276500>"
+            ),
+            color=discord.Color.purple()
+        )
+        if ctx.author.avatar:
+            embed.set_author(name="Queen Alice", icon_url=str(ctx.author.avatar.url))
+            embed.set_thumbnail(url=str(ctx.author.avatar.url))
+        else:
+            embed.set_author(name="Queen Alice")
+        embed.set_footer(text="Good Luck!")
         if minutes and minutes > 0:
             end_time = now + timedelta(minutes=minutes)
             self.active_games[channel_id]["end_time"] = end_time
-            msg += f"\nGame ends in {minutes} minutes."
+            embed.add_field(name="Game Ends", value=f"{minutes} minutes", inline=False)
             self.bot.loop.create_task(self.auto_end_game(channel_id, end_time, ctx.channel))
         view = JoinGameView(self, channel_id, game_end_time=end_time)
-        await ctx.send(msg, view=view)
+        await ctx.send(embed=embed, view=view)
 
     async def auto_end_game(self, channel_id, end_time, channel):
         seconds = max(1, int((end_time - datetime.utcnow()).total_seconds()))
