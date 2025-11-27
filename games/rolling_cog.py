@@ -63,7 +63,8 @@ class PersonalRollView(discord.ui.View):
             await interaction.response.send_message("Game ended!", ephemeral=True)
             self.disable_all_items()
             await self.edit_panel(interaction)
-            self.cog.open_panels.pop((self.channel_id, self.user_id), None)
+            # Mark panel inactive
+            self.cog.active_panels[(self.channel_id, self.user_id)]["active"] = False
             return
 
         if self.finished:
@@ -84,8 +85,8 @@ class PersonalRollView(discord.ui.View):
             self.children[0].disabled = True
             self.restart_btn.disabled = False
             await self.edit_panel(interaction)
-            # Clean up panel tracking
-            self.cog.open_panels.pop((self.channel_id, self.user_id), None)
+            # Mark panel inactive
+            self.cog.active_panels[(self.channel_id, self.user_id)]["active"] = False
         else:
             await self.edit_panel(interaction)
 
@@ -97,9 +98,9 @@ class PersonalRollView(discord.ui.View):
         self.finished = False
         self.children[0].disabled = False
         self.restart_btn.disabled = True
+        # Mark panel active again
+        self.cog.active_panels[(self.channel_id, self.user_id)]["active"] = True
         await self.edit_panel(interaction)
-        # Re-track the panel ID
-        self.cog.open_panels[(self.channel_id, self.user_id)] = interaction.message.id
 
     async def edit_panel(self, interaction):
         await interaction.response.edit_message(
@@ -112,7 +113,7 @@ class RollingCog(commands.Cog):
         self.leaderboards = load_leaderboards()  # channel_id: {user_id: score}
         self.active_games = {}  # channel_id : {"active": bool, "end_time": datetime|None}
         self.last_host = {}     # channel_id : host_id
-        self.open_panels = {}   # (channel_id, user_id): message_id
+        self.active_panels = {} # (channel_id, user_id): {"active": bool, "msg_id": int}
 
     def update_leaderboard(self, channel_id, user_id, score):
         cid = str(channel_id)
@@ -147,10 +148,10 @@ class RollingCog(commands.Cog):
         self.last_host[channel_id] = ctx.author.id
         self.leaderboards[str(channel_id)] = {}
         save_leaderboards(self.leaderboards)
-        # Remove any stale open panels for this channel/game
-        for panel_key in list(self.open_panels):
+        # Cleanup all panels for this channel
+        for panel_key in list(self.active_panels):
             if panel_key[0] == channel_id:
-                self.open_panels.pop(panel_key, None)
+                self.active_panels.pop(panel_key, None)
         msg = "**A new game has started! Perfect score is 100.**\nType **start rolling** to play."
         if minutes and minutes > 0:
             end_time = now + timedelta(minutes=minutes)
@@ -175,10 +176,10 @@ class RollingCog(commands.Cog):
                 color=discord.Color.purple()
             )
             await channel.send(embed=embed)
-            # Clean up open panels for this channel
-            for panel_key in list(self.open_panels):
+            # Mark all panels in this channel inactive
+            for panel_key in list(self.active_panels):
                 if panel_key[0] == channel_id:
-                    self.open_panels.pop(panel_key, None)
+                    self.active_panels[panel_key]["active"] = False
 
     @commands.hybrid_command(name="roll_leaderboard", description="Show roll game leaderboard. Channel-specific.")
     async def roll_leaderboard(self, ctx):
@@ -221,16 +222,16 @@ class RollingCog(commands.Cog):
             return
         user_id = message.author.id
         panel_key = (channel_id, user_id)
-        # Check for existing panel per user/channel/game
-        if panel_key in self.open_panels:
+        panel_status = self.active_panels.get(panel_key)
+        if panel_status and panel_status.get("active", False):
             await message.channel.send(
-                f"{message.author.mention} You already have a rolling panel open for this game in this channel!",
+                f"{message.author.mention} You already have a rolling panel open for this game in this channel! Finish your current game or restart it.",
                 delete_after=10
             )
             return
         view = PersonalRollView(self, user_id, channel_id, game_end_time=end_time)
         msg = await message.channel.send(view.build_panel_message(message.author), view=view)
-        self.open_panels[panel_key] = msg.id
+        self.active_panels[panel_key] = {"active": True, "msg_id": msg.id}
 
 async def setup(bot):
     await bot.add_cog(RollingCog(bot))
