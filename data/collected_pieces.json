@@ -21,122 +21,103 @@
       "cols": 5
     }
   },
-    "pieces": {
-        "alice_test": {
-            "1": "alice_test/pieces/p1.png",
-            "2": "alice_test/pieces/p2.png",
-            "3": "alice_test/pieces/p3.png",
-            "4": "alice_test/pieces/p4.png",
-            "5": "alice_test/pieces/p5.png",
-            "6": "alice_test/pieces/p6.png",
-            "7": "alice_test/pieces/p7.png",
-            "8": "alice_test/pieces/p8.png",
-            "9": "alice_test/pieces/p9.png",
-            "10": "alice_test/pieces/p10.png",
-            "11": "alice_test/pieces/p11.png",
-            "12": "alice_test/pieces/p12.png",
-            "13": "alice_test/pieces/p13.png",
-            "14": "alice_test/pieces/p14.png",
-            "15": "alice_test/pieces/p15.png",
-            "16": "alice_test/pieces/p16.png",
-            "17": "alice_test/pieces/p17.png",
-            "18": "alice_test/pieces/p18.png",
-            "19": "alice_test/pieces/p19.png",
-            "20": "alice_test/pieces/p20.png",
-            "21": "alice_test/pieces/p21.png",
-            "22": "alice_test/pieces/p22.png",
-            "23": "alice_test/pieces/p23.png",
-            "24": "alice_test/pieces/p24.png",
-            "25": "alice_test/pieces/p25.png"
-        }
+  "pieces": {
+    "alice_test": {
+      "1": "alice_test/pieces/p1.png",
+      "2": "alice_test/pieces/p2.png",
+      "3": "alice_test/pieces/p3.png",
+      "4": "alice_test/pieces/p4.png",
+      "5": "alice_test/pieces/p5.png",
+      "6": "alice_test/pieces/p6.png",
+      "7": "alice_test/pieces/p7.png",
+      "8": "alice_test/pieces/p8.png",
+      "9": "alice_test/pieces/p9.png",
+      "10": "alice_test/pieces/p10.png",
+      "11": "alice_test/pieces/p11.png",
+      "12": "alice_test/pieces/p12.png",
+      "13": "alice_test/pieces/p13.png",
+      "14": "alice_test/pieces/p14.png",
+      "15": "alice_test/pieces/p15.png",
+      "16": "alice_test/pieces/p16.png",
+      "17": "alice_test/pieces/p17.png",
+      "18": "alice_test/pieces/p18.png",
+      "19": "alice_test/pieces/p19.png",
+      "20": "alice_test/pieces/p20.png",
+      "21": "alice_test/pieces/p21.png",
+      "22": "alice_test/pieces/p22.png",
+      "23": "alice_test/pieces/p23.png",
+      "24": "alice_test/pieces/p24.png",
+      "25": "alice_test/pieces/p25.png"
     },
-    "user_pieces": {
-        "1077240270791397388": {
-            "alice_test": [
-                "9",
-                "24",
-                "1",
-                "4",
-                "10",
-                "21",
-                "13",
-                "23",
-                "19",
-                "12",
-                "16",
-                "17",
-                "3",
-                "15",
-                "18",
-                "20",
-                "8"
-            ]
-        },
-        "665928232326922261": {
-            "alice_test": [
-                "9"
-            ]
-        },
-        "1242587465647390720": {
-            "alice_test": [
-                "1",
-                "23",
-                "19",
-                "24",
-                "5",
-                "12",
-                "14",
-                "4",
-                "17",
-                "3",
-                "15",
-                "18",
-                "20"
-            ]
-        },
-        "625759569578164244": {
-            "alice_test": [
-                "13",
-                "7",
-                "23",
-                "12",
-                "16",
-                "9",
-                "4",
-                "1",
-                "3",
-                "15"
-            ]
-        },
-        "1163697545466355763": {
-            "alice_test": [
-                "19",
-                "23",
-                "24",
-                "12",
-                "4",
-                "1",
-                "18",
-                "5"
-            ]
-        },
-        "1221837609689415840": {
-            "alice_test": [
-                "4"
-            ]
-        }
+    "happy_thanksgiving": {
+      "p1": "happy_thanksgiving/pieces/p1.png",
+      "p2": "happy_thanksgiving/pieces/p2.png",
+      "p3": "happy_thanksgiving/pieces/p3.png",
+      "p4": "happy_thanksgiving/pieces/p4.png",
+      "p5": "happy_thanksgiving/pieces/p5.png",
+      "p6": "happy_thanksgiving/pieces/p6.png",
+      "p7": "happy_thanksgiving/pieces/p7.png",
+      "p8": "happy_thanksgiving/pieces/p8.png",
+      "p9": "happy_thanksgiving/pieces/p9.png",
+      "p10": "happy_thanksgiving/pieces/p10.png",
+      "p11": "happy_thanksgiving/pieces/p11.png",
+      "p12": "happy_thanksgiving/pieces/p12.png",
+      "p13": "happy_thanksgiving/pieces/p13.png",
+      "p14": "happy_thanksgiving/pieces/p14.png",
+      "p15": "happy_thanksgiving/pieces/p15.png",
+      "p16": "happy_thanksgiving/pieces/p16.png",
+      "p17": "happy_thanksgiving/pieces/p17.png",
+      "p18": "happy_thanksgiving/pieces/p18.png",
+      "p19": "happy_thanksgiving/pieces/p19.png",
+      "p20": "happy_thanksgiving/pieces/p20.png",
+      "p21": "happy_thanksgiving/pieces/p21.png",
+      "p22": "happy_thanksgiving/pieces/p22.png",
+      "p23": "happy_thanksgiving/pieces/p23.png",
+      "p24": "happy_thanksgiving/pieces/p24.png",
+      "p25": "happy_thanksgiving/pieces/p25.png"
+    }
+  },
+  "user_pieces": {
+    "1077240270791397388": {
+      "alice_test": [
+        "9", "24", "1", "4", "10", "21", "13", "23",
+        "19", "12", "16", "17", "3", "15", "18", "20", "8"
+      ]
     },
-    "drop_channels": {
-        "1309962373846532159": {
-            "puzzle": "alice_test",
-            "mode": "messages",
-            "value": 10,
-            "last_drop_time": "2025-10-30T18:28:45.571589+00:00",
-            "message_count": 187,
-            "next_trigger": 192
-        }
+    "665928232326922261": {
+      "alice_test": ["9"]
     },
-    "staff": [
-        "1077240270791397388"
-    ]
+    "1242587465647390720": {
+      "alice_test": [
+        "1", "23", "19", "24", "5", "12", "14", "4",
+        "17", "3", "15", "18", "20"
+      ]
+    },
+    "625759569578164244": {
+      "alice_test": [
+        "13", "7", "23", "12", "16", "9", "4", "1", "3", "15"
+      ]
+    },
+    "1163697545466355763": {
+      "alice_test": [
+        "19", "23", "24", "12", "4", "1", "18", "5"
+      ]
+    },
+    "1221837609689415840": {
+      "alice_test": ["4"]
+    }
+  },
+  "drop_channels": {
+    "1309962373846532159": {
+      "puzzle": "alice_test",
+      "mode": "messages",
+      "value": 10,
+      "last_drop_time": "2025-10-30T18:28:45.571589+00:00",
+      "message_count": 187,
+      "next_trigger": 192
+    }
+  },
+  "staff": [
+    "1077240270791397388"
+  ]
 }
