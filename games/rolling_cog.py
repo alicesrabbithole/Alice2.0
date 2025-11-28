@@ -144,12 +144,6 @@ class JoinGameView(discord.ui.View):
     async def join(self, interaction: discord.Interaction, button: discord.ui.Button):
         user_id = interaction.user.id
         panel_key = (self.channel_id, user_id)
-        if panel_key in self.cog.active_panels and self.cog.active_panels[panel_key].get("active", False):
-            await interaction.response.send_message(
-                "You already have a rolling panel open for this game! Finish or restart your game.",
-                ephemeral=True
-            )
-            return
         view = PersonalRollView(self.cog, user_id, self.channel_id, game_end_time=self.game_end_time)
         await interaction.response.send_message(
             view.build_panel_message(interaction.user),
