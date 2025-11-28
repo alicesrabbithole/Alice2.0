@@ -93,6 +93,13 @@ class PuzzleDropsCog(commands.Cog, name="Puzzle Drops"):
             logger.exception(f"Failed to process image for drop, using raw file: {e}")
             file = discord.File(full_path, filename="puzzle_piece.png")
 
+        # Find ping_role_id from your puzzle meta
+        ping_role_id = None
+        meta = self.bot.data.get("puzzles", {}).get(puzzle_key)
+        if meta:
+            ping_role_id = meta.get("ping_role_id")
+        ping_out = f"<@&{ping_role_id}>" if ping_role_id else None
+
         emoji = config.CUSTOM_EMOJI_STRING or config.DEFAULT_EMOJI
         embed = (
             discord.Embed(
