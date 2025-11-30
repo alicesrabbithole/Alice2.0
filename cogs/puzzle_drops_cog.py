@@ -240,17 +240,29 @@ class PuzzleDropsCog(commands.Cog, name="Puzzle Drops"):
         if raw_cfg.get("mode") == "messages":
             raw_cfg["message_count"] = raw_cfg.get("message_count", 0) + 1
             if raw_cfg["message_count"] >= raw_cfg.get("next_trigger", raw_cfg.get("value")):
-                puzzle_key = resolve_puzzle_key(self.bot.data, raw_cfg.get("puzzle"))
+                puzzle_slug = raw_cfg.get("puzzle")
+                if puzzle_slug == "all_puzzles":
+                    all_puzzles = list(self.bot.data.get("puzzles", {}).keys())
+                    puzzle_key = random.choice(all_puzzles) if all_puzzles else None
+                else:
+                    puzzle_key = resolve_puzzle_key(self.bot.data, puzzle_slug)
                 if puzzle_key:
                     await self._spawn_drop(message.channel, puzzle_key)
                     raw_cfg["message_count"] = 0
                 save_data(self.bot.data)
 
-    @commands.hybrid_command(name="spawndrop", description="Manually spawn a puzzle drop.")
+    @commands.hybrid_command(
+        name="spawndrop",
+        description="Manually spawn a puzzle drop (optionally for a specific piece)."
+    )
     @app_commands.autocomplete(puzzle=puzzle_autocomplete)
     @is_admin()
     async def spawndrop(
-        self, ctx: commands.Context, puzzle: str, channel: Optional[discord.TextChannel] = None
+            self,
+            ctx: commands.Context,
+            puzzle: str,
+            channel: Optional[discord.TextChannel] = None,
+            piece: Optional[str] = None
     ):
         await ctx.defer(ephemeral=True)
         target_channel = channel or ctx.channel
@@ -264,10 +276,20 @@ class PuzzleDropsCog(commands.Cog, name="Puzzle Drops"):
         if not puzzle_key:
             return await ctx.send(f"❌ Puzzle not found: `{puzzle}`", ephemeral=True)
 
-        await self._spawn_drop(target_channel, puzzle_key)
-        display_name = get_puzzle_display_name(self.bot.data, puzzle_key)
-        await ctx.send(f"✅ Drop for **{display_name}** spawned in {target_channel.mention}.", ephemeral=True)
+        # Validate piece selection if provided
+        piece_id = None
+        if piece is not None:
+            pieces_map = self.bot.data.get("pieces", {}).get(puzzle_key)
+            if not pieces_map or piece not in pieces_map:
+                return await ctx.send(f"❌ Piece `{piece}` is not valid for puzzle `{puzzle}`.", ephemeral=True)
+            piece_id = piece  # Pass this into _spawn_drop
 
+        await self._spawn_drop(target_channel, puzzle_key, forced_piece=piece_id)
+        display_name = get_puzzle_display_name(self.bot.data, puzzle_key)
+        await ctx.send(
+            f"✅ Drop for **{display_name}**{' (piece `' + piece + '`)' if piece else ''} spawned in {target_channel.mention}.",
+            ephemeral=True
+        )
     @commands.hybrid_command(name="setdropchannel", description="Configure a channel for automatic puzzle drops.")
     @app_commands.autocomplete(puzzle=puzzle_autocomplete)
     @is_admin()
@@ -334,8 +356,22 @@ class PuzzleDropsCog(commands.Cog, name="Puzzle Drops"):
         )
         await log(
             self.bot,
-            f"🔧 Drop channel configured for **{display_name}** in `#{channel.name}` by `{ctx.author}`."
-        )
+            f"🔧 Drop channel configured for **{display_name}** in `#{channel.name}` by `{ctx.author}`.")
+
+    @commands.hybrid_command(name="removedropchannel", description="Remove a channel from automatic puzzle drops.")
+    @is_admin()
+    async def removedropchannel(self, ctx: commands.Context, channel: discord.TextChannel):
+        drop_channels = self.bot.data.get("drop_channels", {})
+        if str(channel.id) in drop_channels:
+            drop_channels.pop(str(channel.id))
+            save_data(self.bot.data)
+            await ctx.send(f"❌ Drop channel removed: {channel.mention}", ephemeral=False)
+            await log(
+                self.bot,
+                f"🔧 Drop channel removed for `#{channel.name}` by `{ctx.author}`."
+            )
+        else:
+            await ctx.send(f"Channel {channel.mention} is not configured for drops.", ephemeral=True)
 
 
 # --- Cog entry point ---
