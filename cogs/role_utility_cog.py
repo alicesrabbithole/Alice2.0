@@ -80,6 +80,34 @@ class RoleUtilityCog(commands.Cog, name="Role Utilities"):
         embed.set_footer(text=f"Created at: {discord.utils.format_dt(role.created_at, style='D')}")
         await ctx.send(embed=embed, ephemeral=False)
 
+    @commands.hybrid_command(name="checkroles", description="List all server roles you (or a member) currently have.")
+    @app_commands.describe(member="Optionally show roles for another member (staff only).")
+    async def checkroles(self, ctx: commands.Context, member: discord.Member = None):
+        """Shows all roles the user (or mentioned user, if staff) currently possesses."""
+        await ctx.defer(ephemeral=True)
+
+        # Regular users: only self. Staff: can check others.
+        # (You may want to use your existing is_staff check decorator or logic.)
+        is_staff_member = is_staff(ctx)
+        target = member if (member and is_staff_member) else ctx.author
+
+        roles = [r for r in target.roles if r != ctx.guild.default_role]
+        if not roles:
+            embed = discord.Embed(
+                title=f"Roles for {target.display_name}",
+                description="No roles other than @everyone.",
+                color=Colors.THEME_COLOR
+            )
+        else:
+            embed = discord.Embed(
+                title=f"Roles for {target.display_name}",
+                description=f"Total: **{len(roles)}**\n"
+                            + "\n".join(
+                    [role.mention for role in sorted(roles, key=lambda r: r.position, reverse=True)]),
+                color=Colors.THEME_COLOR
+            )
+        embed.set_footer(text=f"ID: {target.id}", icon_url=target.display_avatar.url)
+        await ctx.send(embed=embed, ephemeral=True)
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(RoleUtilityCog(bot))

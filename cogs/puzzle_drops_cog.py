@@ -12,12 +12,12 @@ import config
 from utils.db_utils import (
     save_data,
     resolve_puzzle_key,
-    get_puzzle_display_name
+    get_puzzle_display_name,
 )
 from utils.log_utils import log
 from ui.views import DropView
 from utils.checks import is_admin
-from utils.theme import Colors
+from utils.theme import Emojis, Colors  # Make sure Emojis and Colors are imported
 
 logger = logging.getLogger(__name__)
 
@@ -26,6 +26,45 @@ FREQUENCY_COMBINED_RANGES = {
     "medium": {"time": (10 * 60, 15 * 60), "messages": (30, 50)},
     "low": {"time": (16 * 60, 30 * 60), "messages": (60, 90)},
 }
+
+
+# ---- Theme support ---- #
+class Theme:
+    def __init__(self, color, button_color, emoji):
+        self.color = color
+        self.button_color = button_color
+        self.emoji = emoji
+
+happy_thanksgiving_theme = Theme(
+    color=Colors.CYAN_BLUE,
+    button_color=Colors.NEON_PURPLE,
+    emoji=Emojis.PUZZLE_PIECE,
+)
+
+alice_test_theme = Theme(
+    color=Colors.NEON_PURPLE,
+    button_color=Colors.PRIMARY,
+    emoji=Emojis.TROPHY,
+)
+
+THEMES = {
+    "happy_thanksgiving_theme": happy_thanksgiving_theme,
+    "alice_test_theme": alice_test_theme,
+    # add more themes as needed
+}
+
+PUZZLE_CONFIG = {
+    "thanksgiving_puzzle": {
+        "display_name": "Thanksgiving",
+        "theme": "happy_thanksgiving_theme",
+    },
+    "alice_test_puzzle": {
+        "display_name": "Alice's Challenge",
+        "theme": "alice_test_theme",
+    },
+    # add more puzzles as needed
+}
+
 
 class PuzzleDropsCog(commands.Cog, name="Puzzle Drops"):
     """Manages the automatic and manual dropping of puzzle pieces."""
@@ -44,7 +83,6 @@ class PuzzleDropsCog(commands.Cog, name="Puzzle Drops"):
     async def puzzle_autocomplete(
         self, interaction: discord.Interaction, current: str
     ) -> List[app_commands.Choice[str]]:
-        """Autocomplete for puzzle names, now safely using self.bot.data."""
         choices = []
         try:
             puzzles = self.bot.data.get("puzzles")
@@ -67,7 +105,12 @@ class PuzzleDropsCog(commands.Cog, name="Puzzle Drops"):
     async def _spawn_drop(
         self, channel: discord.TextChannel, puzzle_key: str, forced_piece: Optional[str] = None
     ):
-        display_name = get_puzzle_display_name(self.bot.data, puzzle_key)
+        # Pull config and theme info
+        meta = PUZZLE_CONFIG.get(puzzle_key, {})
+        theme_name = meta.get("theme")
+        theme = THEMES.get(theme_name) if theme_name else None
+
+        display_name = meta.get("display_name", get_puzzle_display_name(self.bot.data, puzzle_key))
         pieces_map = self.bot.data.get("pieces", {}).get(puzzle_key)
         if not pieces_map:
             logger.warning(f"No pieces found for puzzle {puzzle_key}")
@@ -93,19 +136,18 @@ class PuzzleDropsCog(commands.Cog, name="Puzzle Drops"):
             logger.exception(f"Failed to process image for drop, using raw file: {e}")
             file = discord.File(full_path, filename="puzzle_piece.png")
 
-        # Find ping_role_id from your puzzle meta
-        ping_role_id = None
-        meta = self.bot.data.get("puzzles", {}).get(puzzle_key)
-        if meta:
-            ping_role_id = meta.get("ping_role_id")
+        ping_role_id = self.bot.data.get("piece_drop_ping_role_id")
         ping_out = f"<@&{ping_role_id}>" if ping_role_id else None
 
-        emoji = config.CUSTOM_EMOJI_STRING or config.DEFAULT_EMOJI
+        emoji = theme.emoji if theme else (getattr(config, "CUSTOM_EMOJI_STRING", Emojis.PUZZLE_PIECE))
+        embed_color = theme.color if theme else Colors.THEME_COLOR
+        button_color = theme.button_color if theme else Colors.THEME_COLOR
+
         embed = (
             discord.Embed(
                 title=f"{emoji} A Wild Puzzle Piece Appears!",
                 description=f"A piece of the **{display_name}** puzzle has dropped!\nClick the button to collect it.",
-                color=Colors.THEME_COLOR,
+                color=embed_color,
             )
             .set_image(url="attachment://puzzle_piece.png")
         )
@@ -113,10 +155,15 @@ class PuzzleDropsCog(commands.Cog, name="Puzzle Drops"):
         raw_cfg = self.bot.data.get("drop_channels", {}).get(str(channel.id), {})
         claims_range = raw_cfg.get("claims_range", [1, 3])
         claim_limit = random.randint(claims_range[0], claims_range[1])
-        view = DropView(self.bot, puzzle_key, display_name, piece_id, claim_limit)
+        view = DropView(self.bot, puzzle_key, display_name, piece_id, claim_limit, button_color=button_color)
 
         try:
-            message = await channel.send(embed=embed, file=file, view=view)
+            message = await channel.send(
+                content=ping_out,
+                embed=embed,
+                file=file,
+                view=view
+            )
             view.message = message
         except (discord.Forbidden, discord.HTTPException) as e:
             logger.exception(f"Failed to send drop in #{channel.name}: {e}")
@@ -141,7 +188,6 @@ class PuzzleDropsCog(commands.Cog, name="Puzzle Drops"):
                 min_secs, max_secs = ranges["time"]
                 min_msgs, max_msgs = ranges["messages"]
 
-                # Set defaults if missing
                 if "next_trigger_time" not in raw_cfg:
                     raw_cfg["next_trigger_time"] = random.randint(min_secs, max_secs)
                     data_changed = True
@@ -158,7 +204,6 @@ class PuzzleDropsCog(commands.Cog, name="Puzzle Drops"):
                     continue
                 last_drop_time = datetime.fromisoformat(last_drop_str)
                 time_ready = now >= last_drop_time + timedelta(seconds=raw_cfg["next_trigger_time"])
-                # Drop if timer hits first (and messages haven't)
                 if time_ready and raw_cfg["message_count"] < raw_cfg["next_trigger_messages"]:
                     all_puzzles = list(self.bot.data.get("puzzles", {}).keys())
                     puzzle_key = random.choice(all_puzzles) if all_puzzles else None
@@ -193,7 +238,6 @@ class PuzzleDropsCog(commands.Cog, name="Puzzle Drops"):
                         await self._spawn_drop(channel, puzzle_key)
                         raw_cfg["last_drop_time"] = now.isoformat()
                         data_changed = True
-            # else: ignore other modes for scheduler
 
         if data_changed:
             save_data(self.bot.data)
@@ -223,7 +267,6 @@ class PuzzleDropsCog(commands.Cog, name="Puzzle Drops"):
             else:
                 raw_cfg["last_drop_time"] = now.isoformat()
                 return
-            # Drop if message threshold hits first (and timer hasn't)
             if raw_cfg["message_count"] >= next_msgs and not time_ready:
                 all_puzzles = list(self.bot.data.get("puzzles", {}).keys())
                 puzzle_key = random.choice(all_puzzles) if all_puzzles else None
@@ -258,11 +301,11 @@ class PuzzleDropsCog(commands.Cog, name="Puzzle Drops"):
     @app_commands.autocomplete(puzzle=puzzle_autocomplete)
     @is_admin()
     async def spawndrop(
-            self,
-            ctx: commands.Context,
-            puzzle: str,
-            channel: Optional[discord.TextChannel] = None,
-            piece: Optional[str] = None
+        self,
+        ctx: commands.Context,
+        puzzle: str,
+        channel: Optional[discord.TextChannel] = None,
+        piece: Optional[str] = None
     ):
         await ctx.defer(ephemeral=True)
         target_channel = channel or ctx.channel
@@ -276,13 +319,12 @@ class PuzzleDropsCog(commands.Cog, name="Puzzle Drops"):
         if not puzzle_key:
             return await ctx.send(f"❌ Puzzle not found: `{puzzle}`", ephemeral=True)
 
-        # Validate piece selection if provided
         piece_id = None
         if piece is not None:
             pieces_map = self.bot.data.get("pieces", {}).get(puzzle_key)
             if not pieces_map or piece not in pieces_map:
                 return await ctx.send(f"❌ Piece `{piece}` is not valid for puzzle `{puzzle}`.", ephemeral=True)
-            piece_id = piece  # Pass this into _spawn_drop
+            piece_id = piece
 
         await self._spawn_drop(target_channel, puzzle_key, forced_piece=piece_id)
         display_name = get_puzzle_display_name(self.bot.data, puzzle_key)
@@ -290,6 +332,17 @@ class PuzzleDropsCog(commands.Cog, name="Puzzle Drops"):
             f"✅ Drop for **{display_name}**{' (piece `' + piece + '`)' if piece else ''} spawned in {target_channel.mention}.",
             ephemeral=True
         )
+
+    @commands.hybrid_command(
+        name="pingset_drops",
+        description="Set the role to ping on every puzzle piece drop."
+    )
+    @is_admin()
+    async def pingset_drops(self, ctx: commands.Context, role: discord.Role):
+        self.bot.data["piece_drop_ping_role_id"] = role.id
+        save_data(self.bot.data)
+        await ctx.send(f"🛎️ Drop ping role has been set to {role.mention}. Future drops will ping this role.", ephemeral=True)
+
     @commands.hybrid_command(name="setdropchannel", description="Configure a channel for automatic puzzle drops.")
     @app_commands.autocomplete(puzzle=puzzle_autocomplete)
     @is_admin()
@@ -328,7 +381,6 @@ class PuzzleDropsCog(commands.Cog, name="Puzzle Drops"):
                 "next_trigger": final_value
             }
             summary = f"every {final_value} messages"
-        # --- New frequency/random mode ---
         elif final_mode == "random" or (final_mode == "frequency" and frequency_mode in FREQUENCY_COMBINED_RANGES):
             freq_mode = frequency_mode or "medium"
             ranges = FREQUENCY_COMBINED_RANGES.get(freq_mode, FREQUENCY_COMBINED_RANGES["medium"])
@@ -372,7 +424,6 @@ class PuzzleDropsCog(commands.Cog, name="Puzzle Drops"):
             )
         else:
             await ctx.send(f"Channel {channel.mention} is not configured for drops.", ephemeral=True)
-
 
 # --- Cog entry point ---
 async def setup(bot: commands.Bot):

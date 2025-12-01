@@ -78,5 +78,20 @@ class PuzzlesCog(commands.Cog, name="Puzzles"):
 
         await ctx.send(embed=embed, ephemeral=False)
 
+    @commands.hybrid_command(name="firstfinisher", description="Show who finished a puzzle first!")
+    @app_commands.autocomplete(puzzle_name=puzzle_autocomplete)
+    async def firstfinisher(self, ctx: commands.Context, *, puzzle_name: str):
+        from utils.puzzle_config import PUZZLE_CONFIG
+        puzzle_key = resolve_puzzle_key(self.bot.data, puzzle_name)
+        finishers = self.bot.data.get("puzzle_finishers", {}).get(puzzle_key, [])
+        if not finishers:
+            return await ctx.send("No one has completed this puzzle yet!", ephemeral=True)
+        first = finishers[0]
+        user = self.bot.get_user(first["user_id"]) or await self.bot.fetch_user(first["user_id"])
+        await ctx.send(
+            f"The first person to complete **{get_puzzle_display_name(self.bot.data, puzzle_key)}** was: {user.mention} at `{first['timestamp']}`!",
+            ephemeral=False
+        )
+
 async def setup(bot: commands.Bot):
     await bot.add_cog(PuzzlesCog(bot))
