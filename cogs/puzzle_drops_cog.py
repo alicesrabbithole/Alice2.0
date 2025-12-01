@@ -302,7 +302,7 @@ class PuzzleDropsCog(commands.Cog, name="Puzzle Drops"):
     async def pingset_drops(self, ctx: commands.Context, role: discord.Role):
         self.bot.data["piece_drop_ping_role_id"] = role.id
         save_data(self.bot.data)
-        await ctx.send(f"🛎️ Drop ping role has been set to {role.mention}. Future drops will ping this role.", ephemeral=True)
+        await ctx.send(f"🛎️ Drop ping role has been set to {role.mention}. Future drops will ping this role.", ephemeral=False)
 
     @commands.hybrid_command(name="setdropchannel", description="Configure a channel for automatic puzzle drops.")
     @app_commands.autocomplete(puzzle=puzzle_autocomplete)

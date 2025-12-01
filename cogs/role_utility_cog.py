@@ -81,15 +81,11 @@ class RoleUtilityCog(commands.Cog, name="Role Utilities"):
         await ctx.send(embed=embed, ephemeral=False)
 
     @commands.hybrid_command(name="checkroles", description="List all server roles you (or a member) currently have.")
-    @app_commands.describe(member="Optionally show roles for another member (staff only).")
+    @app_commands.describe(member="Optionally show roles for another member.")
     async def checkroles(self, ctx: commands.Context, member: discord.Member = None):
-        """Shows all roles the user (or mentioned user, if staff) currently possesses."""
+        """Shows all roles the user (or mentioned user) currently possesses."""
         await ctx.defer(ephemeral=True)
-
-        # Regular users: only self. Staff: can check others.
-        # (You may want to use your existing is_staff check decorator or logic.)
-        is_staff_member = is_staff(ctx)
-        target = member if (member and is_staff_member) else ctx.author
+        target = member or ctx.author
 
         roles = [r for r in target.roles if r != ctx.guild.default_role]
         if not roles:
@@ -107,7 +103,7 @@ class RoleUtilityCog(commands.Cog, name="Role Utilities"):
                 color=Colors.THEME_COLOR
             )
         embed.set_footer(text=f"ID: {target.id}", icon_url=target.display_avatar.url)
-        await ctx.send(embed=embed, ephemeral=True)
+        await ctx.send(embed=embed, ephemeral=False)
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(RoleUtilityCog(bot))
