@@ -81,7 +81,6 @@ class PuzzlesCog(commands.Cog, name="Puzzles"):
     @commands.hybrid_command(name="firstfinisher", description="Show who finished a puzzle first!")
     @app_commands.autocomplete(puzzle_name=puzzle_autocomplete)
     async def firstfinisher(self, ctx: commands.Context, *, puzzle_name: str):
-        from utils.puzzle_config import PUZZLE_CONFIG
         puzzle_key = resolve_puzzle_key(self.bot.data, puzzle_name)
         finishers = self.bot.data.get("puzzle_finishers", {}).get(puzzle_key, [])
         if not finishers:

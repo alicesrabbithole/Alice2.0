@@ -16,6 +16,9 @@ class Colors:
     CYAN_BLUE = 0x00FFFF
     NEON_PURPLE = 0x9D00FF
     THEME_COLOR = CYAN_BLUE
+    ORANGE = 0xFF5C00
+
+    # # PUZZLE THEMES BELOW - - - - - - - - - - - - - - - - - - - - - - -
 
 class Theme:
     def __init__(self, color, button_color, emoji):
@@ -23,18 +26,31 @@ class Theme:
         self.button_color = button_color
         self.emoji = emoji
 
+
 happy_thanksgiving_theme = Theme(
-    color=Colors.CYAN_BLUE,
-    button_color=Colors.NEON_PURPLE,
+    color=Colors.ORANGE,
+    button_color=discord.ButtonStyle.secondary,
     emoji=Emojis.PUZZLE_PIECE
 )
 alice_test_theme = Theme(
     color=Colors.NEON_PURPLE,
-    button_color=Colors.PRIMARY,
-    emoji=Emojis.TROPHY
+    button_color=discord.ButtonStyle.primary,
+    emoji=Emojis.PUZZLE_PIECE
 )
 THEMES = {
     "happy_thanksgiving_theme": happy_thanksgiving_theme,
     "alice_test_theme": alice_test_theme,
     # Add more themes as needed
+}
+
+PUZZLE_CONFIG = {
+    "thanksgiving_puzzle": {
+        "theme": "happy_thanksgiving_theme",
+        "completion_role_id": 1443655705461653534,
+    },
+    "alice_test_puzzle": {
+        "theme": "alice_test_theme",
+        "completion_role_id": 1379974318213173360,
+    },
+    # etc...
 }

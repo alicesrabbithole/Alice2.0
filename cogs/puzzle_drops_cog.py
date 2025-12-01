@@ -17,7 +17,7 @@ from utils.db_utils import (
 from utils.log_utils import log
 from ui.views import DropView
 from utils.checks import is_admin
-from utils.theme import Emojis, Colors  # Make sure Emojis and Colors are imported
+from utils.theme import THEMES, PUZZLE_CONFIG, Emojis, Colors # Make sure Emojis and Colors are imported
 
 logger = logging.getLogger(__name__)
 
@@ -26,45 +26,6 @@ FREQUENCY_COMBINED_RANGES = {
     "medium": {"time": (10 * 60, 15 * 60), "messages": (30, 50)},
     "low": {"time": (16 * 60, 30 * 60), "messages": (60, 90)},
 }
-
-
-# ---- Theme support ---- #
-class Theme:
-    def __init__(self, color, button_color, emoji):
-        self.color = color
-        self.button_color = button_color
-        self.emoji = emoji
-
-happy_thanksgiving_theme = Theme(
-    color=Colors.CYAN_BLUE,
-    button_color=Colors.NEON_PURPLE,
-    emoji=Emojis.PUZZLE_PIECE,
-)
-
-alice_test_theme = Theme(
-    color=Colors.NEON_PURPLE,
-    button_color=Colors.PRIMARY,
-    emoji=Emojis.TROPHY,
-)
-
-THEMES = {
-    "happy_thanksgiving_theme": happy_thanksgiving_theme,
-    "alice_test_theme": alice_test_theme,
-    # add more themes as needed
-}
-
-PUZZLE_CONFIG = {
-    "thanksgiving_puzzle": {
-        "display_name": "Thanksgiving",
-        "theme": "happy_thanksgiving_theme",
-    },
-    "alice_test_puzzle": {
-        "display_name": "Alice's Challenge",
-        "theme": "alice_test_theme",
-    },
-    # add more puzzles as needed
-}
-
 
 class PuzzleDropsCog(commands.Cog, name="Puzzle Drops"):
     """Manages the automatic and manual dropping of puzzle pieces."""

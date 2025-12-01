@@ -38,19 +38,20 @@ class AliceBot(commands.Bot):
             f"[DEBUG] Sample user_pieces[1077240270791397388]: {self.data.get('user_pieces', {}).get('1077240270791397388', {})}")
         self.initial_extensions = [
             "cogs.admin_cog",
+            "cogs.afk_cog",
             "cogs.alice_help_cog",
+            "cogs.giveaway_cog",
+            "cogs.global_message_leaderboard_cog"
             "cogs.moderation_cog",
             "cogs.puzzle_drops_cog",
             "cogs.puzzles_cog",
+            "cogs.reminder_cog",
             "cogs.role_utility_cog",
             "cogs.sticky_cog",
-            "cogs.reminder_cog",
             "games.wordle_cog",
             "games.twentyone_questions_cog",
             "games.rolling_cog",
-            "cogs.giveaway_cog",
-            "cogs.afk_cog",
-            "cogs.global_message_leaderboard_cog"
+
         ]
 
     # --- THIS IS THE FIX ---
