@@ -14,8 +14,7 @@ from utils.db_utils import (
 from .overlay import render_progress_image
 
 # Per-puzzle theme system — adjust imports as needed
-from utils.theme import Emojis, Colors, THEMES
-from cogs.puzzle_drops_cog import PUZZLE_CONFIG
+from utils.theme import Emojis, Colors, THEMES, PUZZLE_CONFIG
 
 logger = logging.getLogger(__name__)
 

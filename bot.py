@@ -41,7 +41,7 @@ class AliceBot(commands.Bot):
             "cogs.afk_cog",
             "cogs.alice_help_cog",
             "cogs.giveaway_cog",
-            "cogs.global_message_leaderboard_cog"
+            "cogs.global_message_leaderboard_cog",
             "cogs.moderation_cog",
             "cogs.puzzle_drops_cog",
             "cogs.puzzles_cog",
