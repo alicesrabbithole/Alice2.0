@@ -1,6 +1,7 @@
 import io
 import logging
-from typing import Optional, List, Tuple
+import asyncio
+from typing import Optional, List, Tuple, Dict
 
 import discord
 from discord import Interaction
@@ -18,6 +19,106 @@ from utils.theme import Emojis, Colors, THEMES, PUZZLE_CONFIG
 
 logger = logging.getLogger(__name__)
 
+# Small lock to avoid racing awards when multiple collectors act at once
+_award_lock = asyncio.Lock()
+
+
+async def _attempt_award_completion(interaction: discord.Interaction, bot: discord.Client, puzzle_key: str, user_id: int):
+    """
+    Safe helper to attempt awarding the completion/reward role and sending a congrats followup.
+    Uses a lock to avoid racing multiple concurrent collectors.
+    Returns: (awarded: bool, reason: str)
+    """
+    async with _award_lock:
+        meta = (bot.data.get("puzzles", {}) or {}).get(puzzle_key, {}) or {}
+        role_id = meta.get("completion_role_id") or meta.get("reward_role_id") or meta.get("reward_role")
+        try:
+            if role_id is not None:
+                role_id = int(role_id)
+        except (ValueError, TypeError):
+            logger.warning("Invalid role id in meta for puzzle %s: %r", puzzle_key, role_id)
+            role_id = None
+
+        # Recompute pieces and totals after save
+        user_pieces = get_user_pieces(bot.data, user_id, puzzle_key)
+        total_pieces = len(bot.data.get("pieces", {}).get(puzzle_key, {}))
+
+        logger.debug(
+            "Award check (helper): puzzle=%s user=%s user_pieces=%s total=%s role_id=%r",
+            puzzle_key,
+            user_id,
+            len(user_pieces),
+            total_pieces,
+            role_id,
+        )
+
+        if len(user_pieces) < total_pieces:
+            return False, "not complete"
+
+        if not role_id:
+            return False, "no role configured"
+
+        guild = getattr(interaction, "guild", None)
+        if not guild:
+            return False, "no guild context"
+
+        role_obj = guild.get_role(role_id)
+        if not role_obj:
+            logger.warning(
+                "Configured role id %r for puzzle %s not found in guild %s",
+                role_id,
+                puzzle_key,
+                guild.id,
+            )
+            return False, "role not found in guild"
+
+        try:
+            member = guild.get_member(user_id) or await guild.fetch_member(user_id)
+        except Exception:
+            logger.exception("Could not fetch member %s for guild %s", user_id, guild.id)
+            return False, "member not in guild"
+
+        if role_obj in member.roles:
+            return False, "already has role"
+
+        try:
+            await member.add_roles(role_obj, reason=f"Completed puzzle: {meta.get('display_name', puzzle_key)}")
+            # Send congrats using followup (safe after response or defer)
+            try:
+                await interaction.followup.send(
+                    f"🏆 Congratulations! You completed **{meta.get('display_name', puzzle_key)}** and earned the {role_obj.mention} role!",
+                    ephemeral=True,
+                )
+            except Exception:
+                # followup may fail if not deferred; attempt response if available
+                try:
+                    if not interaction.response.is_done():
+                        await interaction.response.send_message(
+                            f"🏆 Congratulations! You completed **{meta.get('display_name', puzzle_key)}** and earned the {role_obj.mention} role!",
+                            ephemeral=True,
+                        )
+                except Exception:
+                    logger.debug("Could not send congrats via followup or response", exc_info=True)
+
+            logger.info("Awarded role %s to user %s for puzzle %s", role_id, user_id, puzzle_key)
+            return True, "awarded"
+        except Exception as e:
+            logger.exception(
+                "Failed to add completion role %s to user %s for puzzle %s: %s",
+                role_id,
+                user_id,
+                puzzle_key,
+                e,
+            )
+            try:
+                await interaction.followup.send(
+                    "⚠️ I couldn't add the completion role — please check my Manage Roles permission and role hierarchy.",
+                    ephemeral=True,
+                )
+            except Exception:
+                pass
+            return False, "add_roles failed"
+
 
 # -----------------------------------------------------
 # DropView - used by puzzle_drops_cog (kept here for import)
@@ -25,7 +126,16 @@ logger = logging.getLogger(__name__)
 class DropView(discord.ui.View):
     """The view for a puzzle piece drop, containing the 'Collect' button."""
 
-    def __init__(self, bot, puzzle_key: str, puzzle_display_name: str, piece_id: str, claim_limit: int, button_color=None, timeout: float = 30.0):
+    def __init__(
+        self,
+        bot,
+        puzzle_key: str,
+        puzzle_display_name: str,
+        piece_id: str,
+        claim_limit: int,
+        button_color=None,
+        timeout: float = 30.0,
+    ):
         super().__init__(timeout=timeout)
         self.bot = bot
         self.puzzle_key = puzzle_key
@@ -49,7 +159,9 @@ class DropView(discord.ui.View):
             try:
                 return discord.PartialEmoji.from_str(config.CUSTOM_EMOJI_STRING)
             except (TypeError, ValueError):
-                logger.warning(f"Could not parse custom emoji: {config.CUSTOM_EMOJI_STRING}. Falling back to default.")
+                logger.warning(
+                    f"Could not parse custom emoji: {config.CUSTOM_EMOJI_STRING}. Falling back to default."
+                )
         return discord.PartialEmoji(name=getattr(config, "DEFAULT_EMOJI", "🧩"))
 
     async def on_timeout(self):
@@ -72,74 +184,46 @@ class DropView(discord.ui.View):
         if not add_piece_to_user(self.bot.data, interaction.user.id, self.puzzle_key, self.piece_id):
             return await interaction.response.send_message("You already have this piece!", ephemeral=True)
 
+        # Persist state immediately
         save_data(self.bot.data)
         self.claimants.append(interaction.user)
 
-        await interaction.response.send_message(
-            f"✅ You collected Piece `{self.piece_id}` for the **{self.puzzle_display_name}** puzzle!", ephemeral=True
-        )
+        # Acknowledge the collect to the claimer
+        try:
+            await interaction.response.send_message(
+                f"✅ You collected Piece `{self.piece_id}` for the **{self.puzzle_display_name}** puzzle!",
+                ephemeral=True,
+            )
+        except Exception:
+            # If response already used, attempt followup (best-effort)
+            try:
+                await interaction.followup.send(
+                    f"✅ You collected Piece `{self.piece_id}` for the **{self.puzzle_display_name}** puzzle!",
+                    ephemeral=True,
+                )
+            except Exception:
+                logger.debug("Failed to ack collect via response or followup", exc_info=True)
 
         # ==== Reward Role, Finisher, and Logging ====
-        meta = PUZZLE_CONFIG.get(self.puzzle_key, {})
-        # Backwards-compatible role lookup (accept completion_role_id OR reward_role_id)
-        role_id = meta.get("completion_role_id") or meta.get("reward_role_id") or meta.get("reward_role")
+        # Run awarding helper (will re-check completeness and handle messaging)
         try:
-            if role_id is not None:
-                role_id = int(role_id)
-        except (ValueError, TypeError):
-            logger.warning("Invalid role id in meta for puzzle %s: %r", self.puzzle_key, role_id)
-            role_id = None
+            awarded, reason = await _attempt_award_completion(interaction, self.bot, self.puzzle_key, interaction.user.id)
+            logger.debug("Award attempt result for %s on %s: %s", interaction.user.id, self.puzzle_key, (awarded, reason))
+        except Exception:
+            logger.exception("Error while attempting to award completion for %s on %s", interaction.user.id, self.puzzle_key)
 
+        # Track first finisher (persisted)
+        meta = PUZZLE_CONFIG.get(self.puzzle_key, {})
         user_id = interaction.user.id
         user_pieces = get_user_pieces(self.bot.data, user_id, self.puzzle_key)
         total_pieces = len(self.bot.data.get("pieces", {}).get(self.puzzle_key, {}))
-
-        logger.debug("Award check (DropView): puzzle=%s user=%s user_pieces=%s total=%s role_id=%r",
-                     self.puzzle_key, user_id, len(user_pieces), total_pieces, role_id)
-
         if len(user_pieces) == total_pieces:
-            # Award completion/reward role
-            if role_id and interaction.guild:
-                role = interaction.guild.get_role(role_id)
-                logger.debug("Attempting to award role: role_id=%r role_obj=%r user_roles=%s guild=%s",
-                             role_id, role, [r.id for r in interaction.user.roles], interaction.guild.id if interaction.guild else None)
-                if role and role not in interaction.user.roles:
-                    try:
-                        await interaction.user.add_roles(role, reason=f"Completed puzzle: {meta.get('display_name', self.puzzle_key)}")
-                        await interaction.followup.send(
-                            f"🏆 Congratulations! You completed **{meta.get('display_name', self.puzzle_key)}** and earned the {role.mention} role!",
-                            ephemeral=True,
-                        )
-                    except Exception as e:
-                        logger.exception("Failed to add completion role %s to user %s for puzzle %s: %s", role_id, user_id, self.puzzle_key, e)
-                        await interaction.followup.send(
-                            "⚠️ I couldn't add the completion role — please check my Manage Roles permission and role hierarchy.",
-                            ephemeral=True,
-                        )
-                    # Log to configured channel if present
-                    log_channel_id = meta.get("completion_log_channel") or meta.get("log_channel") or 1411859714144468992
-                    log_channel = None
-                    try:
-                        log_channel = interaction.guild.get_channel(log_channel_id)
-                        if not log_channel:
-                            log_channel = await interaction.guild.fetch_channel(log_channel_id)
-                    except Exception:
-                        log_channel = None
-                    if log_channel:
-                        try:
-                            await log_channel.send(
-                                f"📝 {interaction.user.mention} completed **{meta.get('display_name', self.puzzle_key)}** and was awarded {role.mention}."
-                            )
-                        except Exception:
-                            logger.debug("Failed to write completion log for puzzle %s", self.puzzle_key, exc_info=True)
-
-            # Track first finisher
             finishers = self.bot.data.setdefault("puzzle_finishers", {}).setdefault(self.puzzle_key, [])
             if user_id not in [f.get("user_id") for f in finishers]:
                 import datetime
+
                 finishers.append({"user_id": user_id, "timestamp": datetime.datetime.utcnow().isoformat()})
                 save_data(self.bot.data)
-        # ==== End Reward Role, Finisher, and Logging ====
 
         # If we've hit claim limit, remove the button, edit, post summary and stop.
         if len(self.claimants) >= self.claim_limit:
@@ -165,7 +249,7 @@ class DropView(discord.ui.View):
         if not self.claimants:
             summary = f"The drop for the **{self.puzzle_display_name}** puzzle (Piece `{self.piece_id}`) timed out with no collectors."
         else:
-            mentions = ', '.join(u.mention for u in self.claimants)
+            mentions = ", ".join(u.mention for u in self.claimants)
             summary = f"Piece `{self.piece_id}` of the **{self.puzzle_display_name}** puzzle was collected by: {mentions}"
         try:
             await self.message.channel.send(summary, allowed_mentions=discord.AllowedMentions.none())
@@ -179,8 +263,7 @@ class DropView(discord.ui.View):
 class PuzzleGalleryView(discord.ui.View):
     """A paginated view for browsing a user's collected puzzles."""
 
-    # Pixels to crop from the bottom of the generated image to remove the progress bar.
-    # When the renderer no longer draws the progress bar this can be 0.
+    # The renderer no longer draws the progress bar; no cropping required.
     PROGRESS_BAR_CROP_HEIGHT = 0
 
     def __init__(
@@ -231,8 +314,10 @@ class PuzzleGalleryView(discord.ui.View):
         user_pieces = get_user_pieces(self.bot.data, owner_id, puzzle_key) if owner_id else []
         total_pieces = len(self.bot.data.get("pieces", {}).get(puzzle_key, {}))
 
-        emoji = theme.emoji if theme else (
-            config.CUSTOM_EMOJI_STRING if hasattr(config, "CUSTOM_EMOJI_STRING") else Emojis.PUZZLE_PIECE
+        emoji = (
+            theme.emoji
+            if theme
+            else (config.CUSTOM_EMOJI_STRING if hasattr(config, "CUSTOM_EMOJI_STRING") else Emojis.PUZZLE_PIECE)
         )
         embed_color = theme.color if theme else Colors.THEME_COLOR
 
@@ -249,9 +334,12 @@ class PuzzleGalleryView(discord.ui.View):
         role_id_display = meta.get("completion_role_id") or meta.get("reward_role_id") or meta.get("reward_role")
         role_text = ""
         if role_id_display and self.interaction and self.interaction.guild:
-            role = self.interaction.guild.get_role(int(role_id_display))
-            if role:
-                role_text = f"\n**Reward Role:** {role.mention}"
+            try:
+                role = self.interaction.guild.get_role(int(role_id_display))
+                if role:
+                    role_text = f"\n**Reward Role:** {role.mention}"
+            except Exception:
+                role_text = f"\n**Reward Role:** <@&{role_id_display}>"
         elif role_id_display:
             role_text = f"\n**Reward Role:** <@&{role_id_display}>"
 
@@ -265,7 +353,9 @@ class PuzzleGalleryView(discord.ui.View):
         else:
             # Fallback to the creating interaction user or a generic label if none
             if self.interaction and self.interaction.user:
-                embed.set_author(name=self.interaction.user.display_name, icon_url=self.interaction.user.display_avatar.url)
+                embed.set_author(
+                    name=self.interaction.user.display_name, icon_url=self.interaction.user.display_avatar.url
+                )
             else:
                 embed.set_author(name=display_name)
 
@@ -282,19 +372,8 @@ class PuzzleGalleryView(discord.ui.View):
         try:
             image_bytes = render_progress_image(self.bot.data, puzzle_key, user_pieces)
 
-            # If renderer no longer draws the progress bar, no cropping is needed.
-            if image_bytes and self.PROGRESS_BAR_CROP_HEIGHT > 0:
-                with PILImage.open(io.BytesIO(image_bytes)) as img:
-                    if img.height > self.PROGRESS_BAR_CROP_HEIGHT:
-                        cropped = img.crop((0, 0, img.width, img.height - self.PROGRESS_BAR_CROP_HEIGHT))
-                    else:
-                        cropped = img.copy()
-                    buf = io.BytesIO()
-                    cropped.save(buf, format="PNG")
-                    buf.seek(0)
-                    file = discord.File(buf, filename=filename)
-                    embed.set_image(url=f"attachment://{filename}")
-            elif image_bytes:
+            # No cropping needed because renderer doesn't draw progress bar.
+            if image_bytes:
                 file = discord.File(io.BytesIO(image_bytes), filename=filename)
                 embed.set_image(url=f"attachment://{filename}")
             else:
@@ -434,9 +513,12 @@ class LeaderboardView(discord.ui.View):
         # reward role info (display only)
         role_id_display = meta.get("completion_role_id") or meta.get("reward_role_id") or meta.get("reward_role")
         if role_id_display and self.guild:
-            role = self.guild.get_role(int(role_id_display))
-            if role:
-                lines.append(f"\n**Reward Role:** {role.mention}")
+            try:
+                role = self.guild.get_role(int(role_id_display))
+                if role:
+                    lines.append(f"\n**Reward Role:** {role.mention}")
+            except Exception:
+                lines.append(f"\n**Reward Role:** <@&{role_id_display}>")
         elif role_id_display:
             lines.append(f"\n**Reward Role:** <@&{role_id_display}>")
 
