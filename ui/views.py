@@ -7,11 +7,166 @@ from discord import Interaction
 from PIL import Image as PILImage
 
 import config
-from utils.db_utils import get_puzzle_display_name, get_user_pieces
+from utils.db_utils import (
+    add_piece_to_user,
+    save_data,
+    get_puzzle_display_name,
+    get_user_pieces,
+)
 from .overlay import render_progress_image
 from utils.theme import Emojis, Colors, THEMES, PUZZLE_CONFIG
 
 logger = logging.getLogger(__name__)
+
+
+# -----------------------------------------------------
+# DropView - used by puzzle_drops_cog (kept here for import)
+# -----------------------------------------------------
+class DropView(discord.ui.View):
+    """The view for a puzzle piece drop, containing the 'Collect' button."""
+
+    def __init__(self, bot, puzzle_key: str, puzzle_display_name: str, piece_id: str, claim_limit: int, button_color=None, timeout: float = 30.0):
+        super().__init__(timeout=timeout)
+        self.bot = bot
+        self.puzzle_key = puzzle_key
+        self.puzzle_display_name = puzzle_display_name
+        self.piece_id = piece_id
+        self.claim_limit = claim_limit
+        self.claimants: List[discord.User] = []
+        self.message: Optional[discord.Message] = None
+        self.summary_sent = False  # Only allows posting once
+
+        # Set emoji for the button (safely)
+        try:
+            self.collect_button.emoji = self._get_partial_emoji()
+        except Exception:
+            # If the button doesn't exist yet (edge cases) ignore
+            pass
+
+    def _get_partial_emoji(self) -> discord.PartialEmoji:
+        """Safely parses the custom emoji string."""
+        if getattr(config, "CUSTOM_EMOJI_STRING", None):
+            try:
+                return discord.PartialEmoji.from_str(config.CUSTOM_EMOJI_STRING)
+            except (TypeError, ValueError):
+                logger.warning(f"Could not parse custom emoji: {config.CUSTOM_EMOJI_STRING}. Falling back to default.")
+        return discord.PartialEmoji(name=getattr(config, "DEFAULT_EMOJI", "🧩"))
+
+    async def on_timeout(self):
+        # Remove the button from the view before editing so it shows as expired.
+        try:
+            self.remove_item(self.collect_button)
+        except Exception:
+            pass
+        if self.message:
+            try:
+                await self.message.edit(view=self)
+            except discord.NotFound:
+                pass
+        await self.post_summary()
+        self.stop()
+
+    @discord.ui.button(label="Collect Piece", style=discord.ButtonStyle.primary)
+    async def collect_button(self, interaction: Interaction, button: discord.ui.Button):
+        # Try to add piece to user; add_piece_to_user returns False if user already has it.
+        if not add_piece_to_user(self.bot.data, interaction.user.id, self.puzzle_key, self.piece_id):
+            return await interaction.response.send_message("You already have this piece!", ephemeral=True)
+
+        save_data(self.bot.data)
+        self.claimants.append(interaction.user)
+
+        await interaction.response.send_message(
+            f"✅ You collected Piece `{self.piece_id}` for the **{self.puzzle_display_name}** puzzle!", ephemeral=True
+        )
+
+        # ==== Reward Role, Finisher, and Logging ====
+        meta = PUZZLE_CONFIG.get(self.puzzle_key, {})
+        # backwards-compatible key selection (completion/reward)
+        role_id = meta.get("completion_role_id") or meta.get("reward_role_id") or meta.get("reward_role")
+        try:
+            if role_id is not None:
+                role_id = int(role_id)
+        except (ValueError, TypeError):
+            logger.warning("Invalid role id in meta for puzzle %s: %r", self.puzzle_key, role_id)
+            role_id = None
+
+        user_id = interaction.user.id
+        user_pieces = get_user_pieces(self.bot.data, user_id, self.puzzle_key)
+        total_pieces = len(self.bot.data.get("pieces", {}).get(self.puzzle_key, {}))
+
+        if len(user_pieces) == total_pieces:
+            # Award completion/reward role
+            if role_id and interaction.guild:
+                role = interaction.guild.get_role(role_id)
+                if role and role not in interaction.user.roles:
+                    try:
+                        await interaction.user.add_roles(role, reason=f"Completed puzzle: {meta.get('display_name', self.puzzle_key)}")
+                        await interaction.followup.send(
+                            f"🏆 Congratulations! You completed **{meta.get('display_name', self.puzzle_key)}** and earned the {role.mention} role!",
+                            ephemeral=True,
+                        )
+                    except Exception as e:
+                        logger.exception("Failed to add completion role %s to user %s for puzzle %s: %s", role_id, user_id, self.puzzle_key, e)
+                        await interaction.followup.send(
+                            "⚠️ I couldn't add the completion role — please check my Manage Roles permission and role hierarchy.",
+                            ephemeral=True,
+                        )
+                    # Log to configured channel if present
+                    log_channel_id = meta.get("completion_log_channel") or meta.get("log_channel") or 1411859714144468992
+                    log_channel = None
+                    try:
+                        log_channel = interaction.guild.get_channel(log_channel_id)
+                        if not log_channel:
+                            log_channel = await interaction.guild.fetch_channel(log_channel_id)
+                    except Exception:
+                        log_channel = None
+                    if log_channel:
+                        try:
+                            await log_channel.send(
+                                f"📝 {interaction.user.mention} completed **{meta.get('display_name', self.puzzle_key)}** and was awarded {role.mention}."
+                            )
+                        except Exception:
+                            logger.debug("Failed to write completion log for puzzle %s", self.puzzle_key, exc_info=True)
+
+            # Track first finisher
+            finishers = self.bot.data.setdefault("puzzle_finishers", {}).setdefault(self.puzzle_key, [])
+            if user_id not in [f.get("user_id") for f in finishers]:
+                import datetime
+                finishers.append({"user_id": user_id, "timestamp": datetime.datetime.utcnow().isoformat()})
+                save_data(self.bot.data)
+        # ==== End Reward Role, Finisher, and Logging ====
+
+        # If we've hit claim limit, remove the button, edit, post summary and stop.
+        if len(self.claimants) >= self.claim_limit:
+            try:
+                self.remove_item(button)
+            except Exception:
+                pass
+            if self.message:
+                try:
+                    await self.message.edit(view=self)
+                except discord.NotFound:
+                    pass
+            await self.post_summary()
+            self.stop()
+
+    async def post_summary(self):
+        if self.summary_sent:
+            return
+        self.summary_sent = True
+
+        if not self.message:
+            return
+        if not self.claimants:
+            summary = f"The drop for the **{self.puzzle_display_name}** puzzle (Piece `{self.piece_id}`) timed out with no collectors."
+        else:
+            mentions = ', '.join(u.mention for u in self.claimants)
+            summary = f"Piece `{self.piece_id}` of the **{self.puzzle_display_name}** puzzle was collected by: {mentions}"
+        try:
+            await self.message.channel.send(summary, allowed_mentions=discord.AllowedMentions.none())
+        except discord.HTTPException:
+            pass
+
 
 # -------------------------
 # PuzzleGalleryView
