@@ -1,141 +1,50 @@
+import io
+import logging
+from typing import Optional, List, Tuple
+
 import discord
 from discord import Interaction
-from typing import Optional, List
-import logging
-import io
+from PIL import Image as PILImage
 
 import config
-from utils.db_utils import (
-    add_piece_to_user,
-    save_data,
-    get_puzzle_display_name,
-    get_user_pieces,
-)
+from utils.db_utils import get_puzzle_display_name, get_user_pieces
 from .overlay import render_progress_image
-
-# Per-puzzle theme system — adjust imports as needed
 from utils.theme import Emojis, Colors, THEMES, PUZZLE_CONFIG
 
 logger = logging.getLogger(__name__)
 
-class DropView(discord.ui.View):
-    """The view for a puzzle piece drop, containing the 'Collect' button."""
-
-    def __init__(self, bot, puzzle_key: str, puzzle_display_name: str, piece_id: str, claim_limit: int, button_color=None):
-        super().__init__(timeout=30.0)
-        self.bot = bot
-        self.puzzle_key = puzzle_key
-        self.puzzle_display_name = puzzle_display_name
-        self.piece_id = piece_id
-        self.claim_limit = claim_limit
-        self.claimants: List[discord.User] = []
-        self.message: Optional[discord.Message] = None
-        self.summary_sent = False # Only allows posting once
-
-        # Set emoji for the button
-        self.collect_button.emoji = self._get_partial_emoji()
-
-    def _get_partial_emoji(self) -> discord.PartialEmoji:
-        """Safely parses the custom emoji string."""
-        if config.CUSTOM_EMOJI_STRING:
-            try:
-                return discord.PartialEmoji.from_str(config.CUSTOM_EMOJI_STRING)
-            except (TypeError, ValueError):
-                logger.warning(f"Could not parse custom emoji: {config.CUSTOM_EMOJI_STRING}. Falling back to default.")
-        return discord.PartialEmoji(name=config.DEFAULT_EMOJI)
-
-    async def on_timeout(self):
-        self.remove_item(self.collect_button)
-        if self.message:
-            try:
-                await self.message.edit(view=self)
-            except discord.NotFound:
-                pass
-            await self.post_summary()
-            self.stop()
-
-    @discord.ui.button(label="Collect Piece", style=discord.ButtonStyle.primary)
-    async def collect_button(self, interaction: Interaction, button: discord.ui.Button):
-        if not add_piece_to_user(self.bot.data, interaction.user.id, self.puzzle_key, self.piece_id):
-            return await interaction.response.send_message("You already have this piece!", ephemeral=True)
-
-        save_data(self.bot.data)
-        self.claimants.append(interaction.user)
-        await interaction.response.send_message(
-            f"✅ You collected Piece `{self.piece_id}` for the **{self.puzzle_display_name}** puzzle!", ephemeral=True
-        )
-
-        # ==== Completion Role, Finisher, and Logging ====
-        meta = PUZZLE_CONFIG.get(self.puzzle_key, {})
-        role_id = meta.get("completion_role_id")
-        user_id = interaction.user.id
-        user_pieces = get_user_pieces(self.bot.data, user_id, self.puzzle_key)
-        total_pieces = len(self.bot.data.get("pieces", {}).get(self.puzzle_key, {}))
-
-        if len(user_pieces) == total_pieces:
-            # Award completion role
-            if role_id and interaction.guild:
-                role = interaction.guild.get_role(role_id)
-                if role and role not in interaction.user.roles:
-                    await interaction.user.add_roles(role,
-                                                     reason=f"Completed puzzle: {meta.get('display_name', self.puzzle_key)}")
-                    await interaction.followup.send(
-                        f"🏆 Congratulations! You completed **{meta.get('display_name', self.puzzle_key)}** and earned the {role.mention} role!",
-                        ephemeral=True
-                    )
-                    # Log to Discord channel
-                    log_channel_id = 1411859714144468992
-                    log_channel = interaction.guild.get_channel(log_channel_id)
-                    if not log_channel:
-                        try:
-                            log_channel = await interaction.guild.fetch_channel(log_channel_id)
-                        except Exception:
-                            log_channel = None
-                    if log_channel:
-                        await log_channel.send(
-                            f"📝 {interaction.user.mention} completed **{meta.get('display_name', self.puzzle_key)}** and was awarded {role.mention}."
-                        )
-            # Track first finisher
-            finishers = self.bot.data.setdefault("puzzle_finishers", {}).setdefault(self.puzzle_key, [])
-            if user_id not in [f["user_id"] for f in finishers]:
-                import datetime
-                finishers.append({"user_id": user_id, "timestamp": datetime.datetime.utcnow().isoformat()})
-                save_data(self.bot.data)
-        # ==== End Completion Role, Finisher, and Logging ====
-
-        if len(self.claimants) >= self.claim_limit:
-            self.remove_item(button)
-            if self.message:
-                await self.message.edit(view=self)
-            await self.post_summary()
-            self.stop()
-
-    async def post_summary(self):
-        if self.summary_sent:
-            return
-        self.summary_sent = True
-
-        if not self.message:
-            return
-        if not self.claimants:
-            summary = f"The drop for the **{self.puzzle_display_name}** puzzle (Piece `{self.piece_id}`) timed out with no collectors."
-        else:
-            mentions = ', '.join(u.mention for u in self.claimants)
-            summary = f"Piece `{self.piece_id}` of the **{self.puzzle_display_name}** puzzle was collected by: {mentions}"
-        try:
-            await self.message.channel.send(summary, allowed_mentions=discord.AllowedMentions.none())
-        except discord.HTTPException:
-            pass
-
+# -------------------------
+# PuzzleGalleryView
+# -------------------------
 class PuzzleGalleryView(discord.ui.View):
     """A paginated view for browsing a user's collected puzzles."""
 
-    def __init__(self, bot, interaction: Interaction, user_puzzle_keys: list[str], current_index=0):
+    # Pixels to crop from the bottom of the generated image to remove the progress bar.
+    # Set to 0 to disable cropping.
+    PROGRESS_BAR_CROP_HEIGHT = 28
+
+    def __init__(
+        self,
+        bot,
+        interaction: Optional[Interaction],
+        user_puzzle_keys: list[str],
+        current_index: int = 0,
+        owner_id: Optional[int] = None,
+    ):
         super().__init__(timeout=300.0)
         self.bot = bot
+        # The Interaction provided when the view was created (may be None for prefix sends)
         self.interaction = interaction
         self.user_puzzle_keys = user_puzzle_keys
         self.current_index = current_index
+
+        # The owner of the gallery (whose pieces are shown) is captured at creation time.
+        # Defaults to the creating interaction user if provided else None.
+        self.owner_id = owner_id or (interaction.user.id if interaction and interaction.user else None)
+
+        # The opener (viewer) who initially invoked the gallery; kept if you want to restrict controls.
+        self.opener_id = interaction.user.id if interaction and interaction.user else None
+
         self.update_buttons()
 
     def update_buttons(self):
@@ -145,19 +54,26 @@ class PuzzleGalleryView(discord.ui.View):
         self.next_page.disabled = self.current_index >= len(self.user_puzzle_keys) - 1
         self.last_page.disabled = self.current_index >= len(self.user_puzzle_keys) - 1
 
-    async def generate_embed_and_file(self) -> tuple[discord.Embed, Optional[discord.File]]:
+    async def generate_embed_and_file(self) -> Tuple[discord.Embed, Optional[discord.File]]:
         puzzle_key = self.user_puzzle_keys[self.current_index]
         meta = PUZZLE_CONFIG.get(puzzle_key, {})
         theme_name = meta.get("theme")
         theme = THEMES.get(theme_name) if theme_name else None
 
         display_name = meta.get("display_name", get_puzzle_display_name(self.bot.data, puzzle_key))
-        user_id = self.interaction.user.id
-        user_pieces = get_user_pieces(self.bot.data, user_id, puzzle_key)
+
+        owner_id = self.owner_id
+        owner_user = None
+        if owner_id:
+            owner_user = self.bot.get_user(owner_id) or await self.bot.fetch_user(owner_id)
+
+        # Use the owner_id to look up their pieces for this puzzle.
+        user_pieces = get_user_pieces(self.bot.data, owner_id, puzzle_key) if owner_id else []
         total_pieces = len(self.bot.data.get("pieces", {}).get(puzzle_key, {}))
 
         emoji = theme.emoji if theme else (
-            config.CUSTOM_EMOJI_STRING if hasattr(config, "CUSTOM_EMOJI_STRING") else Emojis.PUZZLE_PIECE)
+            config.CUSTOM_EMOJI_STRING if hasattr(config, "CUSTOM_EMOJI_STRING") else Emojis.PUZZLE_PIECE
+        )
         embed_color = theme.color if theme else Colors.THEME_COLOR
 
         desc = f"**Progress:** {len(user_pieces)} / {total_pieces} pieces collected."
@@ -169,206 +85,262 @@ class PuzzleGalleryView(discord.ui.View):
             first_user = self.bot.get_user(first["user_id"]) or await self.bot.fetch_user(first["user_id"])
             desc += f"\n**First Finisher:** {first_user.mention} ({first['timestamp']})"
 
-        # Add completion role info
-        role_id = meta.get("completion_role_id")
+        # Add reward role info
+        role_id = meta.get("reward_role_id")
         role_text = ""
-        if role_id and self.interaction.guild:
-            role = self.interaction.guild.get_role(role_id)
+        if role_id and self.interaction and self.interaction.guild:
+            role = self.interaction.guild.get_role(int(role_id))
             if role:
-                role_text = f"\n**Completion Role:** {role.mention}"
+                role_text = f"\n**Reward Role:** {role.mention}"
         elif role_id:
-            role_text = f"\n**Completion Role:** <@&{role_id}>"
+            role_text = f"\n**Reward Role:** <@&{role_id}>"
 
         desc += role_text
 
-        embed = discord.Embed(
-            title=f"{emoji} {display_name}",
-            description=desc,
-            color=embed_color
-        )
-        embed.set_author(name=self.interaction.user.display_name, icon_url=self.interaction.user.display_avatar.url)
+        embed = discord.Embed(title=f"{emoji} {display_name}", description=desc, color=embed_color)
+
+        # Author should reflect the owner of the gallery, not the clicker.
+        if owner_user:
+            embed.set_author(name=owner_user.display_name, icon_url=owner_user.display_avatar.url)
+        else:
+            # Fallback to the creating interaction user or a generic label if none
+            if self.interaction and self.interaction.user:
+                embed.set_author(name=self.interaction.user.display_name, icon_url=self.interaction.user.display_avatar.url)
+            else:
+                embed.set_author(name=display_name)
+
         embed.set_footer(text=f"Puzzle {self.current_index + 1} of {len(self.user_puzzle_keys)}")
 
         filename = f"{puzzle_key}_progress.png"
         logger.info(
-            f"[DEBUG] render_progress_image called for puzzle_key={puzzle_key} with collected_piece_ids={user_pieces}")
+            "[DEBUG] render_progress_image called for puzzle_key=%s with collected_piece_ids=%s (owner=%s)",
+            puzzle_key,
+            user_pieces,
+            owner_id,
+        )
+
         try:
             image_bytes = render_progress_image(self.bot.data, puzzle_key, user_pieces)
-            file = discord.File(io.BytesIO(image_bytes), filename=filename)
-            embed.set_image(url=f"attachment://{filename}")
+
+            # Crop the bottom progress bar if present.
+            if image_bytes and self.PROGRESS_BAR_CROP_HEIGHT > 0:
+                with PILImage.open(io.BytesIO(image_bytes)) as img:
+                    if img.height > self.PROGRESS_BAR_CROP_HEIGHT:
+                        cropped = img.crop((0, 0, img.width, img.height - self.PROGRESS_BAR_CROP_HEIGHT))
+                    else:
+                        cropped = img.copy()
+                    buf = io.BytesIO()
+                    cropped.save(buf, format="PNG")
+                    buf.seek(0)
+                    file = discord.File(buf, filename=filename)
+                    embed.set_image(url=f"attachment://{filename}")
+            elif image_bytes:
+                file = discord.File(io.BytesIO(image_bytes), filename=filename)
+                embed.set_image(url=f"attachment://{filename}")
+            else:
+                file = None
         except Exception as e:
-            logger.exception(f"Failed to render gallery image for {puzzle_key}")
+            logger.exception("Failed to render gallery image for %s", puzzle_key)
             embed.add_field(name="⚠️ Render Error", value=f"Could not generate puzzle image: `{e}`")
             file = None
 
         return embed, file
 
-    async def update_message(self):
-        """Updates the original interaction message with the new puzzle view."""
+    async def update_message(self, interaction: Optional[Interaction] = None):
+        """
+        Update the message using the provided interaction (from a button press) or the original interaction
+        captured at view creation (for slash-initiated flows).
+        """
         self.update_buttons()
         embed, file = await self.generate_embed_and_file()
-        await self.interaction.edit_original_response(embed=embed, view=self, attachments=[file] if file else [])
+
+        target_interaction = interaction or self.interaction
+        if target_interaction:
+            # If we have an Interaction, edit the original response (slash flow)
+            try:
+                await target_interaction.edit_original_response(embed=embed, view=self, attachments=[file] if file else [])
+                return
+            except Exception:
+                # fall through to no-interaction path
+                pass
+
+        # If no interaction available (prefix flow), attempt to edit the message stored on the view if present.
+        # Note: When sending via ctx.send, Discord attaches the view to the message and button clicks will provide
+        # an Interaction which we handle above. This fallback is best-effort.
+        if hasattr(self, "message") and self.message:
+            try:
+                await self.message.edit(embed=embed, view=self, attachments=[file] if file else [])
+            except Exception:
+                logger.debug("Failed to edit stored message for PuzzleGalleryView", exc_info=True)
 
     async def on_timeout(self):
         for item in self.children:
             item.disabled = True
+        # Try to edit the originating response/message to reflect that controls are disabled.
         try:
-            await self.interaction.edit_original_response(view=self)
+            if self.interaction:
+                await self.interaction.edit_original_response(view=self)
+            elif hasattr(self, "message") and self.message:
+                await self.message.edit(view=self)
         except discord.NotFound:
             pass
+        except Exception:
+            logger.debug("Error while timing out PuzzleGalleryView", exc_info=True)
 
     # PAGINATION BUTTONS
     @discord.ui.button(label="<<", style=discord.ButtonStyle.blurple)
     async def first_page(self, interaction: Interaction, button: discord.ui.Button):
         await interaction.response.defer()
         self.current_index = 0
-        await self.update_message()
+        await self.update_message(interaction)
 
     @discord.ui.button(label="<", style=discord.ButtonStyle.blurple)
     async def prev_page(self, interaction: Interaction, button: discord.ui.Button):
         await interaction.response.defer()
-        self.current_index -= 1
-        await self.update_message()
+        self.current_index = max(0, self.current_index - 1)
+        await self.update_message(interaction)
 
     @discord.ui.button(label=">", style=discord.ButtonStyle.blurple)
     async def next_page(self, interaction: Interaction, button: discord.ui.Button):
         await interaction.response.defer()
-        self.current_index += 1
-        await self.update_message()
+        self.current_index = min(len(self.user_puzzle_keys) - 1, self.current_index + 1)
+        await self.update_message(interaction)
 
     @discord.ui.button(label=">>", style=discord.ButtonStyle.blurple)
     async def last_page(self, interaction: Interaction, button: discord.ui.Button):
         await interaction.response.defer()
         self.current_index = len(self.user_puzzle_keys) - 1
-        await self.update_message()
-
-    # --- LEADERBOARD BUTTON ---
-    @discord.ui.button(label="Leaderboard", style=discord.ButtonStyle.primary)
-    async def goto_leaderboard(self, interaction: Interaction, button: discord.ui.Button):
-        view = LeaderboardView(
-            self.bot,
-            interaction,
-            self.user_puzzle_keys,
-            current_page=self.current_index,
-        )
-        embed, file = await view.generate_leaderboard_embed()
-        await interaction.response.edit_message(embed=embed, view=view, attachments=[file] if file else [])
+        await self.update_message(interaction)
 
 
+# -------------------------
+# LeaderboardView (kept in views so other cogs can reuse)
+# -------------------------
 class LeaderboardView(discord.ui.View):
-    """A paginated view for browsing leaderboards across puzzles."""
+    """Paginated leaderboard view that's styled like the gallery embeds."""
 
-    def __init__(self, bot, interaction: Interaction, puzzle_keys: List[str], current_page=0):
+    PAGE_SIZE = 10
+
+    def __init__(self, bot, guild: Optional[discord.Guild], puzzle_key: str, leaderboard_data: List[tuple], page: int = 0):
         super().__init__(timeout=300.0)
         self.bot = bot
-        self.interaction = interaction
-        self.puzzle_keys = puzzle_keys
-        self.page = current_page
+        self.guild = guild
+        self.puzzle_key = puzzle_key
+        self.leaderboard_data = leaderboard_data  # list of (user_id:int, count:int)
+        self.page = page
         self.update_buttons()
 
     def update_buttons(self):
-        self.first_page.disabled = self.page == 0
-        self.prev_page.disabled = self.page == 0
-        self.next_page.disabled = self.page >= len(self.puzzle_keys) - 1
-        self.last_page.disabled = self.page >= len(self.puzzle_keys) - 1
+        total_pages = max(1, (len(self.leaderboard_data) + self.PAGE_SIZE - 1) // self.PAGE_SIZE)
+        self.first_button.disabled = self.page == 0
+        self.prev_button.disabled = self.page == 0
+        self.next_button.disabled = self.page >= total_pages - 1
+        self.last_button.disabled = self.page >= total_pages - 1
 
-    async def generate_leaderboard_embed(self) -> tuple[discord.Embed, None]:
-        puzzle_key = self.puzzle_keys[self.page]
-        meta = PUZZLE_CONFIG.get(puzzle_key, {})
+    async def generate_embed(self) -> discord.Embed:
+        meta = PUZZLE_CONFIG.get(self.puzzle_key, {})
         theme_name = meta.get("theme")
         theme = THEMES.get(theme_name) if theme_name else None
 
-        display_name = meta.get("display_name", get_puzzle_display_name(self.bot.data, puzzle_key))
+        display_name = meta.get("display_name", get_puzzle_display_name(self.bot.data, self.puzzle_key))
         emoji = theme.emoji if theme else Emojis.TROPHY
-        embed_color = theme.color if theme else Colors.THEME_COLOR
+        color = theme.color if theme else Colors.THEME_COLOR
 
-        all_user_pieces = self.bot.data.get("user_pieces", {})
-        leaderboard_data = [
-            (int(user_id), len(user_puzzles.get(puzzle_key, [])))
-            for user_id, user_puzzles in all_user_pieces.items()
-            if puzzle_key in user_puzzles and len(user_puzzles[puzzle_key]) > 0
-        ]
-        leaderboard_data.sort(key=lambda x: (-x[1], x[0]))
+        total_pages = max(1, (len(self.leaderboard_data) + self.PAGE_SIZE - 1) // self.PAGE_SIZE)
+        start = self.page * self.PAGE_SIZE
+        end = start + self.PAGE_SIZE
 
-        desc_lines = []
-        if leaderboard_data:
-            for i, (user_id, count) in enumerate(leaderboard_data[:20], start=1):
-                user = self.bot.get_user(user_id) or await self.bot.fetch_user(user_id)
-                user_mention = user.mention if user else f"User (`{user_id}`)"
-                desc_lines.append(f"**{i}.** {user_mention} - `{count}` pieces")
+        lines: List[str] = []
+        if not self.leaderboard_data:
+            lines.append("No one has collected pieces for this puzzle yet.")
         else:
-            desc_lines.append("No one has collected any pieces for this puzzle yet.")
+            for i, (user_id, count) in enumerate(self.leaderboard_data[start:end], start=start + 1):
+                try:
+                    user = self.bot.get_user(int(user_id)) or await self.bot.fetch_user(int(user_id))
+                except Exception:
+                    user = None
+                mention = user.mention if user else f"User (`{user_id}`)"
+                lines.append(f"**{i}.** {mention} — `{count}` pieces")
 
-        # Add first finisher info
-        finishers = self.bot.data.get("puzzle_finishers", {}).get(puzzle_key, [])
+        # first finisher info
+        finishers = self.bot.data.get("puzzle_finishers", {}).get(self.puzzle_key, [])
         if finishers:
             first = finishers[0]
-            first_user = self.bot.get_user(first["user_id"]) or await self.bot.fetch_user(first["user_id"])
-            desc_lines.append(f"\n**First Finisher:** {first_user.mention} ({first['timestamp']})")
+            try:
+                first_user = self.bot.get_user(first["user_id"]) or await self.bot.fetch_user(first["user_id"])
+                first_line = f"\n**First Finisher:** {first_user.mention} ({first['timestamp']})"
+            except Exception:
+                first_line = f"\n**First Finisher:** `{first['user_id']}` ({first['timestamp']})"
+            lines.append(first_line)
 
-        # Add completion role info
-        role_id = meta.get("completion_role_id")
-        if role_id and self.interaction.guild:
-            role = self.interaction.guild.get_role(role_id)
+        # reward role info
+        role_id = meta.get("reward_role_id")
+        if role_id and self.guild:
+            role = self.guild.get_role(int(role_id))
             if role:
-                desc_lines.append(f"**Completion Role:** {role.mention}")
+                lines.append(f"\n**Reward Role:** {role.mention}")
         elif role_id:
-            desc_lines.append(f"**Completion Role:** <@&{role_id}>")
+            lines.append(f"\n**Reward Role:** <@&{role_id}>")
 
-        embed = discord.Embed(
-            title=f"{emoji} Leaderboard for {display_name}",
-            description="\n".join(desc_lines),
-            color=embed_color,
-        )
-        embed.set_footer(text=f"Puzzle {self.page + 1} of {len(self.puzzle_keys)}")
-        return embed, None
+        embed = discord.Embed(title=f"{emoji} Leaderboard — {display_name}", description="\n".join(lines), color=color)
 
-    async def update_message(self):
-        self.update_buttons()
-        embed, file = await self.generate_leaderboard_embed()
-        await self.interaction.edit_original_response(embed=embed, view=self, attachments=[file] if file else [])
+        if self.guild and self.guild.icon:
+            embed.set_author(name=display_name, icon_url=self.guild.icon.url)
+        else:
+            embed.set_author(name=display_name)
 
-    async def on_timeout(self):
-        for item in self.children:
-            item.disabled = True
-        try:
-            await self.interaction.edit_original_response(view=self)
-        except discord.NotFound:
-            pass
+        embed.set_footer(text=f"Page {self.page + 1} of {total_pages}")
+        return embed
 
-    # PAGINATION BUTTONS
-    @discord.ui.button(label="<<", style=discord.ButtonStyle.blurple)
-    async def first_page(self, interaction: Interaction, button: discord.ui.Button):
+    @discord.ui.button(label="<<", style=discord.ButtonStyle.gray)
+    async def first_button(self, interaction: Interaction, button: discord.ui.Button):
         await interaction.response.defer()
         self.page = 0
-        await self.update_message()
+        self.update_buttons()
+        await interaction.edit_original_response(embed=await self.generate_embed(), view=self)
 
     @discord.ui.button(label="<", style=discord.ButtonStyle.blurple)
-    async def prev_page(self, interaction: Interaction, button: discord.ui.Button):
+    async def prev_button(self, interaction: Interaction, button: discord.ui.Button):
         await interaction.response.defer()
-        self.page -= 1
-        await self.update_message()
+        self.page = max(0, self.page - 1)
+        self.update_buttons()
+        await interaction.edit_original_response(embed=await self.generate_embed(), view=self)
 
     @discord.ui.button(label=">", style=discord.ButtonStyle.blurple)
-    async def next_page(self, interaction: Interaction, button: discord.ui.Button):
+    async def next_button(self, interaction: Interaction, button: discord.ui.Button):
         await interaction.response.defer()
-        self.page += 1
-        await self.update_message()
+        total_pages = max(1, (len(self.leaderboard_data) + self.PAGE_SIZE - 1) // self.PAGE_SIZE)
+        self.page = min(total_pages - 1, self.page + 1)
+        self.update_buttons()
+        await interaction.edit_original_response(embed=await self.generate_embed(), view=self)
 
-    @discord.ui.button(label=">>", style=discord.ButtonStyle.blurple)
-    async def last_page(self, interaction: Interaction, button: discord.ui.Button):
+    @discord.ui.button(label=">>", style=discord.ButtonStyle.gray)
+    async def last_button(self, interaction: Interaction, button: discord.ui.Button):
         await interaction.response.defer()
-        self.page = len(self.puzzle_keys) - 1
-        await self.update_message()
+        total_pages = max(1, (len(self.leaderboard_data) + self.PAGE_SIZE - 1) // self.PAGE_SIZE)
+        self.page = total_pages - 1
+        self.update_buttons()
+        await interaction.edit_original_response(embed=await self.generate_embed(), view=self)
 
-    # --- GALLERY BUTTON ---
-    @discord.ui.button(label="Gallery", style=discord.ButtonStyle.secondary)
-    async def goto_gallery(self, interaction: Interaction, button: discord.ui.Button):
-        view = PuzzleGalleryView(
-            self.bot,
-            interaction,
-            self.puzzle_keys,
-            current_index=self.page,
-        )
-        embed, file = await view.generate_embed_and_file()
-        await interaction.response.edit_message(embed=embed, view=view, attachments=[file] if file else [])
+
+# -------------------------
+# Helper to open the leaderboard (so commands can call this easily)
+# -------------------------
+async def open_leaderboard_view(bot, interaction: Interaction, puzzle_key: str):
+    """
+    Build leaderboard data and send a leaderboard view message.
+    This helper replicates the 'leaderboard-in-views' pattern so cogs/commands can call it.
+    """
+    await interaction.response.defer()
+    # Build leaderboard data: list of (user_id:int, count:int)
+    all_user_pieces = bot.data.get("user_pieces", {})
+    leaderboard_data = [
+        (int(user_id), len(user_puzzles.get(puzzle_key, [])))
+        for user_id, user_puzzles in all_user_pieces.items()
+        if puzzle_key in user_puzzles and len(user_puzzles[puzzle_key]) > 0
+    ]
+    leaderboard_data.sort(key=lambda x: (-x[1], x[0]))
+
+    view = LeaderboardView(bot, interaction.guild, puzzle_key, leaderboard_data, page=0)
+    embed = await view.generate_embed()
+    await interaction.followup.send(embed=embed, view=view)

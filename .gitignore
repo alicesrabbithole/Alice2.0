@@ -21,3 +21,6 @@ data/*
 
 # ...but DO track the main database file
 
+
+# Puzzle pieces (binary assets)
+/puzzles/*/pieces/
