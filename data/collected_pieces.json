@@ -20,17 +20,17 @@
       "rows": 5,
       "cols": 5
     },
-      "puzzle_meta": {
-    "display_name": "Winter Wonderland",
-    "color": "0x88ccff",
-    "ping_role_id": 1443655423948230709,
-    "reward_role_id": 1443655705461653534,
-    "base_image": "winter_wonderland/winter_wonderland_base.png",
-    "full_image": "winter_wonderland/winter_wonderland_full.png",
-    "rows": 5,
-    "cols": 5
-  }
-  },
+    "winter_wonderland": {
+        "display_name": "Winter Wonderland",
+        "color": "0xffa500",
+        "ping_role_id": 1443655423948230709,
+        "reward_role_id": 1443655705461653534,
+        "base_image": "winter_wonderland/winter_wonderland_base.png",
+        "full_image": "winter_wonderland/winter_wonderland_full.png",
+        "rows": 5,
+        "cols": 5
+    }
+},
   "pieces": {
     "alice_test": {
       "1": "alice_test/pieces/p1.png",
