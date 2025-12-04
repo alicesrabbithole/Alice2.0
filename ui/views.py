@@ -81,7 +81,7 @@ class DropView(discord.ui.View):
 
         # ==== Reward Role, Finisher, and Logging ====
         meta = PUZZLE_CONFIG.get(self.puzzle_key, {})
-        # backwards-compatible key selection (completion/reward)
+        # Backwards-compatible role lookup (accept completion_role_id OR reward_role_id)
         role_id = meta.get("completion_role_id") or meta.get("reward_role_id") or meta.get("reward_role")
         try:
             if role_id is not None:
@@ -94,10 +94,15 @@ class DropView(discord.ui.View):
         user_pieces = get_user_pieces(self.bot.data, user_id, self.puzzle_key)
         total_pieces = len(self.bot.data.get("pieces", {}).get(self.puzzle_key, {}))
 
+        logger.debug("Award check (DropView): puzzle=%s user=%s user_pieces=%s total=%s role_id=%r",
+                     self.puzzle_key, user_id, len(user_pieces), total_pieces, role_id)
+
         if len(user_pieces) == total_pieces:
             # Award completion/reward role
             if role_id and interaction.guild:
                 role = interaction.guild.get_role(role_id)
+                logger.debug("Attempting to award role: role_id=%r role_obj=%r user_roles=%s guild=%s",
+                             role_id, role, [r.id for r in interaction.user.roles], interaction.guild.id if interaction.guild else None)
                 if role and role not in interaction.user.roles:
                     try:
                         await interaction.user.add_roles(role, reason=f"Completed puzzle: {meta.get('display_name', self.puzzle_key)}")
@@ -175,8 +180,8 @@ class PuzzleGalleryView(discord.ui.View):
     """A paginated view for browsing a user's collected puzzles."""
 
     # Pixels to crop from the bottom of the generated image to remove the progress bar.
-    # Set to 0 to disable cropping.
-    PROGRESS_BAR_CROP_HEIGHT = 28
+    # When the renderer no longer draws the progress bar this can be 0.
+    PROGRESS_BAR_CROP_HEIGHT = 0
 
     def __init__(
         self,
@@ -240,15 +245,15 @@ class PuzzleGalleryView(discord.ui.View):
             first_user = self.bot.get_user(first["user_id"]) or await self.bot.fetch_user(first["user_id"])
             desc += f"\n**First Finisher:** {first_user.mention} ({first['timestamp']})"
 
-        # Add reward role info
-        role_id = meta.get("reward_role_id")
+        # Add reward role info (read-only display) - accept either key
+        role_id_display = meta.get("completion_role_id") or meta.get("reward_role_id") or meta.get("reward_role")
         role_text = ""
-        if role_id and self.interaction and self.interaction.guild:
-            role = self.interaction.guild.get_role(int(role_id))
+        if role_id_display and self.interaction and self.interaction.guild:
+            role = self.interaction.guild.get_role(int(role_id_display))
             if role:
                 role_text = f"\n**Reward Role:** {role.mention}"
-        elif role_id:
-            role_text = f"\n**Reward Role:** <@&{role_id}>"
+        elif role_id_display:
+            role_text = f"\n**Reward Role:** <@&{role_id_display}>"
 
         desc += role_text
 
@@ -277,7 +282,7 @@ class PuzzleGalleryView(discord.ui.View):
         try:
             image_bytes = render_progress_image(self.bot.data, puzzle_key, user_pieces)
 
-            # Crop the bottom progress bar if present.
+            # If renderer no longer draws the progress bar, no cropping is needed.
             if image_bytes and self.PROGRESS_BAR_CROP_HEIGHT > 0:
                 with PILImage.open(io.BytesIO(image_bytes)) as img:
                     if img.height > self.PROGRESS_BAR_CROP_HEIGHT:
@@ -320,8 +325,6 @@ class PuzzleGalleryView(discord.ui.View):
                 pass
 
         # If no interaction available (prefix flow), attempt to edit the message stored on the view if present.
-        # Note: When sending via ctx.send, Discord attaches the view to the message and button clicks will provide
-        # an Interaction which we handle above. This fallback is best-effort.
         if hasattr(self, "message") and self.message:
             try:
                 await self.message.edit(embed=embed, view=self, attachments=[file] if file else [])
@@ -428,14 +431,14 @@ class LeaderboardView(discord.ui.View):
                 first_line = f"\n**First Finisher:** `{first['user_id']}` ({first['timestamp']})"
             lines.append(first_line)
 
-        # reward role info
-        role_id = meta.get("reward_role_id")
-        if role_id and self.guild:
-            role = self.guild.get_role(int(role_id))
+        # reward role info (display only)
+        role_id_display = meta.get("completion_role_id") or meta.get("reward_role_id") or meta.get("reward_role")
+        if role_id_display and self.guild:
+            role = self.guild.get_role(int(role_id_display))
             if role:
                 lines.append(f"\n**Reward Role:** {role.mention}")
-        elif role_id:
-            lines.append(f"\n**Reward Role:** <@&{role_id}>")
+        elif role_id_display:
+            lines.append(f"\n**Reward Role:** <@&{role_id_display}>")
 
         embed = discord.Embed(title=f"{emoji} Leaderboard — {display_name}", description="\n".join(lines), color=color)
 
@@ -484,9 +487,18 @@ class LeaderboardView(discord.ui.View):
 async def open_leaderboard_view(bot, interaction: Interaction, puzzle_key: str):
     """
     Build leaderboard data and send a leaderboard view message.
-    This helper replicates the 'leaderboard-in-views' pattern so cogs/commands can call it.
+    This helper used to call interaction.response.defer() unconditionally and that caused
+    InteractionResponded when the caller already deferred.  Now we only defer if the
+    interaction hasn't been responded to yet.
     """
-    await interaction.response.defer()
+    try:
+        # Only defer if the interaction hasn't been responded to already.
+        if not interaction.response.is_done():
+            await interaction.response.defer()
+    except Exception:
+        # If something odd happens, log and continue to attempt a followup.
+        logger.debug("open_leaderboard_view: could not defer or already responded", exc_info=True)
+
     # Build leaderboard data: list of (user_id:int, count:int)
     all_user_pieces = bot.data.get("user_pieces", {})
     leaderboard_data = [
@@ -498,4 +510,15 @@ async def open_leaderboard_view(bot, interaction: Interaction, puzzle_key: str):
 
     view = LeaderboardView(bot, interaction.guild, puzzle_key, leaderboard_data, page=0)
     embed = await view.generate_embed()
-    await interaction.followup.send(embed=embed, view=view)
+
+    # Use followup (works after defer or if interaction already responded)
+    try:
+        await interaction.followup.send(embed=embed, view=view)
+    except Exception as e:
+        # As a fallback, try to send a normal response if followup fails (best-effort).
+        logger.exception("open_leaderboard_view: followup send failed, attempting response.send_message: %s", e)
+        try:
+            if not interaction.response.is_done():
+                await interaction.response.send_message(embed=embed, view=view)
+        except Exception:
+            logger.exception("open_leaderboard_view: response.send_message also failed", exc_info=True)

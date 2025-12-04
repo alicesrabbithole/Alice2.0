@@ -28,27 +28,34 @@ class PuzzlesCog(commands.Cog, name="Puzzles"):
 
     @commands.hybrid_command(name="gallery", description="Browse through all the puzzles you have started.")
     async def gallery(self, ctx: commands.Context):
-        """Shows an interactive gallery of all puzzles the user has pieces for."""
+        """Shows an interactive gallery of all puzzles — include puzzles with no collected pieces as well."""
         await ctx.defer(ephemeral=False)
         logger.info(f"[DEBUG] /gallery invoked by {ctx.author} ({ctx.author.id})")
 
+        all_puzzles = list(self.bot.data.get("puzzles", {}).keys())
+        all_puzzles.sort(key=lambda key: get_puzzle_display_name(self.bot.data, key))
+
+        # The user's collected puzzle keys (may be absent or empty)
         user_pieces = self.bot.data.get("user_pieces", {})
         user_puzzles = user_pieces.get(str(ctx.author.id), {})
 
-        user_puzzle_keys = [key for key, pieces in user_puzzles.items() if pieces]
-        user_puzzle_keys.sort(key=lambda key: get_puzzle_display_name(self.bot.data, key))
+        # Build gallery list: put puzzles the user has any pieces for first, then the rest.
+        puzzles_with_pieces = [k for k in all_puzzles if k in user_puzzles and user_puzzles.get(k)]
+        puzzles_without_pieces = [k for k in all_puzzles if k not in puzzles_with_pieces]
+        user_puzzle_keys = puzzles_with_pieces + puzzles_without_pieces
 
+        # If there are no puzzles configured at all, inform the user.
         if not user_puzzle_keys:
-            return await ctx.send("You haven't collected any puzzle pieces yet! Go find some!", ephemeral=True)
+            return await ctx.send("There are no puzzles configured yet.", ephemeral=True)
 
-        # If this was invoked as a slash command there will be ctx.interaction available;
-        # PuzzleGalleryView expects an Interaction for later edits, so pass ctx.interaction when available.
+        # Pass the interaction when available so the view can edit the original response later.
         interaction = getattr(ctx, "interaction", None)
-        view = PuzzleGalleryView(self.bot, interaction, user_puzzle_keys)
+        view = PuzzleGalleryView(self.bot, interaction, user_puzzle_keys, current_index=0, owner_id=ctx.author.id)
         embed, file = await view.generate_embed_and_file()
 
-        # When invoked via prefix (no Interaction), edit/send still works with ctx.send
+        # Send using interaction context if available (slash), otherwise ctx.send works for prefix.
         if interaction:
+            # For slash commands we can attach view and file directly via ctx.send
             await ctx.send(embed=embed, file=file, view=view, ephemeral=False)
         else:
             await ctx.send(embed=embed, file=file, view=view)
@@ -65,7 +72,7 @@ class PuzzlesCog(commands.Cog, name="Puzzles"):
         # If invoked as a slash command, prefer the interaction-based helper (keeps behavior consistent).
         interaction = getattr(ctx, "interaction", None)
         if interaction:
-            # open_leaderboard_view will defer and follow up itself (it expects an Interaction)
+            # open_leaderboard_view will handle deferring/followup appropriately
             return await open_leaderboard_view(self.bot, interaction, puzzle_key)
 
         # Fallback for prefix invocation: build leaderboard data and construct the LeaderboardView directly.
@@ -92,7 +99,7 @@ class PuzzlesCog(commands.Cog, name="Puzzles"):
         first = finishers[0]
         user = self.bot.get_user(first["user_id"]) or await self.bot.fetch_user(first["user_id"])
         await ctx.send(
-            f"The first person to complete **{get_puzzle_display_name(self.bot.data, puzzle_key)}** was: {user.mention} at `{first['timestamp']}`!",
+            f"The first person to complete **{get_puzzle_display_name(self.bot.data, puzzle_key)}** was: {user.mention}`!",
             ephemeral=False
         )
 
