@@ -37,7 +37,7 @@ def slice_puzzle(image_path: Path, output_dir: Path, rows: int, cols: int):
                     left, upper = c * piece_width, r * piece_height
                     right, lower = left + piece_width, upper + piece_height
                     piece = img.crop((left, upper, right, lower))
-                    piece.save(output_dir / f"p{count}.png")
+                    piece.save(output_dir / f"{count}.png")
                     count += 1
         print(f"✅ Successfully sliced {image_path.name} into {rows * cols} pieces.")
     except Exception as e:
