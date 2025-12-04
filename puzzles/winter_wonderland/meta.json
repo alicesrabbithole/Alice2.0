@@ -1,5 +1,10 @@
 {
     "display_name": "Winter Wonderland",
+    "color": "0xffa500",
+    "ping_role_id": 1443655423948230709,
+    "reward_role_id": 1443655705461653534,
+    "base_image": "winter_wonderland/winter_wonderland_base.png",
+    "full_image": "winter_wonderland/winter_wonderland_full.png",
     "rows": 5,
     "cols": 5
 }
