@@ -212,7 +212,7 @@ class DropView(discord.ui.View):
         except Exception:
             logger.exception("Error while attempting to award completion for %s on %s", interaction.user.id, self.puzzle_key)
 
-        # Track first finisher (persisted)
+        # Track first finisher (persisted) — store only user_id (no timestamp)
         meta = PUZZLE_CONFIG.get(self.puzzle_key, {})
         user_id = interaction.user.id
         user_pieces = get_user_pieces(self.bot.data, user_id, self.puzzle_key)
@@ -220,9 +220,7 @@ class DropView(discord.ui.View):
         if len(user_pieces) == total_pieces:
             finishers = self.bot.data.setdefault("puzzle_finishers", {}).setdefault(self.puzzle_key, [])
             if user_id not in [f.get("user_id") for f in finishers]:
-                import datetime
-
-                finishers.append({"user_id": user_id, "timestamp": datetime.datetime.utcnow().isoformat()})
+                finishers.append({"user_id": user_id})
                 save_data(self.bot.data)
 
         # If we've hit claim limit, remove the button, edit, post summary and stop.
@@ -261,7 +259,11 @@ class DropView(discord.ui.View):
 # PuzzleGalleryView
 # -------------------------
 class PuzzleGalleryView(discord.ui.View):
-    """A paginated view for browsing a user's collected puzzles."""
+    """A paginated view for browsing a user's collected puzzles.
+
+    Controls are restricted to the opener (the user who invoked the gallery) by default.
+    If you want to allow everyone to control the view, instantiate with opener_id=None.
+    """
 
     # The renderer no longer draws the progress bar; no cropping required.
     PROGRESS_BAR_CROP_HEIGHT = 0
@@ -273,6 +275,7 @@ class PuzzleGalleryView(discord.ui.View):
         user_puzzle_keys: list[str],
         current_index: int = 0,
         owner_id: Optional[int] = None,
+        opener_id: Optional[int] = None,
     ):
         super().__init__(timeout=300.0)
         self.bot = bot
@@ -281,12 +284,12 @@ class PuzzleGalleryView(discord.ui.View):
         self.user_puzzle_keys = user_puzzle_keys
         self.current_index = current_index
 
-        # The owner of the gallery (whose pieces are shown) is captured at creation time.
-        # Defaults to the creating interaction user if provided else None.
+        # Owner of the gallery (whose pieces are shown)
         self.owner_id = owner_id or (interaction.user.id if interaction and interaction.user else None)
 
-        # The opener (viewer) who initially invoked the gallery; kept if you want to restrict controls.
-        self.opener_id = interaction.user.id if interaction and interaction.user else None
+        # The opener (viewer) who initially invoked the gallery; kept to restrict controls.
+        # If None, anyone can control the view.
+        self.opener_id = opener_id or (interaction.user.id if interaction and interaction.user else None)
 
         self.update_buttons()
 
@@ -296,6 +299,23 @@ class PuzzleGalleryView(discord.ui.View):
         self.prev_page.disabled = self.current_index == 0
         self.next_page.disabled = self.current_index >= len(self.user_puzzle_keys) - 1
         self.last_page.disabled = self.current_index >= len(self.user_puzzle_keys) - 1
+
+    async def _deny_if_not_opener(self, interaction: Interaction) -> bool:
+        """Return True if denied (and a denial message already sent)."""
+        if self.opener_id is None:
+            return False
+        if interaction.user and interaction.user.id == self.opener_id:
+            return False
+        # Quick ephemeral reply denying control
+        try:
+            await interaction.response.send_message("Only the gallery opener can use these controls.", ephemeral=True)
+        except Exception:
+            # If response already used, try followup
+            try:
+                await interaction.followup.send("Only the gallery opener can use these controls.", ephemeral=True)
+            except Exception:
+                logger.debug("Failed to notify non-opener about control restriction", exc_info=True)
+        return True
 
     async def generate_embed_and_file(self) -> Tuple[discord.Embed, Optional[discord.File]]:
         puzzle_key = self.user_puzzle_keys[self.current_index]
@@ -327,8 +347,12 @@ class PuzzleGalleryView(discord.ui.View):
         finishers = self.bot.data.get("puzzle_finishers", {}).get(puzzle_key, [])
         if finishers:
             first = finishers[0]
-            first_user = self.bot.get_user(first["user_id"]) or await self.bot.fetch_user(first["user_id"])
-            desc += f"\n**First Finisher:** {first_user.mention} ({first['timestamp']})"
+            try:
+                first_user = self.bot.get_user(first["user_id"]) or await self.bot.fetch_user(first["user_id"])
+                # Display only the user mention (no timestamp available)
+                desc += f"\n**First Finisher:** {first_user.mention}"
+            except Exception:
+                desc += f"\n**First Finisher:** `{first.get('user_id')}`"
 
         # Add reward role info (read-only display) - accept either key
         role_id_display = meta.get("completion_role_id") or meta.get("reward_role_id") or meta.get("reward_role")
@@ -427,24 +451,32 @@ class PuzzleGalleryView(discord.ui.View):
     # PAGINATION BUTTONS
     @discord.ui.button(label="<<", style=discord.ButtonStyle.blurple)
     async def first_page(self, interaction: Interaction, button: discord.ui.Button):
+        if await self._deny_if_not_opener(interaction):
+            return
         await interaction.response.defer()
         self.current_index = 0
         await self.update_message(interaction)
 
     @discord.ui.button(label="<", style=discord.ButtonStyle.blurple)
     async def prev_page(self, interaction: Interaction, button: discord.ui.Button):
+        if await self._deny_if_not_opener(interaction):
+            return
         await interaction.response.defer()
         self.current_index = max(0, self.current_index - 1)
         await self.update_message(interaction)
 
     @discord.ui.button(label=">", style=discord.ButtonStyle.blurple)
     async def next_page(self, interaction: Interaction, button: discord.ui.Button):
+        if await self._deny_if_not_opener(interaction):
+            return
         await interaction.response.defer()
         self.current_index = min(len(self.user_puzzle_keys) - 1, self.current_index + 1)
         await self.update_message(interaction)
 
     @discord.ui.button(label=">>", style=discord.ButtonStyle.blurple)
     async def last_page(self, interaction: Interaction, button: discord.ui.Button):
+        if await self._deny_if_not_opener(interaction):
+            return
         await interaction.response.defer()
         self.current_index = len(self.user_puzzle_keys) - 1
         await self.update_message(interaction)
@@ -454,17 +486,22 @@ class PuzzleGalleryView(discord.ui.View):
 # LeaderboardView (kept in views so other cogs can reuse)
 # -------------------------
 class LeaderboardView(discord.ui.View):
-    """Paginated leaderboard view that's styled like the gallery embeds."""
+    """Paginated leaderboard view that's styled like the gallery embeds.
+
+    Controls can be restricted to an opener by setting opener_id on the view instance.
+    """
 
     PAGE_SIZE = 10
 
-    def __init__(self, bot, guild: Optional[discord.Guild], puzzle_key: str, leaderboard_data: List[tuple], page: int = 0):
+    def __init__(self, bot, guild: Optional[discord.Guild], puzzle_key: str, leaderboard_data: List[tuple], page: int = 0, opener_id: Optional[int] = None):
         super().__init__(timeout=300.0)
         self.bot = bot
         self.guild = guild
         self.puzzle_key = puzzle_key
         self.leaderboard_data = leaderboard_data  # list of (user_id:int, count:int)
         self.page = page
+        # Restrict interaction to this user if provided (None = allow everyone)
+        self.opener_id = opener_id
         self.update_buttons()
 
     def update_buttons(self):
@@ -473,6 +510,21 @@ class LeaderboardView(discord.ui.View):
         self.prev_button.disabled = self.page == 0
         self.next_button.disabled = self.page >= total_pages - 1
         self.last_button.disabled = self.page >= total_pages - 1
+
+    async def _deny_if_not_opener(self, interaction: Interaction) -> bool:
+        """Return True if denied (and a denial message already sent)."""
+        if self.opener_id is None:
+            return False
+        if interaction.user and interaction.user.id == self.opener_id:
+            return False
+        try:
+            await interaction.response.send_message("Only the opener can use these controls.", ephemeral=True)
+        except Exception:
+            try:
+                await interaction.followup.send("Only the opener can use these controls.", ephemeral=True)
+            except Exception:
+                logger.debug("Failed to notify non-opener about control restriction", exc_info=True)
+        return True
 
     async def generate_embed(self) -> discord.Embed:
         meta = PUZZLE_CONFIG.get(self.puzzle_key, {})
@@ -505,9 +557,9 @@ class LeaderboardView(discord.ui.View):
             first = finishers[0]
             try:
                 first_user = self.bot.get_user(first["user_id"]) or await self.bot.fetch_user(first["user_id"])
-                first_line = f"\n**First Finisher:** {first_user.mention} ({first['timestamp']})"
+                first_line = f"\n**First Finisher:** {first_user.mention}"
             except Exception:
-                first_line = f"\n**First Finisher:** `{first['user_id']}` ({first['timestamp']})"
+                first_line = f"\n**First Finisher:** `{first['user_id']}`"
             lines.append(first_line)
 
         # reward role info (display only)
@@ -534,6 +586,8 @@ class LeaderboardView(discord.ui.View):
 
     @discord.ui.button(label="<<", style=discord.ButtonStyle.gray)
     async def first_button(self, interaction: Interaction, button: discord.ui.Button):
+        if await self._deny_if_not_opener(interaction):
+            return
         await interaction.response.defer()
         self.page = 0
         self.update_buttons()
@@ -541,6 +595,8 @@ class LeaderboardView(discord.ui.View):
 
     @discord.ui.button(label="<", style=discord.ButtonStyle.blurple)
     async def prev_button(self, interaction: Interaction, button: discord.ui.Button):
+        if await self._deny_if_not_opener(interaction):
+            return
         await interaction.response.defer()
         self.page = max(0, self.page - 1)
         self.update_buttons()
@@ -548,6 +604,8 @@ class LeaderboardView(discord.ui.View):
 
     @discord.ui.button(label=">", style=discord.ButtonStyle.blurple)
     async def next_button(self, interaction: Interaction, button: discord.ui.Button):
+        if await self._deny_if_not_opener(interaction):
+            return
         await interaction.response.defer()
         total_pages = max(1, (len(self.leaderboard_data) + self.PAGE_SIZE - 1) // self.PAGE_SIZE)
         self.page = min(total_pages - 1, self.page + 1)
@@ -556,6 +614,8 @@ class LeaderboardView(discord.ui.View):
 
     @discord.ui.button(label=">>", style=discord.ButtonStyle.gray)
     async def last_button(self, interaction: Interaction, button: discord.ui.Button):
+        if await self._deny_if_not_opener(interaction):
+            return
         await interaction.response.defer()
         total_pages = max(1, (len(self.leaderboard_data) + self.PAGE_SIZE - 1) // self.PAGE_SIZE)
         self.page = total_pages - 1
@@ -569,16 +629,14 @@ class LeaderboardView(discord.ui.View):
 async def open_leaderboard_view(bot, interaction: Interaction, puzzle_key: str):
     """
     Build leaderboard data and send a leaderboard view message.
-    This helper used to call interaction.response.defer() unconditionally and that caused
-    InteractionResponded when the caller already deferred.  Now we only defer if the
-    interaction hasn't been responded to yet.
+    This helper only defers when safe and attaches opener_id so only the opener can
+    control the leaderboard view by default.
     """
     try:
         # Only defer if the interaction hasn't been responded to already.
         if not interaction.response.is_done():
             await interaction.response.defer()
     except Exception:
-        # If something odd happens, log and continue to attempt a followup.
         logger.debug("open_leaderboard_view: could not defer or already responded", exc_info=True)
 
     # Build leaderboard data: list of (user_id:int, count:int)
@@ -590,7 +648,7 @@ async def open_leaderboard_view(bot, interaction: Interaction, puzzle_key: str):
     ]
     leaderboard_data.sort(key=lambda x: (-x[1], x[0]))
 
-    view = LeaderboardView(bot, interaction.guild, puzzle_key, leaderboard_data, page=0)
+    view = LeaderboardView(bot, interaction.guild, puzzle_key, leaderboard_data, page=0, opener_id=(interaction.user.id if interaction and interaction.user else None))
     embed = await view.generate_embed()
 
     # Use followup (works after defer or if interaction already responded)
