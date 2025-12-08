@@ -30,7 +30,8 @@ async def _attempt_award_completion(interaction: discord.Interaction, bot: disco
     Returns: (awarded: bool, reason: str)
     """
     async with _award_lock:
-        meta = (bot.data.get("puzzles", {}) or {}).get(puzzle_key, {}) or {}
+        # Prefer runtime-loaded meta but fall back to static PUZZLE_CONFIG if not present
+        meta = (bot.data.get("puzzles", {}) or {}).get(puzzle_key) or PUZZLE_CONFIG.get(puzzle_key, {}) or {}
         role_id = meta.get("completion_role_id") or meta.get("reward_role_id") or meta.get("reward_role")
         try:
             if role_id is not None:
@@ -44,12 +45,13 @@ async def _attempt_award_completion(interaction: discord.Interaction, bot: disco
         total_pieces = len(bot.data.get("pieces", {}).get(puzzle_key, {}))
 
         logger.debug(
-            "Award check (helper): puzzle=%s user=%s user_pieces=%s total=%s role_id=%r",
+            "Award check (helper): puzzle=%s user=%s user_pieces=%s total=%s role_id=%r meta_keys=%s",
             puzzle_key,
             user_id,
             len(user_pieces),
             total_pieces,
             role_id,
+            list(meta.keys()) if isinstance(meta, dict) else None,
         )
 
         if len(user_pieces) < total_pieces:
@@ -68,14 +70,14 @@ async def _attempt_award_completion(interaction: discord.Interaction, bot: disco
                 "Configured role id %r for puzzle %s not found in guild %s",
                 role_id,
                 puzzle_key,
-                guild.id,
+                getattr(guild, "id", None),
             )
             return False, "role not found in guild"
 
         try:
             member = guild.get_member(user_id) or await guild.fetch_member(user_id)
         except Exception:
-            logger.exception("Could not fetch member %s for guild %s", user_id, guild.id)
+            logger.exception("Could not fetch member %s for guild %s", user_id, getattr(guild, "id", None))
             return False, "member not in guild"
 
         if role_obj in member.roles:

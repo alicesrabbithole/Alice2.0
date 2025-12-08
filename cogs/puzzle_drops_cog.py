@@ -17,14 +17,16 @@ from utils.db_utils import (
 from utils.log_utils import log
 from ui.views import DropView
 from utils.checks import is_admin
-from utils.theme import THEMES, PUZZLE_CONFIG, Emojis, Colors # Make sure Emojis and Colors are imported
+from utils.theme import THEMES, PUZZLE_CONFIG, Emojis, Colors  # Make sure Emojis and Colors are imported
 
 logger = logging.getLogger(__name__)
 
-FREQUENCY_COMBINED_RANGES = {
-    "high": {"time": (2 * 60, 7 * 60), "messages": (7, 15)},
-    "medium": {"time": (10 * 60, 15 * 60), "messages": (30, 50)},
-    "low": {"time": (16 * 60, 30 * 60), "messages": (60, 90)},
+# Frequency levels for the "random/frequency" mode.
+# Each level defines a range for time (seconds) and messages (count).
+FREQUENCY_LEVELS = {
+    "slow": {"time": (90 * 60, 120 * 60), "messages": (150, 200)},
+    "average": {"time": (60 * 60, 90 * 60), "messages": (100, 150)},
+    "fast": {"time": (30 * 60, 60 * 60), "messages": (50, 100)},
 }
 
 class PuzzleDropsCog(commands.Cog, name="Puzzle Drops"):
@@ -41,9 +43,8 @@ class PuzzleDropsCog(commands.Cog, name="Puzzle Drops"):
     def cog_unload(self):
         self.drop_scheduler.cancel()
 
-    async def puzzle_autocomplete(
-        self, interaction: discord.Interaction, current: str
-    ) -> List[app_commands.Choice[str]]:
+    async def puzzle_autocomplete(self, interaction: discord.Interaction, current: str) -> List[app_commands.Choice[str]]:
+        """Autocomplete puzzle slugs/display names (same behavior as before)."""
         choices = []
         try:
             puzzles = self.bot.data.get("puzzles")
@@ -59,9 +60,53 @@ class PuzzleDropsCog(commands.Cog, name="Puzzle Drops"):
                 if current.lower() in slug.lower() or current.lower() in display_name.lower():
                     choices.append(app_commands.Choice(name=display_name, value=slug))
         except Exception as e:
-            logger.error(f"FATAL: Unhandled exception in puzzle_autocomplete: {e}")
+            logger.exception("Unhandled exception in puzzle_autocomplete: %s", e)
             return []
         return choices[:25]
+
+    async def mode_autocomplete(self, interaction: discord.Interaction, current: str) -> List[app_commands.Choice[str]]:
+        """Autocomplete mode choices."""
+        choices = []
+        for m in ("timer", "messages", "random"):
+            if m.startswith(current.lower()):
+                choices.append(app_commands.Choice(name=m, value=m))
+        return choices[:10]
+
+    async def speed_autocomplete(self, interaction: discord.Interaction, current: str) -> List[app_commands.Choice[str]]:
+        """Autocomplete frequency level (slow/average/fast) for random mode."""
+        choices = []
+        for lvl in ("slow", "average", "fast"):
+            if lvl.startswith(current.lower()):
+                pretty = f"{lvl} (messages {FREQUENCY_LEVELS[lvl]['messages'][0]}-{FREQUENCY_LEVELS[lvl]['messages'][1]}, time {FREQUENCY_LEVELS[lvl]['time'][0]//60}-{FREQUENCY_LEVELS[lvl]['time'][1]//60} min)"
+                choices.append(app_commands.Choice(name=pretty, value=lvl))
+        return choices[:10]
+
+    def _parse_range_value(self, value: Optional[str], *, as_minutes: bool = False) -> Optional[int]:
+        """
+        Parse a value that can be:
+         - None
+         - an exact integer string: "30"
+         - a range "25-30" -> returns a random int in that inclusive range
+        If as_minutes=True, returned integer is in seconds (minutes -> seconds)
+        """
+        if value is None:
+            return None
+        try:
+            if isinstance(value, int):
+                val = int(value)
+                return val * 60 if as_minutes else val
+            s = str(value).strip()
+            if "-" in s:
+                parts = s.split("-", 1)
+                lo = int(parts[0].strip())
+                hi = int(parts[1].strip())
+                chosen = random.randint(min(lo, hi), max(lo, hi))
+                return chosen * 60 if as_minutes else chosen
+            # single number
+            val = int(s)
+            return val * 60 if as_minutes else val
+        except Exception:
+            return None
 
     async def _spawn_drop(
         self, channel: discord.TextChannel, puzzle_key: str, forced_piece: Optional[str] = None
@@ -142,13 +187,14 @@ class PuzzleDropsCog(commands.Cog, name="Puzzle Drops"):
             if not channel:
                 continue
 
-            # --- Frequency random mode ---
+            # --- Frequency random mode (uses FREQUENCY_LEVELS) ---
             if mode == "random" and raw_cfg.get("trigger") == "frequency":
-                freq_mode = raw_cfg.get("frequency_mode", "medium")
-                ranges = FREQUENCY_COMBINED_RANGES.get(freq_mode, FREQUENCY_COMBINED_RANGES["medium"])
+                freq_level = raw_cfg.get("frequency_level", "average")
+                ranges = FREQUENCY_LEVELS.get(freq_level, FREQUENCY_LEVELS["average"])
                 min_secs, max_secs = ranges["time"]
                 min_msgs, max_msgs = ranges["messages"]
 
+                # Ensure targets initialized
                 if "next_trigger_time" not in raw_cfg:
                     raw_cfg["next_trigger_time"] = random.randint(min_secs, max_secs)
                     data_changed = True
@@ -158,26 +204,33 @@ class PuzzleDropsCog(commands.Cog, name="Puzzle Drops"):
                 if "message_count" not in raw_cfg:
                     raw_cfg["message_count"] = 0
                     data_changed = True
+
                 last_drop_str = raw_cfg.get("last_drop_time")
                 if not last_drop_str:
                     raw_cfg["last_drop_time"] = now.isoformat()
                     data_changed = True
                     continue
+
                 last_drop_time = datetime.fromisoformat(last_drop_str)
                 time_ready = now >= last_drop_time + timedelta(seconds=raw_cfg["next_trigger_time"])
-                if time_ready and raw_cfg["message_count"] < raw_cfg["next_trigger_messages"]:
+                msgs_reached = raw_cfg.get("message_count", 0) >= raw_cfg.get("next_trigger_messages", min_msgs)
+
+                # If either condition is met, trigger. Update state *before* calling _spawn_drop to avoid races.
+                if time_ready or msgs_reached:
                     all_puzzles = list(self.bot.data.get("puzzles", {}).keys())
                     puzzle_key = random.choice(all_puzzles) if all_puzzles else None
                     if puzzle_key:
-                        await self._spawn_drop(channel, puzzle_key)
+                        # Update timing state up-front
                         raw_cfg["last_drop_time"] = now.isoformat()
                         raw_cfg["next_trigger_time"] = random.randint(min_secs, max_secs)
                         raw_cfg["next_trigger_messages"] = random.randint(min_msgs, max_msgs)
                         raw_cfg["message_count"] = 0
                         data_changed = True
+
+                        await self._spawn_drop(channel, puzzle_key)
                     continue
 
-            # --- Old timer mode ---
+            # --- Timer mode ---
             elif mode == "timer":
                 last_drop_str = raw_cfg.get("last_drop_time")
                 if not last_drop_str:
@@ -200,6 +253,11 @@ class PuzzleDropsCog(commands.Cog, name="Puzzle Drops"):
                         raw_cfg["last_drop_time"] = now.isoformat()
                         data_changed = True
 
+            # --- Messages mode ---
+            elif mode == "messages":
+                # handled in on_message for message triggers; keep here for safety/backwards compat
+                continue
+
         if data_changed:
             save_data(self.bot.data)
 
@@ -213,31 +271,38 @@ class PuzzleDropsCog(commands.Cog, name="Puzzle Drops"):
 
         # --- Frequency random mode (message-based) ---
         if raw_cfg.get("mode") == "random" and raw_cfg.get("trigger") == "frequency":
-            freq_mode = raw_cfg.get("frequency_mode", "medium")
-            ranges = FREQUENCY_COMBINED_RANGES.get(freq_mode, FREQUENCY_COMBINED_RANGES["medium"])
+            freq_level = raw_cfg.get("frequency_level", "average")
+            ranges = FREQUENCY_LEVELS.get(freq_level, FREQUENCY_LEVELS["average"])
             min_secs, max_secs = ranges["time"]
             min_msgs, max_msgs = ranges["messages"]
+
+            # increment message counter
             raw_cfg["message_count"] = raw_cfg.get("message_count", 0) + 1
+
             next_msgs = raw_cfg.get("next_trigger_messages", random.randint(min_msgs, max_msgs))
             now = datetime.now(timezone.utc)
             last_drop_str = raw_cfg.get("last_drop_time")
-            if last_drop_str:
-                last_drop_time = datetime.fromisoformat(last_drop_str)
-                time_ready = now >= last_drop_time + timedelta(
-                    seconds=raw_cfg.get("next_trigger_time", random.randint(min_secs, max_secs)))
-            else:
+            if not last_drop_str:
                 raw_cfg["last_drop_time"] = now.isoformat()
+                # don't spawn on the first message
+                save_data(self.bot.data)
                 return
-            if raw_cfg["message_count"] >= next_msgs and not time_ready:
+
+            last_drop_time = datetime.fromisoformat(last_drop_str)
+            time_ready = now >= last_drop_time + timedelta(seconds=raw_cfg.get("next_trigger_time", random.randint(min_secs, max_secs)))
+            msgs_reached = raw_cfg["message_count"] >= next_msgs
+
+            # If either condition met, trigger; update state before spawn to avoid duplicates.
+            if msgs_reached or time_ready:
                 all_puzzles = list(self.bot.data.get("puzzles", {}).keys())
                 puzzle_key = random.choice(all_puzzles) if all_puzzles else None
                 if puzzle_key:
-                    await self._spawn_drop(message.channel, puzzle_key)
                     raw_cfg["last_drop_time"] = now.isoformat()
                     raw_cfg["next_trigger_time"] = random.randint(min_secs, max_secs)
                     raw_cfg["next_trigger_messages"] = random.randint(min_msgs, max_msgs)
                     raw_cfg["message_count"] = 0
                     save_data(self.bot.data)
+                    await self._spawn_drop(message.channel, puzzle_key)
             return
 
         # --- Old messages mode ---
@@ -290,7 +355,7 @@ class PuzzleDropsCog(commands.Cog, name="Puzzle Drops"):
         await self._spawn_drop(target_channel, puzzle_key, forced_piece=piece_id)
         display_name = get_puzzle_display_name(self.bot.data, puzzle_key)
         await ctx.send(
-            f"✅ Drop for **{display_name}**{' (piece `' + piece + '`)' if piece else ''} spawned in {target_channel.mention}.",
+            f"✅ Drop for **{display_name}** spawned in {target_channel.mention}.",
             ephemeral=True
         )
 
@@ -304,8 +369,11 @@ class PuzzleDropsCog(commands.Cog, name="Puzzle Drops"):
         save_data(self.bot.data)
         await ctx.send(f"🛎️ Drop ping role has been set to {role.mention}. Future drops will ping this role.", ephemeral=False)
 
-    @commands.hybrid_command(name="setdropchannel", description="Configure a channel for automatic puzzle drops.")
-    @app_commands.autocomplete(puzzle=puzzle_autocomplete)
+    @commands.hybrid_command(
+        name="setdropchannel",
+        description="Configure a channel for automatic puzzle drops."
+    )
+    @app_commands.autocomplete(puzzle=puzzle_autocomplete, mode=mode_autocomplete, frequency_level=speed_autocomplete)
     @is_admin()
     async def setdropchannel(
             self,
@@ -313,18 +381,32 @@ class PuzzleDropsCog(commands.Cog, name="Puzzle Drops"):
             channel: discord.TextChannel,
             puzzle: str,
             mode: Optional[str] = None,
-            value: Optional[int] = None,
-            frequency_mode: Optional[str] = None  # Add this argument!
+            value: Optional[str] = None,
+            frequency_level: Optional[str] = None
     ):
+        """
+        Configure a channel for automatic drops.
+
+        - mode: "timer", "messages", or "random" (random uses frequency-based triggers)
+        - value: single number or range "min-max". For timer, value is minutes.
+        - frequency_level (for random): "slow", "average", "fast" (predefined ranges).
+        """
         await ctx.defer(ephemeral=False)
         drop_channels = self.bot.data.setdefault("drop_channels", {})
         display_name = get_puzzle_display_name(self.bot.data, puzzle) if puzzle != "all_puzzles" else "All Puzzles"
 
-        final_mode = mode or self.DEFAULT_DROP_MODE
+        final_mode = (mode or self.DEFAULT_DROP_MODE).lower()
 
-        # --- Old modes ---
+        # Helper to parse value ranges
         if final_mode == "timer":
-            final_value = (value * 60) if value is not None else (self.DEFAULT_DROP_TIMER_MINUTES * 60)
+            # interpret value as minutes (or range of minutes)
+            parsed = self._parse_range_value(value, as_minutes=True) if value is not None else None
+        else:
+            parsed = self._parse_range_value(value, as_minutes=False) if value is not None else None
+
+        # --- Timer mode ---
+        if final_mode == "timer":
+            final_value = parsed if parsed is not None else (self.DEFAULT_DROP_TIMER_MINUTES * 60)
             drop_channels[str(channel.id)] = {
                 "puzzle": puzzle,
                 "mode": "timer",
@@ -332,8 +414,10 @@ class PuzzleDropsCog(commands.Cog, name="Puzzle Drops"):
                 "last_drop_time": datetime.now(timezone.utc).isoformat(),
             }
             summary = f"every {final_value // 60} minutes"
+
+        # --- Messages mode ---
         elif final_mode == "messages":
-            final_value = value if value is not None else self.DEFAULT_DROP_MESSAGE_COUNT
+            final_value = parsed if parsed is not None else self.DEFAULT_DROP_MESSAGE_COUNT
             drop_channels[str(channel.id)] = {
                 "puzzle": puzzle,
                 "mode": "messages",
@@ -342,24 +426,29 @@ class PuzzleDropsCog(commands.Cog, name="Puzzle Drops"):
                 "next_trigger": final_value
             }
             summary = f"every {final_value} messages"
-        elif final_mode == "random" or (final_mode == "frequency" and frequency_mode in FREQUENCY_COMBINED_RANGES):
-            freq_mode = frequency_mode or "medium"
-            ranges = FREQUENCY_COMBINED_RANGES.get(freq_mode, FREQUENCY_COMBINED_RANGES["medium"])
+
+        # --- Random / Frequency mode with predefined levels ---
+        elif final_mode == "random":
+            level = (frequency_level or "average").lower()
+            if level not in FREQUENCY_LEVELS:
+                level = "average"
+            ranges = FREQUENCY_LEVELS[level]
             min_secs, max_secs = ranges["time"]
             min_msgs, max_msgs = ranges["messages"]
             drop_channels[str(channel.id)] = {
                 "puzzle": "all_puzzles",
                 "mode": "random",
                 "trigger": "frequency",
-                "frequency_mode": freq_mode,
+                "frequency_level": level,
                 "last_drop_time": datetime.now(timezone.utc).isoformat(),
                 "next_trigger_time": random.randint(min_secs, max_secs),
                 "next_trigger_messages": random.randint(min_msgs, max_msgs),
                 "message_count": 0,
             }
-            summary = f"random every {min_secs // 60}-{max_secs // 60} minutes OR {min_msgs}-{max_msgs} messages"
+            summary = f"{level} random: every {min_secs//60}-{max_secs//60} minutes OR {min_msgs}-{max_msgs} messages"
+
         else:
-            return await ctx.send("❌ Invalid mode. Use 'timer', 'messages', or 'random'/frequency.", ephemeral=True)
+            return await ctx.send("❌ Invalid mode. Use 'timer', 'messages', or 'random'.", ephemeral=True)
 
         save_data(self.bot.data)
         await ctx.send(
@@ -385,6 +474,112 @@ class PuzzleDropsCog(commands.Cog, name="Puzzle Drops"):
             )
         else:
             await ctx.send(f"Channel {channel.mention} is not configured for drops.", ephemeral=True)
+
+    @commands.hybrid_command(name="listdropchannels", description="List configured drop channels and settings.")
+    @is_admin()
+    async def listdropchannels(self, ctx: commands.Context):
+        """Shows the current drop configuration for all channels."""
+        drop_channels = self.bot.data.get("drop_channels", {})
+        if not drop_channels:
+            return await ctx.send("No drop channels are configured.", ephemeral=True)
+
+        def fmt_seconds(s: Optional[int]) -> str:
+            if s is None:
+                return "—"
+            s = int(s)
+            if s < 60:
+                return f"{s}s"
+            m, sec = divmod(s, 60)
+            if m < 60:
+                return f"{m}m{sec}s" if sec else f"{m}m"
+            h, m = divmod(m, 60)
+            return f"{h}h{m}m" if m else f"{h}h"
+
+        def time_until(next_ts_iso: Optional[str], offset_seconds: Optional[int]) -> str:
+            if not next_ts_iso or offset_seconds is None:
+                return "—"
+            try:
+                last = datetime.fromisoformat(next_ts_iso)
+                target = last + timedelta(seconds=int(offset_seconds))
+                now = datetime.now(timezone.utc)
+                if target <= now:
+                    return "due now"
+                delta = target - now
+                return fmt_seconds(int(delta.total_seconds()))
+            except Exception:
+                return "—"
+
+        embed = discord.Embed(title="Configured Drop Channels", color=Colors.THEME_COLOR)
+        now = datetime.now(timezone.utc)
+
+        for ch_id_str, cfg in drop_channels.items():
+            try:
+                ch_id = int(ch_id_str)
+            except Exception:
+                continue
+            # channel mention
+            ch_mention = f"<#{ch_id}>"
+
+            mode = cfg.get("mode", "timer")
+            puzzle = cfg.get("puzzle", "—")
+            puzzle_display = puzzle
+            if puzzle and puzzle != "all_puzzles":
+                try:
+                    puzzle_key = resolve_puzzle_key(self.bot.data, puzzle)
+                    if puzzle_key:
+                        puzzle_display = get_puzzle_display_name(self.bot.data, puzzle_key)
+                except Exception:
+                    puzzle_display = puzzle
+            elif puzzle == "all_puzzles":
+                puzzle_display = "All Puzzles"
+
+            # Build a human readable description per mode
+            desc_lines = []
+            desc_lines.append(f"Puzzle: `{puzzle}` — **{puzzle_display}**")
+            desc_lines.append(f"Mode: `{mode}`")
+
+            if mode == "timer":
+                value = cfg.get("value")
+                if value:
+                    desc_lines.append(f"Timer value: {fmt_seconds(value)}")
+                    last_ts = cfg.get("last_drop_time")
+                    if last_ts:
+                        time_left = time_until(last_ts, value)
+                        desc_lines.append(f"Next in: {time_left}")
+                else:
+                    desc_lines.append("Timer value: default")
+            elif mode == "messages":
+                val = cfg.get("value", cfg.get("next_trigger", None))
+                msg_count = cfg.get("message_count", 0)
+                desc_lines.append(f"Trigger every {val} messages")
+                desc_lines.append(f"Progress: {msg_count}/{val}")
+            elif mode == "random" and cfg.get("trigger") == "frequency":
+                level = cfg.get("frequency_level", "average")
+                ranges = FREQUENCY_LEVELS.get(level, FREQUENCY_LEVELS["average"])
+                min_secs, max_secs = ranges["time"]
+                min_msgs, max_msgs = ranges["messages"]
+                desc_lines.append(f"Frequency level: `{level}`")
+                desc_lines.append(f"Level ranges: {min_msgs}-{max_msgs} messages or {min_secs//60}-{max_secs//60} minutes")
+                next_time = cfg.get("next_trigger_time")
+                next_msgs = cfg.get("next_trigger_messages")
+                msg_count = cfg.get("message_count", 0)
+                if next_time is not None:
+                    desc_lines.append(f"Current next time: {fmt_seconds(next_time)} (in {time_until(cfg.get('last_drop_time'), next_time)})")
+                if next_msgs is not None:
+                    desc_lines.append(f"Current next messages: {next_msgs} (progress {msg_count}/{next_msgs})")
+            else:
+                desc_lines.append("Unknown or unsupported mode configuration.")
+
+            embed.add_field(name=ch_mention, value="\n".join(desc_lines), inline=False)
+
+        try:
+            await ctx.send(embed=embed, ephemeral=True)
+        except Exception:
+            # fallback to plaintext if embed fails
+            lines = []
+            for field in embed.fields:
+                lines.append(f"{field.name}:\n{field.value}\n")
+            await ctx.send("Configured Drop Channels:\n\n" + "\n".join(lines), ephemeral=True)
 
 # --- Cog entry point ---
 async def setup(bot: commands.Bot):
