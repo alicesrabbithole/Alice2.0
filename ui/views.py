@@ -85,20 +85,21 @@ async def _attempt_award_completion(interaction: discord.Interaction, bot: disco
 
         try:
             await member.add_roles(role_obj, reason=f"Completed puzzle: {meta.get('display_name', puzzle_key)}")
-            # Send congrats using followup (safe after response or defer)
+            # Build a congratulatory message that shows the role (blue) but does not ping anyone.
+            congrats_text = (
+                f"{Emojis.TROPHY} Congratulations! You completed **{meta.get('display_name', puzzle_key)}** "
+                f"and earned the {role_obj.mention} role!"
+            )
+            no_pings = discord.AllowedMentions.none()
+
+            # Send congrats non-ephemeral (public) but ensure no role ping occurs
             try:
-                await interaction.followup.send(
-                    f"🏆 Congratulations! You completed **{meta.get('display_name', puzzle_key)}** and earned the {role_obj.mention} role!",
-                    ephemeral=True,
-                )
+                await interaction.followup.send(congrats_text, ephemeral=False, allowed_mentions=no_pings)
             except Exception:
                 # followup may fail if not deferred; attempt response if available
                 try:
                     if not interaction.response.is_done():
-                        await interaction.response.send_message(
-                            f"🏆 Congratulations! You completed **{meta.get('display_name', puzzle_key)}** and earned the {role_obj.mention} role!",
-                            ephemeral=True,
-                        )
+                        await interaction.response.send_message(congrats_text, ephemeral=False, allowed_mentions=no_pings)
                 except Exception:
                     logger.debug("Could not send congrats via followup or response", exc_info=True)
 
