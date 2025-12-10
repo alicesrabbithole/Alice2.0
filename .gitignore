@@ -19,8 +19,13 @@ ENV/
 # Ignore contents of data directory...
 data/*
 
-# ...but DO track the main database file
+# ...but DO track the main database file (replace with your actual filename)
+# Example: uncomment the line below and change to your DB filename if you want it tracked
+# !data/main.db
 
+# Backups and backup files (don't accidentally commit backups)
+backups/
+*.bck
 
 # Puzzle pieces (binary assets)
 /puzzles/*/pieces/
