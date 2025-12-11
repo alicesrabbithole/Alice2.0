@@ -51,7 +51,10 @@ class AliceBot(commands.Bot):
             "cogs.copy_category_cog",
             "games.wordle_cog",
             "games.twentyone_questions_cog",
-            "games.rolling_cog"
+            "games.rolling_cog",
+            "cogs.rumble_admin_cog",
+            "cogs.rumble_listener_cog",
+            "cogs.stocking_cog"
         ]
 
     # --- THIS IS THE FIX ---
