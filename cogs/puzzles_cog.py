@@ -4,11 +4,13 @@ from discord import app_commands
 import logging
 from typing import List, Optional
 
-from utils.db_utils import resolve_puzzle_key, get_puzzle_display_name
+from utils.db_utils import resolve_puzzle_key, get_puzzle_display_name, save_data
 from ui.views import PuzzleGalleryView, open_leaderboard_view, LeaderboardView
 from utils.theme import Emojis, Colors
+from utils.checks import is_admin
 
 logger = logging.getLogger(__name__)
+
 
 class PuzzlesCog(commands.Cog, name="Puzzles"):
     """Commands for viewing puzzle progress and leaderboards."""
@@ -32,7 +34,25 @@ class PuzzlesCog(commands.Cog, name="Puzzles"):
         await ctx.defer(ephemeral=False)
         logger.info(f"[DEBUG] /gallery invoked by {ctx.author} ({ctx.author.id})")
 
+        # Build the list of all puzzles (sorted by display name)
         all_puzzles = list(self.bot.data.get("puzzles", {}).keys())
+        all_puzzles.sort(key=lambda key: get_puzzle_display_name(self.bot.data, key))
+
+        # Filter out puzzles hidden from members unless the invoker is an admin (manage_guild or guild owner)
+        hidden = set(self.bot.data.get("hidden_puzzles", []))
+        try:
+            is_guild_context = ctx.guild is not None
+            is_admin_user = False
+            if is_guild_context:
+                # treat guild owner and users with manage_guild as admins for visibility purposes
+                is_admin_user = ctx.author.id == getattr(ctx.guild, "owner_id", None) or ctx.author.guild_permissions.manage_guild
+            # If not admin, filter hidden puzzles out
+            if not is_admin_user and hidden:
+                all_puzzles = [k for k in all_puzzles if k not in hidden]
+        except Exception:
+            # If anything goes wrong, default to not filtering
+            logger.exception("Error while checking admin permissions for gallery filtering")
+
         all_puzzles.sort(key=lambda key: get_puzzle_display_name(self.bot.data, key))
 
         # The user's collected puzzle keys (may be absent or empty)
@@ -102,6 +122,60 @@ class PuzzlesCog(commands.Cog, name="Puzzles"):
             f"The first person to complete **{get_puzzle_display_name(self.bot.data, puzzle_key)}** was: {user.mention}`!",
             ephemeral=False
         )
+
+    # -------------------------
+    # Admin commands to hide/unhide puzzles from member galleries
+    # -------------------------
+    @commands.hybrid_command(name="puzzle_hide", description="Hide a puzzle so it does not appear in member galleries.")
+    @app_commands.autocomplete(puzzle_name=puzzle_autocomplete)
+    @is_admin()
+    async def puzzle_hide(self, ctx: commands.Context, *, puzzle_name: str):
+        """Admin: hide a puzzle (prevents it from showing in non-admin users' /gallery)."""
+        puzzle_key = resolve_puzzle_key(self.bot.data, puzzle_name)
+        if not puzzle_key:
+            return await ctx.send(f"❌ Puzzle not found: `{puzzle_name}`", ephemeral=True)
+
+        hidden = set(self.bot.data.setdefault("hidden_puzzles", []))
+        if puzzle_key in hidden:
+            return await ctx.send(f"ℹ️ Puzzle **{get_puzzle_display_name(self.bot.data, puzzle_key)}** is already hidden.", ephemeral=True)
+
+        hidden.add(puzzle_key)
+        # persist as list for JSON
+        self.bot.data["hidden_puzzles"] = list(hidden)
+        save_data(self.bot.data)
+        await ctx.send(f"✅ Hidden puzzle **{get_puzzle_display_name(self.bot.data, puzzle_key)}** from member galleries.", ephemeral=True)
+
+    @commands.hybrid_command(name="puzzle_unhide", description="Unhide a previously hidden puzzle so it appears in galleries again.")
+    @app_commands.autocomplete(puzzle_name=puzzle_autocomplete)
+    @is_admin()
+    async def puzzle_unhide(self, ctx: commands.Context, *, puzzle_name: str):
+        """Admin: unhide a puzzle (restores visibility in /gallery)."""
+        puzzle_key = resolve_puzzle_key(self.bot.data, puzzle_name)
+        if not puzzle_key:
+            return await ctx.send(f"❌ Puzzle not found: `{puzzle_name}`", ephemeral=True)
+
+        hidden = set(self.bot.data.get("hidden_puzzles", []))
+        if puzzle_key not in hidden:
+            return await ctx.send(f"ℹ️ Puzzle **{get_puzzle_display_name(self.bot.data, puzzle_key)}** is not hidden.", ephemeral=True)
+
+        hidden.remove(puzzle_key)
+        self.bot.data["hidden_puzzles"] = list(hidden)
+        save_data(self.bot.data)
+        await ctx.send(f"✅ Unhidden puzzle **{get_puzzle_display_name(self.bot.data, puzzle_key)}**; members will now see it in galleries.", ephemeral=True)
+
+    @commands.hybrid_command(name="puzzle_hidden_list", description="List puzzles currently hidden from member galleries.")
+    @is_admin()
+    async def puzzle_hidden_list(self, ctx: commands.Context):
+        """Admin: list which puzzles are hidden."""
+        hidden = list(self.bot.data.get("hidden_puzzles", []))
+        if not hidden:
+            return await ctx.send("No puzzles are currently hidden.", ephemeral=True)
+        lines = []
+        for key in hidden:
+            display = get_puzzle_display_name(self.bot.data, key)
+            lines.append(f"- {display} (`{key}`)")
+        await ctx.send("Hidden puzzles:\n" + "\n".join(lines), ephemeral=True)
+
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(PuzzlesCog(bot))
