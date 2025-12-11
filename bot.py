@@ -10,13 +10,13 @@ logging.basicConfig(
 )
 import config
 from utils.db_utils import load_data
-from utils.log_utils import setup_logging
+from utils.log_utils import setup_discord_logging
 
 # --- Setup ---
 load_dotenv()
 TOKEN = os.getenv("DISCORD_TOKEN")
 
-setup_logging()
+setup_discord_logging()
 logger = logging.getLogger(__name__)
 
 # --- Intents and Bot Class ---
@@ -54,7 +54,8 @@ class AliceBot(commands.Bot):
             "games.rolling_cog",
             "cogs.rumble_admin_cog",
             "cogs.rumble_listener_cog",
-            "cogs.stocking_cog"
+            "cogs.stocking_cog",
+            "cogs.channel_alias_cog"
         ]
 
     # --- THIS IS THE FIX ---

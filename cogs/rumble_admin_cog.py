@@ -1,28 +1,111 @@
 # Discord-only admin commands to manage RumbleListener config and test awards
-# - Commands call into the RumbleListenerCog loaded in the same bot
-# - No external website required; this provides the quick admin workflow via Discord
+# Single-option command: the user supplies "buildable:part" (e.g. "snowman:carrot")
+# Autocomplete suggests combined "buildable:part" entries.
+# Added: optional `channel` argument so you can set mappings for any channel (not just the invoking channel).
+# Changed: all replies are non-ephemeral (ephemeral=False behavior).
 
 from typing import Optional, Tuple, Dict, Any, List
+import json
+from pathlib import Path
 
 import discord
 from discord.ext import commands
+from discord import app_commands
+
+DATA_DIR = Path("data")
+BUILDABLES_DEF_FILE = DATA_DIR / "buildables.json"
+
+
+def _load_buildables() -> Dict[str, Any]:
+    try:
+        if BUILDABLES_DEF_FILE.exists():
+            with BUILDABLES_DEF_FILE.open("r", encoding="utf-8") as fh:
+                return json.load(fh) or {}
+    except Exception:
+        pass
+    return {}
+
+
+async def _autocomplete_buildable_part(interaction: discord.Interaction, current: str) -> List[app_commands.Choice[str]]:
+    """
+    Autocomplete callback that returns suggestions like "buildable:part".
+    Behavior:
+      - If user types "snowman:" or "snowman" -> suggest parts for snowman as "snowman:carrot", etc.
+      - If user types "snowman:c" -> suggest "snowman:carrot"
+      - If user types nothing -> suggest a reasonable set of combos (up to 25)
+      - Matching is case-insensitive and prefix-based.
+    """
+    buildables = _load_buildables()
+    current_raw = (current or "").strip()
+    current_lower = current_raw.lower()
+
+    suggestions: List[str] = []
+
+    # If the user has typed a colon, split into buildable fragment and part fragment
+    if ":" in current_raw:
+        bfrag, pfrag = current_raw.split(":", 1)
+        bfrag = bfrag.strip().lower()
+        pfrag = pfrag.strip().lower()
+        # If buildable fragment matches an actual buildable, suggest only its parts
+        if bfrag:
+            for bkey in sorted(buildables.keys()):
+                if bkey.lower().startswith(bfrag):
+                    for pkey in sorted((buildables[bkey].get("parts") or {}).keys()):
+                        if not pfrag or pkey.lower().startswith(pfrag):
+                            suggestions.append(f"{bkey}:{pkey}")
+                            if len(suggestions) >= 25:
+                                return [app_commands.Choice(name=s, value=s) for s in suggestions]
+        # Fallback: search all combos for part prefix
+        for bkey in sorted(buildables.keys()):
+            for pkey in sorted((buildables[bkey].get("parts") or {}).keys()):
+                if pkey.lower().startswith(pfrag):
+                    suggestions.append(f"{bkey}:{pkey}")
+                    if len(suggestions) >= 25:
+                        return [app_commands.Choice(name=s, value=s) for s in suggestions]
+    else:
+        # No colon present yet.
+        # If the current text clearly matches a buildable name, show that buildable's parts.
+        matching_buildables = [bk for bk in sorted(buildables.keys()) if bk.lower().startswith(current_lower)] if current_lower else []
+        if matching_buildables:
+            for bkey in matching_buildables:
+                for pkey in sorted((buildables[bkey].get("parts") or {}).keys()):
+                    suggestions.append(f"{bkey}:{pkey}")
+                    if len(suggestions) >= 25:
+                        return [app_commands.Choice(name=s, value=s) for s in suggestions]
+        else:
+            # Otherwise, aggregate top combos across buildables (all parts)
+            for bkey in sorted(buildables.keys()):
+                for pkey in sorted((buildables[bkey].get("parts") or {}).keys()):
+                    candidate = f"{bkey}:{pkey}"
+                    if not current_lower or candidate.lower().startswith(current_lower):
+                        suggestions.append(candidate)
+                        if len(suggestions) >= 25:
+                            return [app_commands.Choice(name=s, value=s) for s in suggestions]
+
+    return [app_commands.Choice(name=s, value=s) for s in suggestions]
+
 
 def get_listener(bot: commands.Bot):
     return bot.get_cog("RumbleListenerCog")
+
 
 class RumbleAdminCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
 
     async def _ephemeral_reply(self, ctx: commands.Context, content: str):
+        """
+        NOTE: This helper intentionally sends non-ephemeral replies (visible to channel).
+        Kept the name for compatibility with existing calls.
+        """
         try:
-            if getattr(ctx, "interaction", None) is not None and getattr(ctx.interaction, "response", None) is not None:
-                if not ctx.interaction.response.is_done():
-                    await ctx.interaction.response.send_message(content, ephemeral=True)
-                    return
+            await ctx.reply(content, mention_author=False)
         except Exception:
-            pass
-        await ctx.reply(content, mention_author=False)
+            # fallback to send in channel if reply fails
+            try:
+                await ctx.send(content)
+            except Exception:
+                pass
 
     @commands.hybrid_command(name="rumble_list", description="(Owner) Return raw persisted RumbleListener config JSON")
     @commands.is_owner()
@@ -32,7 +115,7 @@ class RumbleAdminCog(commands.Cog):
             await self._ephemeral_reply(ctx, "RumbleListenerCog is not loaded.")
             return
         snap = listener.get_config_snapshot()
-        import json, io
+        import io
         bio = io.BytesIO(json.dumps(snap, indent=2).encode("utf-8"))
         await ctx.reply(file=discord.File(bio, filename="rumble_config.json"), mention_author=False)
 
@@ -84,30 +167,55 @@ class RumbleAdminCog(commands.Cog):
         listener._save_config_file()
         await self._ephemeral_reply(ctx, f"Removed {bot_id} from monitored list.")
 
-    @commands.hybrid_command(name="rumble_set_channel_part", description="Set buildable part to award for this channel")
+    # Single option "selection" expects "buildable:part". Autocomplete suggests combos.
+    # Optional `channel` argument allows setting for any channel (guild channel or mention)
+    @commands.hybrid_command(name="rumble_set_channel_part", description="Set buildable:part to award for a channel")
     @commands.has_permissions(manage_guild=True)
-    async def rumble_set_channel_part(self, ctx: commands.Context, buildable_key: str, part_key: str):
+    @app_commands.autocomplete(selection=_autocomplete_buildable_part)
+    async def rumble_set_channel_part(self, ctx: commands.Context, selection: str, channel: Optional[discord.TextChannel] = None):
         listener = get_listener(self.bot)
         if not listener:
             await self._ephemeral_reply(ctx, "RumbleListenerCog is not loaded.")
             return
-        listener.channel_part_map[ctx.channel.id] = (buildable_key, part_key)
+
+        if not selection or ":" not in selection:
+            await self._ephemeral_reply(ctx, "Please provide a value of the form `buildable:part` (e.g. `snowman:carrot`). Use autocomplete for help.")
+            return
+
+        buildable_key, part_key = selection.split(":", 1)
+        buildable_key = buildable_key.strip()
+        part_key = part_key.strip()
+        if not buildable_key or not part_key:
+            await self._ephemeral_reply(ctx, "Invalid selection. Use the form `buildable:part` (e.g. `snowman:carrot`).")
+            return
+
+        # validate against buildables.json
+        buildables = _load_buildables()
+        bdef = buildables.get(buildable_key)
+        if not bdef or part_key not in (bdef.get("parts") or {}):
+            await self._ephemeral_reply(ctx, f"Unknown buildable or part: `{selection}`. Check your definitions in data/buildables.json.")
+            return
+
+        target = channel or ctx.channel
+        listener.channel_part_map[int(target.id)] = (buildable_key, part_key)
         listener._save_config_file()
-        await self._ephemeral_reply(ctx, f"Channel {ctx.channel.name} will now award `{part_key}` for `{buildable_key}` on rumble wins.")
+        # Reply visible in the context of the invoking channel (not ephemeral) and include which channel was set
+        await self._ephemeral_reply(ctx, f"Channel {target.mention} will now award `{part_key}` for `{buildable_key}` on rumble wins.")
 
     @commands.hybrid_command(name="rumble_remove_channel", description="Remove channel mapping")
     @commands.has_permissions(manage_guild=True)
-    async def rumble_remove_channel(self, ctx: commands.Context):
+    async def rumble_remove_channel(self, ctx: commands.Context, channel: Optional[discord.TextChannel] = None):
         listener = get_listener(self.bot)
         if not listener:
             await self._ephemeral_reply(ctx, "RumbleListenerCog is not loaded.")
             return
-        if ctx.channel.id in listener.channel_part_map:
-            del listener.channel_part_map[ctx.channel.id]
+        target = channel or ctx.channel
+        if int(target.id) in listener.channel_part_map:
+            del listener.channel_part_map[int(target.id)]
             listener._save_config_file()
-            await self._ephemeral_reply(ctx, f"Removed mapping for {ctx.channel.name}.")
+            await self._ephemeral_reply(ctx, f"Removed mapping for {target.mention}.")
         else:
-            await self._ephemeral_reply(ctx, "No mapping for this channel.")
+            await self._ephemeral_reply(ctx, "No mapping for that channel.")
 
     @commands.hybrid_command(name="rumble_preview", description="Post a styled embed preview of current channel->part mappings")
     @commands.has_permissions(manage_guild=True)
@@ -130,7 +238,7 @@ class RumbleAdminCog(commands.Cog):
             embed.add_field(name="Channel Mappings", value="\n".join(mapping_lines), inline=False)
         else:
             embed.add_field(name="Channel Mappings", value="No mappings configured", inline=False)
-        embed.set_footer(text="Use /rumble_set_channel_part in a channel to set what it awards.")
+        embed.set_footer(text="Use /rumble_set_channel_part with a channel argument to configure a channel remotely.")
         await ctx.reply(embed=embed, mention_author=False)
 
     @commands.hybrid_command(name="rumble_test_award", description="Simulate awarding a part to a user (for testing)")
