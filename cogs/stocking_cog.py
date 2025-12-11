@@ -30,7 +30,8 @@ def ensure_dirs():
     ASSETS_DIR.mkdir(parents=True, exist_ok=True)
 
 
-class StockingCog(commands.Cog, name="Stockings"):
+# NOTE: removed `name="Stockings"` so the cog registers as "StockingCog"
+class StockingCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         ensure_dirs()

@@ -1,13 +1,13 @@
 """
-Channel alias admin + category listing command.
-Single command `channel_ids` accepts either:
- - a CategoryChannel (slash picker) OR
- - a string (category id or name/alias)
-and lists text channels with their names and IDs.
+Channel alias admin + category listing commands.
+
+Provides two safe commands to avoid app_commands union-type issues:
+ - /channel_ids category:<pick category>           (accepts a CategoryChannel via picker)
+ - /channel_ids_str category:<string>              (accepts an arbitrary string: id/alias/name)
 
 Also includes /channel_alias group (set/remove/list) and /list_channels utility.
 """
-from typing import Optional, Union, Dict, Any
+from typing import Optional, Dict, Any
 import logging
 
 import discord
@@ -91,30 +91,73 @@ class ChannelAliasCog(commands.Cog):
             lines.append(f"{ch.mention} — {ch.name} — `{ch.id}`")
         await self._reply(ctx, "Channels:\n```\n" + "\n".join(lines) + "\n```")
 
-    @commands.hybrid_command(name="channel_ids", description="List text channels in a category. Accepts Category or string (id/name/alias).")
+    # Option A — accepts a CategoryChannel (slash UI picker; required)
+    @commands.hybrid_command(name="channel_ids", description="List all text channel names and IDs in a category (use category picker).")
     @commands.guild_only()
-    async def channel_ids(self, ctx: commands.Context, category: Optional[Union[discord.CategoryChannel, str]]):
+    async def channel_ids(self, ctx: commands.Context, category: discord.CategoryChannel):
         """
-        /channel_ids category:<pick category>
-        or /channel_ids category:"events"  (string alias/name/id)
-        Prefix: !channel_ids 123456789012345678 or !channel_ids "Events"
+        Usage:
+          /channel_ids category:<choose category>
+        For prefix usage you can pass the category id: !channel_ids 123456789012345678
         """
         if category is None:
-            await self._reply(ctx, "You must provide a category (picker or string).")
+            await self._reply(ctx, "You must provide a category (use the category picker in slash commands).")
             return
 
+        lines = []
+        for ch in category.text_channels:
+            lines.append(f"{ch.mention} — {ch.name} — `{ch.id}`")
+        if not lines:
+            await self._reply(ctx, f"No text channels found in category {category.name}.")
+            return
+
+        text = f"Channels in category **{category.name}**:\n```\n" + "\n".join(lines) + "\n```"
+        await self._reply(ctx, text)
+
+    # Option B — accepts a string and resolves by category name/alias (handy for typing)
+    @commands.hybrid_command(name="channel_ids_str", description="List channels by category name or alias (string).")
+    @commands.guild_only()
+    async def channel_ids_str(self, ctx: commands.Context, category: str):
+        """
+        Usage:
+          /channel_ids_str category:"Events"
+          Prefix: !channel_ids_str "Events"
+        This resolves category by normalized name (exact then startswith).
+        """
+        if not category:
+            await self._reply(ctx, "You must provide a category name or alias.")
+            return
+
+        guild = ctx.guild
         cat_obj: Optional[discord.CategoryChannel] = None
-        # If a CategoryChannel object was provided by the slash picker, use it.
-        if isinstance(category, discord.CategoryChannel):
-            cat_obj = category
-        else:
-            # category was provided as a string (or id); try to resolve
+        try:
+            if category.isdigit():
+                cat_obj = guild.get_channel(int(category)) if guild else None
+                if not isinstance(cat_obj, discord.CategoryChannel):
+                    cat_obj = None
+        except Exception:
+            cat_obj = None
+
+        if cat_obj is None:
             try:
-                cat_obj = await resolve_category(self.bot, ctx.guild, category)
+                cat_obj = await resolve_category(self.bot, guild, category)
             except Exception:
                 cat_obj = None
 
-        if not cat_obj:
+        if cat_obj is None:
+            if guild:
+                norm = _normalize(category)
+                for c in guild.categories:
+                    if _normalize(c.name) == norm:
+                        cat_obj = c
+                        break
+                if cat_obj is None:
+                    for c in guild.categories:
+                        if _normalize(c.name).startswith(norm):
+                            cat_obj = c
+                            break
+
+        if cat_obj is None:
             await self._reply(ctx, f"Could not find a category matching `{category}`.")
             return
 
