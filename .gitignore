@@ -16,16 +16,36 @@ ENV/
 .env
 
 # --- Alice Bot Specific ---
+
+# Ignore working cogs
+cogs/rumble_admin_cog.py
+cogs/rumble_listener_cog.py
+cogs/stocking_cog.py
+
 # Ignore contents of data directory...
 data/*
 
-# ...but DO track the main database file (replace with your actual filename)
-# Example: uncomment the line below and change to your DB filename if you want it tracked
-# !data/main.db
+# But explicitly allow and track these important files and asset directories:
+!data/.gitkeep
+!data/stickers.json
+!data/buildables.json
+!data/rumble_listener_config.json
+!data/stocking_assets/
+!data/stocking_assets/**
+# Keep runtime user data ignored
+/data/stockings.json
 
-# Backups and backup files (don't accidentally commit backups)
+# Web UI (if you want to ignore it for now)
+web/*
+
+# Backups and backup files
 backups/
 *.bck
 
-# Puzzle pieces (binary assets)
+# Puzzle pieces (binary assets) - adjust as needed
 /puzzles/*/pieces/
+
+# Logs / dbs / caches
+*.log
+*.sqlite3
+*.db
