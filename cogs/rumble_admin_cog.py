@@ -1,7 +1,8 @@
-# Discord-only admin commands to manage RumbleListener config and test awards
-# Single authoritative rumble bot support (one configured bot id).
-# Accepts bot ids as strings (mention or raw id) to avoid client-side integer validation.
-# Works with the RumbleListenerCog in your bot (expects get_config_snapshot(), rumble_bot_ids, channel_part_map, ASSETS_DIR, PART_EMOJI, PART_COLORS).
+# Discord admin commands to manage RumbleListener config and test awards.
+# Notes:
+# - The rumble_add_bot command has been removed (single rumble bot is expected to be static).
+# - rumble_preview defers the interaction to avoid "application didn't respond".
+# - Includes a sync_guild_commands owner-only helper to force a guild command sync.
 from typing import Optional, Tuple, Dict, Any, List
 import json
 import re
@@ -80,11 +81,10 @@ class RumbleAdminCog(commands.Cog):
 
     async def _ephemeral_reply(self, ctx: commands.Context, content: str, *, mention_author: bool = False):
         """
-        NOTE: This helper intentionally uses non-ephemeral replies for visibility, but will try
-        to send interaction responses ephemerally if appropriate. Kept simple for compatibility.
+        Prefer ephemeral interaction responses when available for admin commands.
+        Falls back to ctx.reply or ctx.send for prefix invocations.
         """
         try:
-            # If invoked via an interaction and response not used, prefer ephemeral response for admin commands
             if getattr(ctx, "interaction", None) and getattr(ctx.interaction, "response", None) and not ctx.interaction.response.is_done():
                 await ctx.interaction.response.send_message(content, ephemeral=True)
                 return
@@ -165,45 +165,6 @@ class RumbleAdminCog(commands.Cog):
             text += "  (none)\n"
         await self._ephemeral_reply(ctx, f"```\n{text}\n```")
 
-    @commands.hybrid_command(name="rumble_add_bot", description="(Owner) Set the single rumble bot id to monitor (overwrites any existing).")
-    @commands.is_owner()
-    async def rumble_add_bot(self, ctx: commands.Context, bot_id: str):
-        """
-        Set the single monitored rumble bot id. Accepts mention or raw id as a string to avoid client integer validation.
-        Example: /rumble_add_bot bot_id:693167035068317736
-        """
-        listener = get_listener(self.bot)
-        if not listener:
-            await self._ephemeral_reply(ctx, "RumbleListenerCog is not loaded.")
-            return
-
-        bid_int = self._parse_snowflake(bot_id)
-        if not bid_int:
-            await self._ephemeral_reply(ctx, "Please provide a valid bot id (paste the mention or the raw id).")
-            return
-
-        # Store in both possible attributes for compatibility
-        try:
-            setattr(listener, "rumble_bot_id", int(bid_int))
-        except Exception:
-            pass
-        try:
-            listener.rumble_bot_ids = [int(bid_int)]
-        except Exception:
-            try:
-                listener.rumble_bot_ids = [int(bid_int)]
-            except Exception:
-                pass
-
-        # Persist via listener's save if available
-        try:
-            if hasattr(listener, "_save_config_file"):
-                listener._save_config_file()
-        except Exception:
-            pass
-
-        await self._ephemeral_reply(ctx, f"Set monitored rumble bot to {bid_int} (replacing any previous entry).")
-
     @commands.hybrid_command(name="rumble_remove_bot", description="(Owner) Clear the configured rumble bot (or remove only if matches provided id).")
     @commands.is_owner()
     async def rumble_remove_bot(self, ctx: commands.Context, bot_id: Optional[str] = None):
@@ -217,6 +178,7 @@ class RumbleAdminCog(commands.Cog):
             return
 
         stored_id = None
+        # read stored id defensively from multiple possible attributes
         try:
             stored_id = int(getattr(listener, "rumble_bot_id"))
         except Exception:
@@ -262,8 +224,6 @@ class RumbleAdminCog(commands.Cog):
 
         await self._ephemeral_reply(ctx, f"Cleared configured rumble bot (was {stored_id})." if stored_id else "Cleared configured rumble bot.")
 
-    # Single option "selection" expects "buildable:part". Autocomplete suggests combos.
-    # Optional `channel` argument allows setting for any channel (guild channel or mention)
     @commands.hybrid_command(name="rumble_set_channel_part", description="Set buildable:part to award for a channel")
     @commands.has_permissions(manage_guild=True)
     @app_commands.autocomplete(selection=_autocomplete_buildable_part)
@@ -292,8 +252,12 @@ class RumbleAdminCog(commands.Cog):
             return
 
         target = channel or ctx.channel
+        # ensure the mapping container exists
+        if not hasattr(listener, "channel_part_map"):
+            listener.channel_part_map = {}
         listener.channel_part_map[int(target.id)] = (buildable_key, part_key)
-        listener._save_config_file()
+        if hasattr(listener, "_save_config_file"):
+            listener._save_config_file()
         await self._ephemeral_reply(ctx, f"Channel {target.mention} will now award `{part_key}` for `{buildable_key}` on rumble wins.")
 
     @commands.hybrid_command(name="rumble_remove_channel", description="Remove channel mapping")
@@ -304,9 +268,10 @@ class RumbleAdminCog(commands.Cog):
             await self._ephemeral_reply(ctx, "RumbleListenerCog is not loaded.")
             return
         target = channel or ctx.channel
-        if int(target.id) in listener.channel_part_map:
+        if int(target.id) in getattr(listener, "channel_part_map", {}):
             del listener.channel_part_map[int(target.id)]
-            listener._save_config_file()
+            if hasattr(listener, "_save_config_file"):
+                listener._save_config_file()
             await self._ephemeral_reply(ctx, f"Removed mapping for {target.mention}.")
         else:
             await self._ephemeral_reply(ctx, "No mapping for that channel.")
@@ -318,22 +283,51 @@ class RumbleAdminCog(commands.Cog):
         if not listener:
             await self._ephemeral_reply(ctx, "RumbleListenerCog is not loaded.")
             return
+
+        # If invoked via an interaction, defer immediately to avoid "application didn't respond".
+        did_defer = False
+        try:
+            if getattr(ctx, "interaction", None) and getattr(ctx.interaction, "response", None) and not ctx.interaction.response.is_done():
+                await ctx.interaction.response.defer(ephemeral=False)
+                did_defer = True
+        except Exception:
+            did_defer = False
+
+        # Build embed
         embed = discord.Embed(title="Rumble Listener — Channel → Part Map", color=0x2F3136)
-        if getattr(listener, "rumble_bot_ids", None):
-            embed.add_field(name="Monitored Rumble Bot IDs", value="\n".join(str(x) for x in getattr(listener, "rumble_bot_ids", [])), inline=False)
-        else:
-            embed.add_field(name="Monitored Rumble Bot IDs", value="(monitoring all bot messages)", inline=False)
-        if getattr(listener, "channel_part_map", None):
-            mapping_lines: List[str] = []
-            for ch, (bkey, pkey) in listener.channel_part_map.items():
-                emoji = getattr(listener, "PART_EMOJI", {}).get(pkey, "")
-                line = f"<#{int(ch)}> — **{bkey}** → {pkey} {emoji}"
-                mapping_lines.append(line)
-            embed.add_field(name="Channel Mappings", value="\n".join(mapping_lines), inline=False)
-        else:
-            embed.add_field(name="Channel Mappings", value="No mappings configured", inline=False)
-        embed.set_footer(text="Use /rumble_set_channel_part with a channel argument to configure a channel remotely.")
-        await ctx.reply(embed=embed, mention_author=False)
+        try:
+            if getattr(listener, "rumble_bot_ids", None):
+                embed.add_field(name="Monitored Rumble Bot IDs", value="\n".join(str(x) for x in getattr(listener, "rumble_bot_ids", [])), inline=False)
+            else:
+                embed.add_field(name="Monitored Rumble Bot IDs", value="(monitoring all bot messages)", inline=False)
+            if getattr(listener, "channel_part_map", None):
+                mapping_lines: List[str] = []
+                for ch, (bkey, pkey) in listener.channel_part_map.items():
+                    emoji = getattr(listener, "PART_EMOJI", {}).get(pkey, "")
+                    line = f"<#{int(ch)}> — **{bkey}** → {pkey} {emoji}"
+                    mapping_lines.append(line)
+                embed.add_field(name="Channel Mappings", value="\n".join(mapping_lines), inline=False)
+            else:
+                embed.add_field(name="Channel Mappings", value="No mappings configured", inline=False)
+            embed.set_footer(text="Use /rumble_set_channel_part with a channel argument to configure a channel remotely.")
+        except Exception:
+            if did_defer:
+                try:
+                    await ctx.interaction.followup.send("Failed to build preview (see logs).", ephemeral=True)
+                except Exception:
+                    pass
+            else:
+                await self._ephemeral_reply(ctx, "Failed to build preview (see logs).")
+            return
+
+        # Send response according to whether we deferred
+        try:
+            if did_defer:
+                await ctx.interaction.followup.send(embed=embed)
+            else:
+                await ctx.reply(embed=embed, mention_author=False)
+        except Exception:
+            await self._ephemeral_reply(ctx, "Failed to send preview (see logs).")
 
     @commands.hybrid_command(name="rumble_test_award", description="Simulate awarding a part to a user (for testing)")
     @commands.has_permissions(manage_guild=True)
@@ -356,7 +350,7 @@ class RumbleAdminCog(commands.Cog):
                 return
             target_channel = ch
 
-        mapping = listener.channel_part_map.get(int(target_channel.id))
+        mapping = getattr(listener, "channel_part_map", {}).get(int(target_channel.id))
         if not mapping:
             await self._ephemeral_reply(ctx, f"No mapping configured for channel {target_channel.mention}.")
             return
@@ -382,9 +376,9 @@ class RumbleAdminCog(commands.Cog):
         )
         embed.set_footer(text="Test award simulated by admin")
         try:
-            part_file = listener.ASSETS_DIR / f"buildables/{buildable_key}/parts/{part_key}.png"
+            part_file = getattr(listener, "ASSETS_DIR", Path(".")) / f"buildables/{buildable_key}/parts/{part_key}.png"
             if not part_file.exists():
-                part_file = listener.ASSETS_DIR / f"stickers/{part_key}.png"
+                part_file = getattr(listener, "ASSETS_DIR", Path(".")) / f"stickers/{part_key}.png"
             if part_file.exists():
                 f = discord.File(part_file, filename=part_file.name)
                 embed.set_thumbnail(url=f"attachment://{part_file.name}")
@@ -393,6 +387,16 @@ class RumbleAdminCog(commands.Cog):
         except Exception:
             pass
         await ctx.reply(content=f"{emoji} {member.mention}", embed=embed, mention_author=False)
+
+    @commands.command(name="sync_guild_commands")
+    @commands.is_owner()
+    async def sync_guild_commands(self, ctx: commands.Context):
+        """Force a guild-only slash command sync (immediate)."""
+        try:
+            await self.bot.tree.sync(guild=ctx.guild)
+            await ctx.reply("Synced commands to this guild.", mention_author=False)
+        except Exception as exc:
+            await ctx.reply(f"Sync failed: {exc}", mention_author=False)
 
 
 async def setup(bot: commands.Bot):
