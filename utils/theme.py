@@ -1,7 +1,7 @@
 import discord
 
 class Emojis:
-    SUCCESS = "<:check:1364549836073865247>"
+    SUCCESS = "<:aiwcheck:1448491347836403777>"
     FAILURE = "<:xxxx:1326424917352255508>"
     LOCK = "<:lockaiw:1328747936204591174>"
     UNLOCK = "<:key_aiw:1328742847456874565>"

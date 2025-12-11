@@ -1,312 +1,364 @@
+# StickyCog with persisted counters
+# - Persists stickies and their counters to disk so repost cadence survives restarts
+# - Stores per-channel: message, interval, last_message_id, counter
+# - Safe concurrency with asyncio.Lock and robust error handling
+# - Hybrid commands: stickplz (set), byesticky (remove), stickypost (force), stickyshow (info)
+# - Tries to reuse user's config.DATA_DIR, Colors, Emojis if available; falls back sensibly
+
 import asyncio
+import json
+from pathlib import Path
+from typing import Dict, Any, Optional
+
 import discord
 from discord.ext import commands
-import json
-import os
-import tempfile
-import logging
-from typing import Dict, Optional
 
-from utils.checks import is_staff
-from utils.theme import Colors, Emojis
-import config
+# Try to reuse user's config.DATA_DIR if present
+try:
+    import config  # type: ignore
+    DATA_DIR = Path(config.DATA_DIR)
+except Exception:
+    DATA_DIR = Path("data")
 
-logger = logging.getLogger(__name__)
+STICKY_FILE = DATA_DIR / "stickies.json"
+DEFAULT_INTERVAL = 5  # default number of messages between reposts
+EXCLUDED_CHANNELS = set()  # populate with channel IDs (ints or strings) to exclude
 
-STICKY_DATA_FILE = config.DATA_DIR / "stickies.json"
-DEFAULT_MESSAGE_THRESHOLD = 5
+# Try to reuse theme utilities if present (optional)
+try:
+    from utils.theme import Colors, Emojis  # type: ignore
+    HAS_THEME = True
+except Exception:
+    HAS_THEME = False
+    class Emojis:
+        SUCCESS = "✅"
+        FAILURE = "❌"
+    class Colors:
+        PRIMARY = 0x2F3136  # neutral dark
 
-# Set of excluded channel IDs (as strings) where stickies will NOT work.
-EXCLUDED_CHANNELS = set()
+
+def ensure_data_dir() -> None:
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 
 class StickyCog(commands.Cog, name="Sticky Messages"):
-    """Manages sticky messages that repost after a set number of messages."""
+    """
+    Keeps a sticky message at the bottom of a channel by reposting it every N messages.
+    Stored structure (stickies.json):
+      {
+        "<channel_id>": {
+          "message": "Message content",
+          "interval": 5,
+          "last_message_id": 123456789012345678,
+          "counter": 2
+        },
+        ...
+      }
+    """
 
     def __init__(self, bot: commands.Bot):
         self.bot = bot
-        self.stickies: Dict[str, Dict] = {}
-        self.message_counts: Dict[str, int] = {}
-        self._locks: Dict[str, asyncio.Lock] = {}
-        self.load_stickies()
+        ensure_data_dir()
+        self._lock = asyncio.Lock()
+        self.stickies: Dict[str, Dict[str, Any]] = {}
+        self._load_stickies()
 
-    def load_stickies(self):
+    # ---------------------
+    # Persistence
+    # ---------------------
+    def _load_stickies(self) -> None:
         try:
-            if STICKY_DATA_FILE.exists():
-                with STICKY_DATA_FILE.open("r", encoding="utf-8") as f:
-                    self.stickies = json.load(f) or {}
-                    logger.info("Loaded %d stickies from %s", len(self.stickies), STICKY_DATA_FILE)
+            if STICKY_FILE.exists():
+                with STICKY_FILE.open("r", encoding="utf-8") as fh:
+                    data = json.load(fh)
+                    if isinstance(data, dict):
+                        # Validate shape: ensure counters exist
+                        for k, v in list(data.items()):
+                            if not isinstance(v, dict):
+                                continue
+                            v.setdefault("interval", DEFAULT_INTERVAL)
+                            v.setdefault("last_message_id", None)
+                            # counter persisted here
+                            v.setdefault("counter", 0)
+                        self.stickies = data
+                    else:
+                        self.stickies = {}
             else:
                 self.stickies = {}
-        except (FileNotFoundError, json.JSONDecodeError) as e:
-            logger.exception("Failed to load stickies from %s: %s", STICKY_DATA_FILE, e)
+        except (json.JSONDecodeError, OSError):
+            # If file is corrupt or unreadable, start empty but don't crash
             self.stickies = {}
 
-    def save_stickies(self):
+    def _save_stickies(self) -> None:
         try:
-            STICKY_DATA_FILE.parent.mkdir(parents=True, exist_ok=True)
-            # Atomic write: write to temp and os.replace
-            fd, tmp = tempfile.mkstemp(dir=str(STICKY_DATA_FILE.parent))
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                json.dump(self.stickies, f, indent=4)
-                f.flush()
-                os.fsync(f.fileno())
-            os.replace(tmp, str(STICKY_DATA_FILE))
-            logger.info("Saved %d stickies to %s", len(self.stickies), STICKY_DATA_FILE)
+            STICKY_FILE.parent.mkdir(parents=True, exist_ok=True)
+            with STICKY_FILE.open("w", encoding="utf-8") as fh:
+                json.dump(self.stickies, fh, ensure_ascii=False, indent=2)
+        except OSError:
+            # best-effort; ignore write failures
+            pass
+
+    # ---------------------
+    # Helpers
+    # ---------------------
+    def _channel_key(self, channel: discord.abc.Messageable) -> str:
+        return str(getattr(channel, "id", channel))
+
+    async def _delete_if_exists(self, channel: discord.TextChannel, msg_id: Optional[int]) -> None:
+        if not msg_id:
+            return
+        try:
+            msg = await channel.fetch_message(int(msg_id))
+            await msg.delete()
+        except discord.NotFound:
+            return
+        except discord.Forbidden:
+            # Can't delete; just give up silently
+            return
         except Exception:
-            logger.exception("Failed to save stickies to %s", STICKY_DATA_FILE)
+            return
 
-    def _get_lock(self, channel_id: str) -> asyncio.Lock:
-        lock = self._locks.get(channel_id)
-        if not lock:
-            lock = asyncio.Lock()
-            self._locks[channel_id] = lock
-        return lock
+    def _get_interval(self, cfg: Dict[str, Any]) -> int:
+        try:
+            v = int(cfg.get("interval", DEFAULT_INTERVAL))
+            return max(1, v)
+        except Exception:
+            return DEFAULT_INTERVAL
 
+    async def _send_sticky(self, channel: discord.TextChannel, content: str) -> Optional[discord.Message]:
+        try:
+            # If you prefer embed support, change this to send an Embed
+            return await channel.send(content)
+        except discord.Forbidden:
+            return None
+        except Exception:
+            return None
+
+    def _get_success_emoji(self) -> str:
+        try:
+            # If user code sets bot.success_emoji
+            return getattr(self.bot, "success_emoji", Emojis.SUCCESS)
+        except Exception:
+            return Emojis.SUCCESS
+
+    # ---------------------
+    # Lifecycle events
+    # ---------------------
+    @commands.Cog.listener()
+    async def on_ready(self):
+        # Validate stored last_message_id and reset if invalid (avoids stale ids preventing deletes)
+        changed = False
+        for ch_id, cfg in list(self.stickies.items()):
+            last_id = cfg.get("last_message_id")
+            if last_id:
+                try:
+                    ch = self.bot.get_channel(int(ch_id))
+                    if isinstance(ch, discord.TextChannel):
+                        await ch.fetch_message(int(last_id))
+                    else:
+                        cfg["last_message_id"] = None
+                        changed = True
+                except Exception:
+                    # message not found or channel missing
+                    cfg["last_message_id"] = None
+                    changed = True
+            # Ensure counter isn't larger than interval
+            try:
+                interval = self._get_interval(cfg)
+                counter = int(cfg.get("counter", 0))
+                if counter >= interval or counter < 0:
+                    cfg["counter"] = 0
+                    changed = True
+            except Exception:
+                cfg["counter"] = 0
+                changed = True
+        if changed:
+            self._save_stickies()
+
+    # ---------------------
+    # Message handling
+    # ---------------------
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
-        # Only check channels that are not excluded, and ignore DMs/bots
+        # Ignore DMs/webhooks and bot messages
         if message.guild is None or message.author.bot:
             return
 
-        channel_id = str(message.channel.id)
-        if channel_id in EXCLUDED_CHANNELS:
+        channel = message.channel
+        ch_key = self._channel_key(channel)
+
+        # Excluded channels
+        if str(channel.id) in {str(x) for x in EXCLUDED_CHANNELS}:
             return
 
-        sticky_info = self.stickies.get(channel_id)
-        if not sticky_info:
+        # Nothing configured for this channel
+        if ch_key not in self.stickies:
             return
 
-        if sticky_info.get("disabled"):
-            return
+        async with self._lock:
+            cfg = self.stickies.get(ch_key)
+            if not cfg:
+                return
 
-        # Use per-sticky interval when configured, otherwise fallback to DEFAULT_MESSAGE_THRESHOLD
-        interval = int(sticky_info.get("interval", DEFAULT_MESSAGE_THRESHOLD))
-        self.message_counts[channel_id] = self.message_counts.get(channel_id, 0) + 1
-        if self.message_counts[channel_id] >= interval:
-            self.message_counts[channel_id] = 0
-            # Run repost under per-channel lock to avoid concurrent reposts/deletes
-            lock = self._get_lock(channel_id)
-            async with lock:
-                await self.repost_sticky(message.channel)
+            interval = self._get_interval(cfg)
+            # Use persisted counter
+            counter = int(cfg.get("counter", 0))
+            counter += 1
+            # Persist the increment immediately so restarts don't lose progress
+            cfg["counter"] = counter
+            self._save_stickies()
 
-    async def repost_sticky(self, channel: discord.TextChannel):
-        channel_id = str(channel.id)
-        sticky_info = self.stickies.get(channel_id)
-        if not sticky_info or sticky_info.get("disabled"):
-            return
+            if counter < interval:
+                return
 
-        last_message_id = sticky_info.get("last_message_id")
+            # Time to repost
+            cfg["counter"] = 0
+            # Persist reset right away
+            self._save_stickies()
 
-        # Try to edit the previous bot message first (less noisy). If not possible, send a new one.
-        if last_message_id:
-            try:
-                old_message = await channel.fetch_message(int(last_message_id))
-                if old_message and old_message.author and old_message.author.id == self.bot.user.id:
+            # delete old sticky if exists
+            last_id = cfg.get("last_message_id")
+            if isinstance(channel, discord.TextChannel):
+                await self._delete_if_exists(channel, last_id)
+                sent = await self._send_sticky(channel, cfg.get("message", ""))
+                if sent:
+                    cfg["last_message_id"] = sent.id
+                    self._save_stickies()
+                else:
+                    # couldn't send (permissions?) — disable sticky to avoid repeated failures
                     try:
-                        # If message exists and is ours, try to edit it.
-                        await old_message.edit(embed=discord.Embed(description=sticky_info.get("message", ""), color=Colors.PRIMARY))
-                        # last_message_id stays the same
-                        logger.info("Edited existing sticky in channel %s (msg=%s)", channel_id, last_message_id)
-                        return
-                    except discord.Forbidden:
-                        # Can't edit — fall through to sending a new message
-                        logger.warning("No permission to edit old sticky in channel %s; will send a new sticky", channel_id)
-                    except discord.HTTPException:
-                        logger.debug("Failed to edit old sticky %s in %s, will send new one", last_message_id, channel_id, exc_info=True)
-                # If old message isn't ours, we'll just send a new one and try to clean up old one
-            except discord.NotFound:
-                logger.debug("Previous sticky message %s not found in channel %s (deleted)", last_message_id, channel_id)
-            except Exception:
-                logger.exception("Error fetching previous sticky message %s in channel %s", last_message_id, channel_id)
-
-        # Send a new message
-        embed = discord.Embed(description=sticky_info.get("message", ""), color=Colors.PRIMARY)
-        try:
-            new_message = await channel.send(embed=embed)
-            self.stickies[channel_id]["last_message_id"] = new_message.id
-            self.save_stickies()
-            logger.info("Posted sticky in channel %s (msg=%s)", channel_id, new_message.id)
-        except discord.Forbidden:
-            logger.warning("No permission to send sticky in channel %s; marking sticky disabled", channel_id)
-            sticky_info["disabled"] = True
-            self.save_stickies()
-            return
-        except Exception:
-            logger.exception("Failed to post sticky in channel %s", channel_id)
-            return
-
-        # Best-effort: try to delete the old message if it was our bot message previously.
-        if last_message_id:
-            try:
-                old_message = await channel.fetch_message(int(last_message_id))
-                if old_message and old_message.author and old_message.author.id == self.bot.user.id:
-                    try:
-                        await old_message.delete()
-                        logger.debug("Deleted old sticky %s in channel %s", last_message_id, channel_id)
-                    except discord.Forbidden:
-                        # Do NOT disable the sticky if we can't delete; just warn and keep going.
-                        logger.warning("No permission to delete old sticky %s in %s; leaving it in place", last_message_id, channel_id)
-                    except discord.NotFound:
+                        del self.stickies[ch_key]
+                        self._save_stickies()
+                    except KeyError:
                         pass
-                    except Exception:
-                        logger.exception("Failed to delete old sticky %s in %s", last_message_id, channel_id)
-            except discord.NotFound:
-                pass
-            except Exception:
-                logger.debug("Error fetching old sticky %s in %s", last_message_id, channel_id, exc_info=True)
 
-        # Best-effort pin the sticky so it is less likely to be removed
-        try:
-            await new_message.pin(reason="Sticky message pinned by bot")
-        except Exception:
-            logger.debug("Could not pin sticky message; missing Manage Messages or other error", exc_info=True)
-
-    @commands.Cog.listener()
-    async def on_raw_message_delete(self, payload: discord.RawMessageDeleteEvent):
+    # ---------------------
+    # Commands
+    # ---------------------
+    async def _ephemeral_reply(self, ctx: commands.Context, content: str) -> None:
         """
-        If our recorded sticky message was deleted, repost it immediately.
-        Using raw event because message may not be in cache.
+        Send an ephemeral reply if invoked as an interaction (slash), otherwise a normal reply.
         """
         try:
-            channel_id = str(payload.channel_id)
-            msg_id = payload.message_id
-            sticky = self.stickies.get(channel_id)
-            if not sticky or sticky.get("disabled"):
-                return
-            # If their deletion matches our stored message id, repost right away
-            if sticky.get("last_message_id") and int(sticky["last_message_id"]) == int(msg_id):
-                channel = self.bot.get_channel(int(channel_id))
-                if not channel:
-                    try:
-                        channel = await self.bot.fetch_channel(int(channel_id))
-                    except Exception:
-                        logger.exception("Could not fetch channel %s to repost sticky", channel_id)
-                        return
-                # Small delay to avoid race with delete triggers
-                await asyncio.sleep(0.2)
-                lock = self._get_lock(channel_id)
-                async with lock:
-                    await self.repost_sticky(channel)
+            if getattr(ctx, "interaction", None) is not None and getattr(ctx.interaction, "response", None) is not None:
+                # If the interaction hasn't had a response yet, send ephemeral
+                if not ctx.interaction.response.is_done():
+                    await ctx.interaction.response.send_message(content, ephemeral=True)
+                    return
+            # Fallback to normal reply for prefix commands or already-responded interactions
+            await ctx.reply(content, mention_author=False)
         except Exception:
-            logger.exception("Error in on_raw_message_delete handler", exc_info=True)
-
-    @commands.Cog.listener()
-    async def on_raw_bulk_message_delete(self, payload: discord.RawBulkMessageDeleteEvent):
-        """
-        Handle bulk deletes (purges). If our stored sticky id is included in the deleted ids, repost.
-        """
-        try:
-            channel_id = str(payload.channel_id)
-            deleted_ids = set(map(int, payload.message_ids))
-            sticky = self.stickies.get(channel_id)
-            if not sticky or sticky.get("disabled") or not sticky.get("last_message_id"):
-                return
-            if int(sticky["last_message_id"]) in deleted_ids:
-                channel = self.bot.get_channel(int(channel_id))
-                if not channel:
-                    try:
-                        channel = await self.bot.fetch_channel(int(channel_id))
-                    except Exception:
-                        logger.exception("Could not fetch channel %s to repost sticky after bulk delete", channel_id)
-                        return
-                await asyncio.sleep(0.2)
-                lock = self._get_lock(channel_id)
-                async with lock:
-                    await self.repost_sticky(channel)
-        except Exception:
-            logger.exception("Error in on_raw_bulk_message_delete handler", exc_info=True)
-
-    # --- User Commands ---
-    @commands.hybrid_command(name="stickplz", description="Add or update a sticky.")
-    @commands.guild_only()
-    @is_staff()
-    async def sticky_set(self, ctx: commands.Context, *, message: str):
-        channel_id = str(ctx.channel.id)
-        self.stickies[channel_id] = {"message": message, "last_message_id": None, "disabled": False, "interval": DEFAULT_MESSAGE_THRESHOLD}
-        self.message_counts[channel_id] = 0
-        self.save_stickies()
-
-        try:
-            await ctx.send(f"{Emojis.SUCCESS} Sticky message has been set. Posting it now...", ephemeral=True)
-        except Exception:
-            logger.debug("Failed to ack sticky_set via response; continuing")
-
-        await self.repost_sticky(ctx.channel)
-
-    @commands.hybrid_command(name="byesticky", description="Remove the sticky.")
-    @commands.guild_only()
-    @is_staff()
-    async def sticky_remove(self, ctx: commands.Context):
-        channel_id = str(ctx.channel.id)
-        if channel_id in self.stickies:
-            last_message_id = self.stickies[channel_id].get("last_message_id")
-            if last_message_id:
-                try:
-                    old_message = await ctx.channel.fetch_message(last_message_id)
-                    # delete only if it's our bot message
-                    if old_message and old_message.author and old_message.author.id == self.bot.user.id:
-                        await old_message.delete()
-                except (discord.NotFound, discord.Forbidden):
-                    pass
-
-            del self.stickies[channel_id]
-            self.message_counts.pop(channel_id, None)
-            self.save_stickies()
-            await ctx.send(f"{Emojis.SUCCESS} Sticky message has been removed.", ephemeral=True)
-        else:
-            await ctx.send(f"{Emojis.FAILURE} There is no sticky message set for this channel.", ephemeral=True)
-
-    @commands.hybrid_command(name="liststickies", description="List configured stickies for this guild")
-    @commands.guild_only()
-    @is_staff()
-    async def sticky_list(self, ctx: commands.Context):
-        """
-        List all configured stickies for the current guild, including status and interval.
-        """
-        guild_id = ctx.guild.id
-        lines = []
-        for channel_id, info in self.stickies.items():
             try:
-                ch = self.bot.get_channel(int(channel_id)) or await self.bot.fetch_channel(int(channel_id))
+                await ctx.reply(content, mention_author=False)
             except Exception:
-                ch = None
-            # only include channels that belong to this guild
-            if not ch or not ch.guild or ch.guild.id != guild_id:
-                continue
-            status = "disabled" if info.get("disabled") else "enabled"
-            interval = info.get("interval", DEFAULT_MESSAGE_THRESHOLD)
-            preview = info.get("message", "").replace("\n", " ")
-            if len(preview) > 150:
-                preview = preview[:147] + "..."
-            last_msg = info.get("last_message_id")
-            last_msg_text = f" (last msg id: {last_msg})" if last_msg else ""
-            lines.append(f"{ch.mention} — interval {interval} — {status}{last_msg_text}\n> {preview}")
+                pass
 
-        if not lines:
-            await ctx.send("No stickies configured for this guild.", ephemeral=True)
+    @commands.hybrid_command(name="stickplz", description="Set a sticky message for this channel.")
+    @commands.guild_only()
+    @commands.has_permissions(manage_messages=True)
+    async def sticky_set(self, ctx: commands.Context, interval: Optional[int] = None, *, message: str = ""):
+        """
+        Usage:
+          /stickplz <interval> <message...>
+        interval is optional (defaults to DEFAULT_INTERVAL).
+        """
+        if not message:
+            await self._ephemeral_reply(ctx, f"{Emojis.FAILURE if HAS_THEME else '❌'} You must provide the sticky message content.")
             return
 
-        # Send in a single ephemeral message (short list); if too long, break into chunks
-        out = "Configured stickies in this server:\n\n" + "\n\n".join(lines)
-        # Discord message length safety — split if necessary
-        if len(out) <= 1900:
-            await ctx.send(out, ephemeral=False)
+        if interval is None:
+            interval = DEFAULT_INTERVAL
+        try:
+            interval = max(1, int(interval))
+        except Exception:
+            interval = DEFAULT_INTERVAL
+
+        ch_key = self._channel_key(ctx.channel)
+        async with self._lock:
+            self.stickies[ch_key] = {
+                "message": message,
+                "interval": interval,
+                "last_message_id": None,
+                "counter": 0,
+            }
+            self._save_stickies()
+
+        await self._ephemeral_reply(ctx, f"{self._get_success_emoji()} Sticky set for this channel (every {interval} messages). Posting it now...")
+        # Post immediately (delete any previous)
+        try:
+            await self.repost_now(ctx.channel)
+        except Exception:
+            pass
+
+    async def repost_now(self, channel: discord.TextChannel) -> None:
+        ch_key = self._channel_key(channel)
+        async with self._lock:
+            cfg = self.stickies.get(ch_key)
+            if not cfg:
+                return
+            last_id = cfg.get("last_message_id")
+            await self._delete_if_exists(channel, last_id)
+            sent = await self._send_sticky(channel, cfg.get("message", ""))
+            if sent:
+                cfg["last_message_id"] = sent.id
+                # reset counter on manual repost and persist
+                cfg["counter"] = 0
+                self._save_stickies()
+
+    @commands.hybrid_command(name="byesticky", description="Disable the sticky in this channel.")
+    @commands.guild_only()
+    @commands.has_permissions(manage_messages=True)
+    async def sticky_remove(self, ctx: commands.Context):
+        ch_key = self._channel_key(ctx.channel)
+        async with self._lock:
+            cfg = self.stickies.get(ch_key)
+            if not cfg:
+                await self._ephemeral_reply(ctx, f"{Emojis.FAILURE if HAS_THEME else '❌'} There is no sticky configured for this channel.")
+                return
+            last_id = cfg.get("last_message_id")
+            try:
+                if isinstance(ctx.channel, discord.TextChannel):
+                    await self._delete_if_exists(ctx.channel, last_id)
+            except Exception:
+                pass
+            try:
+                del self.stickies[ch_key]
+            except KeyError:
+                pass
+            self._save_stickies()
+        await self._ephemeral_reply(ctx, f"{self._get_success_emoji()} Sticky removed for this channel.")
+
+    @commands.hybrid_command(name="stickypost", description="Force-post the sticky now (deletes previous).")
+    @commands.guild_only()
+    @commands.has_permissions(manage_messages=True)
+    async def sticky_post(self, ctx: commands.Context):
+        ch_key = self._channel_key(ctx.channel)
+        if ch_key not in self.stickies:
+            await self._ephemeral_reply(ctx, "❌ No sticky configured for this channel.")
             return
+        await self.repost_now(ctx.channel)
+        await self._ephemeral_reply(ctx, f"{self._get_success_emoji()} Sticky posted.")
 
-        # Otherwise split into multiple messages (ephemeral)
-        parts = []
-        cur = "Configured stickies in this server:\n\n"
-        for line in lines:
-            if len(cur) + len(line) + 2 > 1900:
-                parts.append(cur)
-                cur = ""
-            cur += line + "\n\n"
-        if cur:
-            parts.append(cur)
+    @commands.hybrid_command(name="stickyshow", description="Show sticky configuration for this channel.")
+    @commands.guild_only()
+    @commands.has_permissions(manage_messages=True)
+    async def sticky_show(self, ctx: commands.Context):
+        ch_key = self._channel_key(ctx.channel)
+        cfg = self.stickies.get(ch_key)
+        if not cfg:
+            await self._ephemeral_reply(ctx, "No sticky configured for this channel.")
+            return
+        interval = self._get_interval(cfg)
+        counter = int(cfg.get("counter", 0))
+        message_preview = cfg.get("message", "")[:1500]
+        await self._ephemeral_reply(ctx, f"Sticky: every {interval} messages\nCounter: {counter}\nMessage:\n{message_preview}")
 
-        for part in parts:
-            await ctx.send(part, ephemeral=True)
+    async def cog_unload(self):
+        # save on unload
+        try:
+            self._save_stickies()
+        except Exception:
+            pass
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(StickyCog(bot))
