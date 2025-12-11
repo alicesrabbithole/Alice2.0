@@ -3,6 +3,14 @@
 # - Loads sticker/buildable defs from data/stickers.json and data/buildables.json
 # - API: award_sticker(user_id, sticker_key, channel) and award_part(user_id, buildable_key, part_key, channel)
 # - Command: /stocking show, /stickgive, /partgive, /stickadd, /buildable_add
+#
+# Added: /stocking_gallery command + UI View to page through rendered buildable images
+#        (gallery shows each buildable composite for a user with Prev / Next buttons)
+#
+# Improvements vs prior snippet:
+# - Robust handling for slash vs prefix flows when sending the initial gallery message.
+# - Button handlers try response.edit_message first and fall back to edit_original_response when needed,
+#   mirroring the PuzzleGalleryView pattern so slash-initiated galleries update correctly.
 
 import asyncio
 import json
@@ -10,6 +18,7 @@ from pathlib import Path
 from typing import Dict, Any, Optional, List, Tuple
 
 import discord
+from discord import app_commands
 from discord.ext import commands
 
 # data paths
@@ -30,7 +39,30 @@ def ensure_dirs():
     ASSETS_DIR.mkdir(parents=True, exist_ok=True)
 
 
-# NOTE: removed `name="Stockings"` so the cog registers as "StockingCog"
+async def _autocomplete_sticker(interaction: discord.Interaction, current: str) -> List[app_commands.Choice[str]]:
+    """
+    Autocomplete helper for sticker keys. Reads the stickers definition file on each call
+    so changes are picked up without restarting the bot.
+    """
+    try:
+        if STICKERS_DEF_FILE.exists():
+            with STICKERS_DEF_FILE.open("r", encoding="utf-8") as fh:
+                stickers = json.load(fh) or {}
+        else:
+            stickers = {}
+    except Exception:
+        stickers = {}
+
+    cur = (current or "").strip().lower()
+    choices: List[app_commands.Choice[str]] = []
+    for key in sorted(stickers.keys()):
+        if not cur or key.lower().startswith(cur):
+            choices.append(app_commands.Choice(name=key, value=key))
+            if len(choices) >= 25:
+                break
+    return choices
+
+
 class StockingCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
@@ -263,28 +295,7 @@ class StockingCog(commands.Cog):
             pass
         await ctx.reply(content, mention_author=False)
 
-    @commands.hybrid_command(name="stocking", description="Show your stocking (stickers and buildables).")
-    @commands.guild_only()
-    async def stocking_show(self, ctx: commands.Context, member: Optional[discord.Member] = None):
-        target = member or ctx.author
-        user = self._ensure_user(target.id)
-        buildables = user.get("buildables", {})
-        any_sent = False
-        for bkey in buildables.keys():
-            path = await self.render_buildable(target.id, bkey)
-            if path and path.exists():
-                try:
-                    await ctx.reply(file=discord.File(path), mention_author=False)
-                    any_sent = True
-                except Exception:
-                    continue
-        stickers = user.get("stickers", [])
-        if stickers:
-            await ctx.reply(f"{target.display_name}'s stickers: " + ", ".join(stickers), mention_author=False)
-            any_sent = True
-        if not any_sent:
-            await ctx.reply(f"{target.display_name} has no stickers or buildables yet.", mention_author=False)
-
+    @app_commands.autocomplete(sticker_key=_autocomplete_sticker)
     @commands.hybrid_command(name="stickgive", description="Give a sticker to a user (staff only).")
     @commands.guild_only()
     @commands.has_permissions(manage_messages=True)
@@ -329,6 +340,151 @@ class StockingCog(commands.Cog):
     @commands.has_permissions(manage_guild=True)
     async def buildable_add(self, ctx: commands.Context):
         await self._ephemeral_reply(ctx, f"Edit `{BUILDABLES_DEF_FILE}` and place assets under `{ASSETS_DIR}`. Then reload the cog.")
+
+    # --------- Gallery view support ----------
+    class _GalleryView(discord.ui.View):
+        def __init__(self, cog: "StockingCog", user: discord.Member, keys: List[str], timeout: float = 180.0):
+            super().__init__(timeout=timeout)
+            self.cog = cog
+            self.bot = cog.bot
+            self.user = user
+            self.keys = keys
+            self.index = 0
+            self.message: Optional[discord.Message] = None
+            # if only one key, disable buttons
+            if len(keys) <= 1:
+                for item in self.children:
+                    item.disabled = True
+
+        async def _make_embed_and_file(self):
+            key = self.keys[self.index]
+            path = await self.cog.render_buildable(self.user.id, key)
+            emb = discord.Embed(title=f"{self.user.display_name} — {key}", color=0x2F3136)
+            if path and path.exists():
+                file = discord.File(path, filename=path.name)
+                emb.set_image(url=f"attachment://{path.name}")
+                return emb, file
+            else:
+                emb.description = "No image available for this buildable."
+                return emb, None
+
+        async def _respond_with_current(self, interaction: discord.Interaction, *, ephemeral_owner_check=False):
+            # Only allow the invoking user to control the view (if ephemeral_owner_check True)
+            if ephemeral_owner_check and interaction.user.id != self.user.id:
+                try:
+                    await interaction.response.send_message("You didn't open this gallery.", ephemeral=True)
+                except Exception:
+                    try:
+                        await interaction.followup.send("You didn't open this gallery.", ephemeral=True)
+                    except Exception:
+                        pass
+                return
+
+            emb, file = await self._make_embed_and_file()
+
+            # Prefer to use response.edit_message for button interactions; fall back to edit_original_response
+            try:
+                await interaction.response.edit_message(embed=emb, attachments=[file] if file else [], view=self)
+            except Exception:
+                try:
+                    # for slash-original flows, editing the original response may be required
+                    await interaction.edit_original_response(embed=emb, attachments=[file] if file else [], view=self)
+                except Exception:
+                    # final fallback: try to edit stored message directly
+                    if hasattr(self, "message") and self.message:
+                        try:
+                            await self.message.edit(embed=emb, attachments=[file] if file else [], view=self)
+                        except Exception:
+                            pass
+
+        @discord.ui.button(label="◀ Previous", style=discord.ButtonStyle.secondary)
+        async def prev_button(self, button: discord.ui.Button, interaction: discord.Interaction):
+            if interaction.user.id != self.user.id:
+                try:
+                    await interaction.response.send_message("You didn't open this gallery.", ephemeral=True)
+                except Exception:
+                    try:
+                        await interaction.followup.send("You didn't open this gallery.", ephemeral=True)
+                    except Exception:
+                        pass
+                return
+            self.index = (self.index - 1) % len(self.keys)
+            await self._respond_with_current(interaction)
+
+        @discord.ui.button(label="Next ▶", style=discord.ButtonStyle.secondary)
+        async def next_button(self, button: discord.ui.Button, interaction: discord.Interaction):
+            if interaction.user.id != self.user.id:
+                try:
+                    await interaction.response.send_message("You didn't open this gallery.", ephemeral=True)
+                except Exception:
+                    try:
+                        await interaction.followup.send("You didn't open this gallery.", ephemeral=True)
+                    except Exception:
+                        pass
+                return
+            self.index = (self.index + 1) % len(self.keys)
+            await self._respond_with_current(interaction)
+
+        async def on_timeout(self):
+            # disable buttons when timed out
+            for child in self.children:
+                child.disabled = True
+            try:
+                if hasattr(self, "message") and self.message:
+                    await self.message.edit(view=self)
+            except Exception:
+                pass
+
+    @commands.hybrid_command(name="stocking", description="Browse a user's buildables as a flip-through gallery")
+    @commands.guild_only()
+    async def stocking_gallery(self, ctx: commands.Context, member: Optional[discord.Member] = None):
+        """
+        Open a small gallery UI that pages through each buildable the member has (renders composites).
+        Usage:
+          /stocking_gallery @member
+          !stocking_gallery @member
+        If no member provided, shows your own gallery.
+        """
+        target = member or ctx.author
+        user = self._ensure_user(target.id)
+        buildable_keys = list(user.get("buildables", {}).keys())
+        if not buildable_keys:
+            await self._ephemeral_reply(ctx, f"{target.display_name} has no buildables to view.")
+            return
+
+        view = self._GalleryView(self, target, buildable_keys, timeout=300.0)
+        emb, file = await view._make_embed_and_file()
+
+        # Robust send: if invoked via a slash interaction use interaction.response.send_message (or defer+followup),
+        # otherwise fall back to ctx.reply for prefix usage.
+        msg = None
+        try:
+            interaction = getattr(ctx, "interaction", None)
+            if interaction and getattr(interaction, "response", None) and not interaction.response.is_done():
+                # send using the interaction response so that subsequent edits via edit_original_response work correctly
+                await interaction.response.send_message(embed=emb, file=file, view=view)
+                try:
+                    msg = await interaction.original_response()
+                except Exception:
+                    # fallback: fetch the last message in channel (best-effort)
+                    try:
+                        msg = await ctx.channel.fetch_message(interaction.id)
+                    except Exception:
+                        msg = None
+            else:
+                # prefix flow or interaction already responded: use ctx.reply
+                msg = await ctx.reply(embed=emb, file=file, view=view, mention_author=False)
+        except Exception:
+            # last resort: send simple reply without view
+            try:
+                msg = await ctx.reply(embed=emb, mention_author=False)
+            except Exception:
+                msg = None
+
+        if msg:
+            view.message = msg
+
+    # --------- end gallery support ----------
 
     async def cog_unload(self):
         await self._save()
