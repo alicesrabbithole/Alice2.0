@@ -48,7 +48,7 @@ class AliceBot(commands.Bot):
             "cogs.reminder_cog",
             "cogs.role_utility_cog",
             "cogs.sticky_cog",
-            "cogs.copy_category_cog"
+            "cogs.copy_category_cog",
             "games.wordle_cog",
             "games.twentyone_questions_cog",
             "games.rolling_cog"
