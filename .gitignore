@@ -17,11 +17,6 @@ ENV/
 
 # --- Alice Bot Specific ---
 
-# Ignore working cogs
-cogs/rumble_admin_cog.py
-cogs/rumble_listener_cog.py
-cogs/stocking_cog.py
-
 # Ignore contents of data directory...
 data/*
 
