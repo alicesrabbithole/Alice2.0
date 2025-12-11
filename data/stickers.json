@@ -1,0 +1,14 @@
+{
+  "snowman": {
+    "file": "stickers/snowman_sticker.png",
+    "slots": 1
+  },
+  "cookie": {
+    "file": "stickers/cookie.png",
+    "slots": 1
+  },
+  "candy": {
+    "file": "stickers/candy_cane.png",
+    "slots": 1
+  }
+}

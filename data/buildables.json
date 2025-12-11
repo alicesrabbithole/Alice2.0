@@ -1,0 +1,33 @@
+{
+  "snowman": {
+    "base": "buildables/snowman/base.png",
+    "parts": {
+      "carrot": {
+        "file": "buildables/snowman/parts/carrot.png",
+        "offset": [
+          350,
+          170
+        ],
+        "z": 10
+      },
+      "hat": {
+        "file": "buildables/snowman/parts/hat.png",
+        "offset": [
+          210,
+          60
+        ],
+        "z": 30
+      },
+      "scarf": {
+        "file": "buildables/snowman/parts/scarf.png",
+        "offset": [
+          170,
+          240
+        ],
+        "z": 20
+      }
+    },
+    "capacity_slots": 3,
+    "role_on_complete": null
+  }
+}
