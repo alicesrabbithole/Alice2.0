@@ -397,7 +397,7 @@ class RumbleAdminCog(commands.Cog):
     async def rumble_test_award(self, ctx: commands.Context, member: discord.Member, channel_id: Optional[str] = None):
         """
         Simulate awarding a part to a user in the provided (or current) channel.
-        channel_id may be a mention, id string, or omitted.
+        channel_id may be a mention or id string.
         """
         listener = get_listener(self.bot)
         if not listener:
@@ -406,7 +406,6 @@ class RumbleAdminCog(commands.Cog):
 
         target_channel = ctx.channel
         if channel_id is not None:
-            # tolerate id as mention or plain digits inside a string
             cid = self._parse_snowflake(channel_id)
             if cid is None:
                 await self._ephemeral_reply(ctx, f"Channel id {channel_id} not found or bot cannot see it.")
@@ -426,20 +425,23 @@ class RumbleAdminCog(commands.Cog):
         if stocking is None:
             await self._ephemeral_reply(ctx, "StockingCog not loaded; can't test award.")
             return
+
+        # Persist + render composite, but do NOT let StockingCog announce it (announce=False).
         awarded = False
         if hasattr(stocking, "award_part"):
-            awarded = await getattr(stocking, "award_part")(member.id, buildable_key, part_key, target_channel)
+            awarded = await getattr(stocking, "award_part")(member.id, buildable_key, part_key, None, announce=False)
         elif hasattr(stocking, "award_sticker"):
-            awarded = await getattr(stocking, "award_sticker")(member.id, part_key, target_channel)
+            awarded = await getattr(stocking, "award_sticker")(member.id, part_key, None, announce=False)
         if not awarded:
             await self._ephemeral_reply(ctx, f"Failed to award {part_key} to {member.mention} (maybe already has it).")
             return
 
         emoji = PART_EMOJI.get(part_key.lower(), "")
-        color = PART_COLORS.get(part_key.lower(), DEFAULT_COLOR)
+        color_int = PART_COLORS.get(part_key.lower(), DEFAULT_COLOR)
+        color = discord.Color(color_int)
         embed = discord.Embed(
             title=f"🎉 {member.display_name} found a {part_key}!",
-            description=f"You've been awarded **{part_key}** for **{buildable_key}**. Use `/stocking show` to view your progress.",
+            description=f"You've been awarded **{part_key}** for **{buildable_key}**. Use `/mysnowman` or `/stocking show` to view your assembled snowman.",
             color=color,
         )
         embed.set_footer(text="Test award simulated by admin")

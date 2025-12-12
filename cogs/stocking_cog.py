@@ -319,6 +319,17 @@ class StockingCog(commands.Cog, name="StockingCog"):
 
     # render buildable composite
     async def render_buildable(self, user_id: int, buildable_key: str) -> Optional[Path]:
+        """
+        Render a composite for a user's buildable.
+
+        Behavior changes to handle two part image styles:
+        - sprite style (default): part image contains only the piece; use offsets from buildables.json
+        - full-canvas style: part image is already positioned on a full-size canvas (same size as base).
+          The renderer will paste it at (0,0). You can force this mode by setting "full_canvas": true
+          in the part's definition in data/buildables.json.
+
+        Also logs part/base sizes and chosen paste coordinates for debugging.
+        """
         try:
             from PIL import Image as PILImage
         except Exception:
@@ -334,7 +345,7 @@ class StockingCog(commands.Cog, name="StockingCog"):
             logger.debug("render_buildable: no base for %s", buildable_key)
             return None
 
-        # Accept absolute or relative; prefer ASSETS_DIR relative
+        # Resolve base path (accept absolute or relative to assets dir)
         base_path = Path(base_rel)
         if not base_path.exists():
             base_path = ASSETS_DIR / base_rel
@@ -348,36 +359,77 @@ class StockingCog(commands.Cog, name="StockingCog"):
             logger.exception("render_buildable: failed to open base image %s", base_path)
             return None
 
+        # Load user parts in order and build list of (z, image, paste_xy) where paste_xy is (x,y)
         user = self._ensure_user(user_id)
         ub = user.get("buildables", {}).get(buildable_key, {"parts": []})
         user_parts = ub.get("parts", [])
 
-        part_items: List[Tuple[int, "PILImage.Image", Tuple[int, int]]] = []
+        part_items = []  # List[Tuple[int, PILImage.Image, Tuple[int,int]]]
         for pkey in user_parts:
             pdef = build_def.get("parts", {}).get(pkey)
             if not pdef:
                 logger.debug("render_buildable: no part def for %s (user part %s)", buildable_key, pkey)
                 continue
-            ppath = Path(pdef.get("file", ""))
-            if not ppath.exists():
+
+            # Resolve part image path (accept absolute or relative)
+            ppath = Path(pdef.get("file", "")) if pdef.get("file") else None
+            if not ppath or not ppath.exists():
+                # try assets dir relative
                 ppath = ASSETS_DIR / pdef.get("file", "")
             if not ppath.exists():
-                logger.debug("render_buildable: asset file missing %s", ppath)
+                logger.debug("render_buildable: asset file missing %s for part %s", pdef.get("file", ""), pkey)
                 continue
+
             try:
                 img = PILImage.open(ppath).convert("RGBA")
-                offset = tuple(pdef.get("offset", [0, 0]))
-                z = int(pdef.get("z", 0))
-                part_items.append((z, img, offset))
             except Exception:
                 logger.exception("render_buildable: failed to open/convert part image %s", ppath)
                 continue
 
+            # Determine paste mode: full-canvas vs sprite with offset
+            # Priority: explicit flag in buildables.json, else auto-detect by image size == base size
+            full_canvas_flag = bool(pdef.get("full_canvas")) if isinstance(pdef.get("full_canvas"),
+                                                                           (bool, int)) else False
+            if not full_canvas_flag:
+                try:
+                    if img.size == base.size:
+                        logger.info("render_buildable: auto-detected full_canvas for part %s (img size == base size)",
+                                    pkey)
+                        full_canvas_flag = True
+                except Exception:
+                    pass
+
+            if full_canvas_flag:
+                paste_x, paste_y = 0, 0
+                logger.debug("render_buildable: part %s is full_canvas -> paste at (0,0)", pkey)
+            else:
+                # Use defined offset (default to [0,0]) and apply as top-left of part sprite
+                offset = pdef.get("offset", [0, 0]) or [0, 0]
+                try:
+                    paste_x = int(offset[0])
+                    paste_y = int(offset[1])
+                except Exception:
+                    paste_x, paste_y = 0, 0
+                logger.debug("render_buildable: part %s using offset %s -> paste at (%s,%s)", pkey, offset, paste_x,
+                             paste_y)
+
+            # Allow optional per-part anchor adjustments in pdef (e.g., "anchor": "center") later if desired
+
+            # z order (default 0)
+            try:
+                z = int(pdef.get("z", 0))
+            except Exception:
+                z = 0
+
+            part_items.append((z, img, (paste_x, paste_y)))
+
+        # Sort by z and paste
         part_items.sort(key=lambda t: t[0])
         for (_z, img, (ox, oy)) in part_items:
             try:
                 base.paste(img, (int(ox), int(oy)), img)
             except Exception:
+                # Try to clamp into base bounds if offset would result in out-of-range
                 try:
                     w, h = base.size
                     px = max(0, min(w - 1, int(ox)))
@@ -393,31 +445,6 @@ class StockingCog(commands.Cog, name="StockingCog"):
             return out
         except Exception:
             logger.exception("render_buildable: failed to save composite %s", out)
-            return None
-
-    async def _render_user_stocking(self, user_id: int) -> Optional[Path]:
-        loop = asyncio.get_running_loop()
-        user_stickers = self._ensure_user(user_id).get("stickers", [])
-        stickers_def = self._stickers_def
-        if render_stocking_image_auto is None:
-            logger.debug("_render_user_stocking: render_stocking_image_auto not available")
-            return None
-        try:
-            out = await loop.run_in_executor(
-                None,
-                render_stocking_image_auto,
-                user_id,
-                user_stickers,
-                stickers_def,
-                ASSETS_DIR,
-                "template.png",
-                4,
-                3,
-                f"stocking_{user_id}.png"
-            )
-            return out
-        except Exception:
-            logger.exception("_render_user_stocking: failed to render stocking image")
             return None
 
     # /mysnowman command — show the user's assembled snowman (composite) if parts exist, otherwise show base

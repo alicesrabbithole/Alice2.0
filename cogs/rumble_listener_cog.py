@@ -5,7 +5,8 @@ RumbleListenerCog with persistent config and embedded announcements.
 - Persists RUMBLE_BOT_IDS and CHANNEL_PART_MAP to data/rumble_listener_config.json
 - Loads config on startup; admin commands update + persist config
 - Awards buildable parts via StockingCog.award_part(..., announce=False)
-- Sends a styled embed announcement in-channel (colors per part) and attaches the part image if available
+- Sends a styled small embed announcement in-channel (colors per part) and attaches the part thumbnail if available.
+  The composite image is NOT attached here — it is saved by StockingCog and used by /mysnowman.
 """
 from __future__ import annotations
 
@@ -24,6 +25,7 @@ ASSETS_DIR = DATA_DIR / "stocking_assets"
 SEARCH_STARTER_BACK_MESSAGES = 40
 
 WINNER_TITLE_RE = re.compile(r"\bWINNER\b|WON!?", re.IGNORECASE)
+ADDITIONAL_WIN_RE = re.compile(r"\b(found (?:a|an)|received|was awarded|winner|won)\b", re.IGNORECASE)
 STARTED_BY_RE = re.compile(r"Started by\s*[:\-]?\s*(?:<@!?(\d+)>|@?([A-Za-z0-9_`~\-\s]+))", re.IGNORECASE)
 
 DEFAULT_COLOR = 0x2F3136
@@ -55,10 +57,6 @@ def ensure_data_dir():
 
 
 def _generate_part_maps_from_buildables() -> Tuple[Dict[str, str], Dict[str, int]]:
-    """
-    Load data/buildables.json and create PART_EMOJI and PART_COLORS for every part found.
-    Keys are lowercased to make lookups easy.
-    """
     buildables_path = DATA_DIR / "buildables.json"
     parts_keys = set()
     try:
@@ -87,7 +85,6 @@ def _generate_part_maps_from_buildables() -> Tuple[Dict[str, str], Dict[str, int
     return part_emoji, part_colors
 
 
-# generate PART_EMOJI and PART_COLORS at import time
 PART_EMOJI, PART_COLORS = _generate_part_maps_from_buildables()
 
 
@@ -97,13 +94,11 @@ class RumbleListenerCog(commands.Cog):
         self._lock = asyncio.Lock()
         ensure_data_dir()
         self.rumble_bot_ids: List[int] = []
-        # channel_part_map: channel_id -> (buildable_key, part_key)
         self.channel_part_map: Dict[int, Tuple[str, str]] = {}
         if initial_config:
             self._load_from_dict(initial_config)
         self._load_config_file()
 
-    # config persistence
     def _load_from_dict(self, data: Dict[str, Any]) -> None:
         rids = data.get("rumble_bot_ids", [])
         self.rumble_bot_ids = [int(x) for x in rids] if rids else []
@@ -126,7 +121,6 @@ class RumbleListenerCog(commands.Cog):
                     if isinstance(data, dict):
                         self._load_from_dict(data)
         except Exception:
-            # deliberately tolerant: do not raise on config parse errors
             return
 
     def _save_config_file(self) -> None:
@@ -139,10 +133,8 @@ class RumbleListenerCog(commands.Cog):
             with CONFIG_FILE.open("w", encoding="utf-8") as fh:
                 json.dump(out, fh, ensure_ascii=False, indent=2)
         except Exception:
-            # best-effort persistence, log if the bot logs to file/journal
             return
 
-    # extraction helpers
     @staticmethod
     def _extract_winner_ids(message: discord.Message) -> List[int]:
         # Prefer explicit mentions
@@ -167,7 +159,6 @@ class RumbleListenerCog(commands.Cog):
                 except Exception:
                     pass
 
-        # Try to extract by @username mention text if nothing else
         if not ids and message.guild and message.content:
             m = re.search(r"@([A-Za-z0-9_\-]{2,32})", message.content)
             if m:
@@ -178,7 +169,6 @@ class RumbleListenerCog(commands.Cog):
         return ids
 
     async def _find_starter_id(self, message: discord.Message) -> Optional[int]:
-        # Look in embeds fields for a "started by" line first
         for emb in message.embeds:
             for f in (emb.fields or []):
                 if "started by" in (f.name or "").lower() or "started by" in (f.value or "").lower():
@@ -194,7 +184,6 @@ class RumbleListenerCog(commands.Cog):
                             mem = discord.utils.find(lambda u: u.name == name or u.display_name == name, message.guild.members)
                             if mem:
                                 return mem.id
-        # Fall back to scanning recent channel history for "started by" lines
         try:
             async for prev in message.channel.history(limit=SEARCH_STARTER_BACK_MESSAGES, before=message.created_at, oldest_first=False):
                 content = prev.content or ""
@@ -229,10 +218,8 @@ class RumbleListenerCog(commands.Cog):
             return None
         return None
 
-    # listener
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
-        # Only consider guild messages
         if message.guild is None:
             return
         try:
@@ -240,8 +227,7 @@ class RumbleListenerCog(commands.Cog):
         except Exception:
             return
 
-        # If rumble_bot_ids configured, accept message if author is in list OR
-        # a recent prior message in channel was authored by a configured rumble bot.
+        # acceptance heuristics
         if self.rumble_bot_ids:
             if author_id in self.rumble_bot_ids:
                 pass
@@ -260,16 +246,20 @@ class RumbleListenerCog(commands.Cog):
                 if not found_recent_rumble:
                     return
 
-        # Detect a winner-style message
+        # Detect winner-style message: broaden detection with extra heuristics
         found = False
         if message.content and WINNER_TITLE_RE.search(message.content):
             found = True
+        if not found and message.content and ADDITIONAL_WIN_RE.search(message.content):
+            found = True
         for emb in message.embeds:
-            if (emb.title and WINNER_TITLE_RE.search(emb.title)) or (emb.description and WINNER_TITLE_RE.search(emb.description)):
+            if (emb.title and (WINNER_TITLE_RE.search(emb.title) or ADDITIONAL_WIN_RE.search(emb.title))) or \
+               (emb.description and (WINNER_TITLE_RE.search(emb.description) or ADDITIONAL_WIN_RE.search(emb.description))):
                 found = True
                 break
             for f in (emb.fields or []):
-                if WINNER_TITLE_RE.search(f.name or "") or WINNER_TITLE_RE.search(f.value or ""):
+                if WINNER_TITLE_RE.search(f.name or "") or WINNER_TITLE_RE.search(f.value or "") or \
+                   ADDITIONAL_WIN_RE.search(f.name or "") or ADDITIONAL_WIN_RE.search(f.value or ""):
                     found = True
                     break
             if found:
@@ -294,7 +284,7 @@ class RumbleListenerCog(commands.Cog):
             for wid in winner_ids:
                 try:
                     awarded = False
-                    # ask stocking to award and render but do not announce (listener will announce)
+                    # Persist and render composite, but DO NOT announce inside StockingCog.
                     if hasattr(stocking_cog, "award_part"):
                         awarded = await getattr(stocking_cog, "award_part")(int(wid), buildable_key, part_key, None, announce=False)
                     elif hasattr(stocking_cog, "award_sticker"):
@@ -305,46 +295,34 @@ class RumbleListenerCog(commands.Cog):
                     member = message.guild.get_member(int(wid))
                     mention = member.mention if member else f"<@{wid}>"
                     emoji = PART_EMOJI.get(part_key.lower(), "")
-                    color = PART_COLORS.get(part_key.lower(), DEFAULT_COLOR)
+                    color_int = PART_COLORS.get(part_key.lower(), DEFAULT_COLOR)
+                    color = discord.Color(color_int)
 
+                    # SMALL embed announcing the award — NO composite attached here.
                     embed = discord.Embed(
                         title=f"🎉 {member.display_name if member else mention} found a {part_key}!",
-                        description=f"You've been awarded **{part_key}** for **{buildable_key}**. Use `/stocking show` to view your progress.",
+                        description=f"You've been awarded **{part_key}** for **{buildable_key}**. Use `/mysnowman` or `/stocking show` to view your assembled snowman.",
                         color=color,
                     )
                     embed.set_footer(text=f"Congratulations {member.display_name if member else mention}!")
 
+                    # Try to attach the specific part image as a thumbnail (not the composite)
                     try:
-                        # prefer full composite if available
-                        composite = None
-                        try:
-                            if hasattr(stocking_cog, "render_buildable"):
-                                composite = await stocking_cog.render_buildable(int(wid), buildable_key)
-                        except Exception:
-                            composite = None
-
-                        if composite and composite.exists():
-                            attached = discord.File(composite, filename=composite.name)
-                            embed.set_image(url=f"attachment://{composite.name}")
+                        part_img = ASSETS_DIR / f"buildables/{buildable_key}/parts/{part_key}.png"
+                        if not part_img.exists():
+                            part_img = ASSETS_DIR / f"stickers/{part_key}.png"
+                        if part_img.exists():
+                            attached = discord.File(part_img, filename=part_img.name)
+                            embed.set_thumbnail(url=f"attachment://{part_img.name}")
                             await message.channel.send(content=f"{emoji} {mention}", embed=embed, file=attached)
                         else:
-                            # Try to attach the specific part image from buildables/parts or stickers fallback
-                            part_img = ASSETS_DIR / f"buildables/{buildable_key}/parts/{part_key}.png"
-                            if not part_img.exists():
-                                part_img = ASSETS_DIR / f"stickers/{part_key}.png"
-                            if part_img.exists():
-                                attached = discord.File(part_img, filename=part_img.name)
-                                embed.set_thumbnail(url=f"attachment://{part_img.name}")
-                                await message.channel.send(content=f"{emoji} {mention}", embed=embed, file=attached)
-                            else:
-                                await message.channel.send(content=f"{emoji} {mention}", embed=embed)
+                            await message.channel.send(content=f"{emoji} {mention}", embed=embed)
                     except Exception:
                         try:
                             await message.channel.send(content=f"{emoji} {mention}", embed=embed)
                         except Exception:
                             pass
                 except Exception:
-                    # swallow per-winner errors so others still process
                     continue
 
     def get_config_snapshot(self) -> Dict[str, Any]:
@@ -355,4 +333,5 @@ class RumbleListenerCog(commands.Cog):
 
 
 async def setup(bot: commands.Bot):
-    await bot.add_cog(RumbleListenerCog(bot))
+    listener = RumbleListenerCog(bot)
+    await bot.add_cog(listener)
