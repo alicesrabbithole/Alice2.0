@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """
-RumbleListenerCog — full replacement.
+RumbleListenerCog — full replacement (refactored).
 
-Features:
-- Robust winner extraction (mentions, <@id>, embed fields, "Participants:" blocks, "WINNER" lines).
-- Async name->member resolution with safe fetch fallback for small guilds.
-- Per-channel mapping, global fallback mapping (channel id 0), and best-effort parsing.
-- Awards parts via StockingCog.award_part(..., announce=False), and posts a small embed with part thumbnail.
+Behavior highlights:
+- Robust winner extraction (explicit mentions, <@id> tokens, embed WINNER fields, Participants blocks).
+- Async name->member resolution with safe fetch fallback for small guilds and a fuzzy-match fallback.
+- Announces with a small ping line outside the embed (so the embed itself is plaintext and non-pinging).
+- Embed omits footer and part thumbnail and does not suggest `/stocking show`.
+- Sanitizes candidate strings to avoid accidental mention tokens inside embed text.
 - PART_EMOJI / PART_COLORS auto-generated from data/buildables.json.
 """
 from __future__ import annotations
@@ -27,17 +28,11 @@ logger = logging.getLogger(__name__)
 DATA_DIR = Path("data")
 CONFIG_FILE = DATA_DIR / "rumble_listener_config.json"
 ASSETS_DIR = DATA_DIR / "stocking_assets"
-SEARCH_STARTER_BACK_MESSAGES = 40
 
 WINNER_TITLE_RE = re.compile(r"\bWINNER\b|WON!?", re.IGNORECASE)
 ADDITIONAL_WIN_RE = re.compile(r"\b(found (?:a|an)|received|was awarded|winner|won)\b", re.IGNORECASE)
-PART_FOR_BUILDABLE_RE = re.compile(r"(?:found|received|earned|got)\s+(?P<part>\w+)(?:\s+for\s+(?P<buildable>\w+))?", re.IGNORECASE)
-STARTED_BY_RE = re.compile(
-    r"Started by\s*[:\-]?\s*(?:<@!?(\d+)>|@?([A-Za-z0-9_`~\-\s]+))",
-    re.IGNORECASE,
-)
-
 DEFAULT_COLOR = 0x2F3136
+
 
 # Canonical small mapping for common part names; used as first preference.
 _CANONICAL_EMOJI: Dict[str, str] = {
@@ -135,8 +130,9 @@ def _extract_participants_block(text: str) -> List[str]:
         if not ln:
             break
         ln_clean = ln.lstrip("•-@").strip()
-        ln_clean = re.sub(r"^[^\w@#@]+", "", ln_clean).strip()
-        candidates.append(ln_clean)
+        ln_clean = re.sub(r"^[^\w@#]+", "", ln_clean).strip()
+        if ln_clean:
+            candidates.append(ln_clean)
         if len(candidates) >= 50:
             break
     return candidates
@@ -219,11 +215,11 @@ class RumbleListenerCog(commands.Cog):
             if not raw:
                 return ""
             s = raw.strip()
-            # Remove embedded mention tokens like <@12345>
+            # Remove explicit mention tokens like <@12345>
             s = re.sub(r"<@!?\d+>", "", s)
-            # Replace common bullet/emoji prefixes and punctuation at start
-            s = re.sub(r"^[\s\-\u2022•\*#@\p{So}\p{Sk}]+", "", s)  # leading bullets/emojis/ats
-            # Remove surrounding punctuation (commas, pipes, etc.)
+            # Remove common leading non-word characters (bullets, emoji, punctuation)
+            s = re.sub(r"^[^\w@#]+", "", s, flags=re.UNICODE)
+            # Trim surrounding punctuation and special chars
             s = s.strip(" \t\n\r:–—-•·▪|,")
             # Collapse multiple spaces
             s = re.sub(r"\s+", " ", s)
@@ -258,16 +254,13 @@ class RumbleListenerCog(commands.Cog):
         # 2) Embed scanning: title, description, and fields
         try:
             for emb in message.embeds:
-                # gather embed text for participants search
-                emb_text = " ".join(
-                    filter(None, [emb.title or "", emb.description or ""] + [f.value for f in (emb.fields or [])]))
+                emb_text = " ".join(filter(None, [emb.title or "", emb.description or ""] + [f.value for f in (emb.fields or [])]))
 
                 # a) fields explicitly labelled WINNER or containing WINNER art
                 for f in (emb.fields or []):
                     fname = (f.name or "").strip()
                     fval = (f.value or "").strip()
                     if WINNER_TITLE_RE.search(fname) or WINNER_TITLE_RE.search(fval):
-                        # take the first reasonable non-empty line from the value
                         for line in fval.splitlines():
                             line = line.strip()
                             if line:
@@ -329,10 +322,11 @@ class RumbleListenerCog(commands.Cog):
                 break
 
         return out
+
     async def _match_names_to_member_ids(self, guild: discord.Guild, candidates: List[str]) -> List[int]:
         """
-        Async name->member resolution. Will try cached members first, then (only if guild is small)
-        fetch members from the API as a fallback.
+        Async name->member resolution. Uses cached members primarily and may fetch members for small guilds.
+        Adds a difflib fallback to tolerate minor formatting differences.
         """
         if not guild or not candidates:
             return []
@@ -345,13 +339,14 @@ class RumbleListenerCog(commands.Cog):
             except Exception:
                 norm_map[m.id] = ((m.name or "").lower(), (m.display_name or "").lower())
 
-        async def _try_match(norm_map_local: Dict[int, Tuple[str, str]]) -> List[int]:
+        async def _try_match(norm_map_local: Dict[int, Tuple[str, str]], candidates_local: List[str]) -> List[int]:
             out: List[int] = []
-            for cand in candidates:
+            for cand in candidates_local:
                 nc = _normalize_name(cand)
                 if not nc:
                     continue
                 found = None
+                # exact normalized equality
                 for mid, (nname, dname) in norm_map_local.items():
                     try:
                         if nname and nname == nc:
@@ -365,6 +360,7 @@ class RumbleListenerCog(commands.Cog):
                 if found:
                     out.append(found)
                     continue
+                # containment / substring match
                 for mid, (nname, dname) in norm_map_local.items():
                     try:
                         if nname and (nc in nname or nname in nc):
@@ -379,6 +375,7 @@ class RumbleListenerCog(commands.Cog):
                     if found not in out:
                         out.append(found)
                     continue
+                # prefix token fallback
                 tokens = nc.split()
                 if tokens:
                     t0 = tokens[0]
@@ -392,7 +389,8 @@ class RumbleListenerCog(commands.Cog):
                             continue
             return out
 
-        matched_ids = await _try_match(norm_map)
+        matched_ids = await _try_match(norm_map, candidates)
+
         # If nothing matched and guild is small-ish, attempt to fetch members
         if not matched_ids:
             try:
@@ -402,111 +400,149 @@ class RumbleListenerCog(commands.Cog):
                     async for m in guild.fetch_members(limit=None):
                         fetched.append(m)
                     norm_map = {m.id: (_normalize_name(m.name or ""), _normalize_name(m.display_name or "")) for m in fetched}
-                    matched_ids = await _try_match(norm_map)
+                    matched_ids = await _try_match(norm_map, candidates)
             except Exception:
                 logger.exception("rumble_listener: failed to fetch members for name resolution")
 
+        # Fuzzy-match (difflib) fallback if still nothing
+        if not matched_ids:
+            try:
+                import difflib
+                name_to_id: Dict[str, int] = {}
+                for mid, (nname, dname) in norm_map.items():
+                    if nname:
+                        name_to_id.setdefault(nname, mid)
+                    if dname:
+                        name_to_id.setdefault(dname, mid)
+                pool = list(name_to_id.keys())
+                for cand in candidates:
+                    nc = _normalize_name(cand)
+                    if not nc:
+                        continue
+                    best = difflib.get_close_matches(nc, pool, n=1, cutoff=0.6)
+                    if best:
+                        bid = name_to_id.get(best[0])
+                        if bid and bid not in matched_ids:
+                            matched_ids.append(bid)
+            except Exception:
+                logger.exception("rumble_listener: fuzzy matching failed")
+
+        # dedupe preserve order
         seen = set()
         out_final = []
         for mid in matched_ids:
             if mid not in seen:
                 seen.add(mid)
                 out_final.append(mid)
+        logger.debug("rumble_listener: matching result for candidates=%r -> %r", candidates, out_final)
         return out_final
 
     async def _extract_winner_ids(self, message: discord.Message) -> List[int]:
         """
-        Robust async winner ID extraction that:
-        - Prefers explicit mentions on the same message
-        - Falls back to scanning recent prior messages for mentions (useful when embed follows a mention)
-        - Scans content and embeds for <@id> patterns
-        - If necessary, extracts plain-text candidate names from WINNER fields and resolves them to member IDs
+        Async extraction that:
+        - returns explicit mentions first,
+        - searches for <@id> tokens in message/embeds,
+        - searches nearby messages (before and after) for mentions,
+        - prioritizes names from embed WINNER fields,
+        - resolves candidates to IDs via _match_names_to_member_ids (with fuzzy fallback).
         """
         # 1) explicit mentions on the message (best)
         try:
             if message.mentions:
-                return [m.id for m in message.mentions]
-        except Exception:
-            pass
-
-        # 2) look for explicit mention tokens (<@12345>) in the message content or embed text
-        try:
-            ids = []
-            if message.content:
-                ids.extend(re.findall(r"<@!?(?P<id>\d+)>", message.content))
-            for emb in message.embeds:
-                text = " ".join(
-                    filter(None, [emb.title or "", emb.description or ""] + [f.value for f in (emb.fields or [])]))
-                ids.extend(re.findall(r"<@!?(?P<id>\d+)>", text))
-            ids = [int(x) for x in dict.fromkeys(ids)]  # dedupe preserving order
-            if ids:
+                ids = [m.id for m in message.mentions]
+                logger.debug("rumble_listener: explicit mentions on message -> %r", ids)
                 return ids
         except Exception:
             pass
 
-        # 3) If we didn't find direct mentions, scan recent prior messages for mentions.
-        #    Embed often follows a short plain-text message that contains the ping.
+        # 2) explicit <@id> patterns in the message content or embed text
+        ids: List[int] = []
+        try:
+            ids.extend(self._extract_ids_from_text(message.content or ""))
+            for emb in message.embeds:
+                emb_text = " ".join(filter(None, [emb.title or "", emb.description or ""] + [f.value for f in (emb.fields or [])]))
+                ids.extend(self._extract_ids_from_text(emb_text))
+        except Exception:
+            logger.exception("rumble_listener: id extraction failed")
+        ids = [int(x) for x in dict.fromkeys(ids)]
+        if ids:
+            logger.debug("rumble_listener: found explicit id tokens -> %r", ids)
+            return ids
+
+        # 3) look nearby: recent messages before and after for mention tokens
         try:
             async for prev in message.channel.history(limit=8, before=message.created_at, oldest_first=False):
                 if prev.mentions:
-                    return [m.id for m in prev.mentions]
-                # also check textual <@id> in prior message
-                if prev.content:
-                    m_ids = re.findall(r"<@!?(?P<id>\d+)>", prev.content)
-                    if m_ids:
-                        return [int(m_ids[0])]
+                    ids = [m.id for m in prev.mentions]
+                    logger.debug("rumble_listener: found mentions in previous message -> %r", ids)
+                    return ids
+                mid_tokens = re.findall(r"<@!?(?P<id>\d+)>", prev.content or "")
+                if mid_tokens:
+                    ids = [int(mid_tokens[0])]
+                    logger.debug("rumble_listener: found id token in previous message -> %r", ids)
+                    return ids
+            async for after in message.channel.history(limit=6, after=message.created_at, oldest_first=True):
+                if after.mentions:
+                    ids = [m.id for m in after.mentions]
+                    logger.debug("rumble_listener: found mentions in next message -> %r", ids)
+                    return ids
+                mid_tokens = re.findall(r"<@!?(?P<id>\d+)>", after.content or "")
+                if mid_tokens:
+                    ids = [int(mid_tokens[0])]
+                    logger.debug("rumble_listener: found id token in next message -> %r", ids)
+                    return ids
         except Exception:
-            pass
+            logger.exception("rumble_listener: nearby history scan failed")
 
-        # 4) No explicit mentions nearby. Try to extract candidate names from embed WINNER fields / description.
-        candidates = []
+        # 4) No explicit ids found — extract candidate names from embed WINNER fields first
+        winner_candidates: List[str] = []
         try:
-            # look for fields or descriptions that include the word WINNER or the WINNER art block followed by a name line
             for emb in message.embeds:
-                # fields with "WINNER" in name or value
                 for f in (emb.fields or []):
                     if WINNER_TITLE_RE.search(f.name or "") or WINNER_TITLE_RE.search(f.value or ""):
-                        # take first non-empty line from the value as candidate
-                        for ln in (f.value or "").splitlines():
-                            ln = ln.strip()
-                            if ln:
-                                candidates.append(ln)
+                        for line in (f.value or "").splitlines():
+                            line = line.strip()
+                            if line:
+                                winner_candidates.append(line)
                                 break
-                # check description/title for "WINNER" followed by a line
                 if emb.title and WINNER_TITLE_RE.search(emb.title) and emb.description:
-                    for ln in emb.description.splitlines():
-                        ln = ln.strip()
-                        if ln:
-                            candidates.append(ln)
+                    for line in emb.description.splitlines():
+                        line = line.strip()
+                        if line:
+                            winner_candidates.append(line)
                             break
-                # fallback: sometimes the winner name is present as a short line in description
-                if emb.description:
-                    # look for lines under "WINNER" keyword in the description
-                    lines = emb.description.splitlines()
-                    for i, ln in enumerate(lines):
-                        if WINNER_TITLE_RE.search(ln):
-                            if i + 1 < len(lines):
-                                cand = lines[i + 1].strip()
-                                if cand:
-                                    candidates.append(cand)
         except Exception:
-            pass
+            logger.exception("rumble_listener: embed winner-field extraction failed")
 
-        # dedupe candidates in order
+        # If none found in winner fields, fall back to broader extractor
+        if not winner_candidates:
+            winner_candidates = self._collect_candidate_names(message)
+
+        # dedupe preserving order
         seen = set()
-        candidates = [c for c in candidates if c and not (c in seen or seen.add(c))]
+        candidates = []
+        for c in winner_candidates:
+            c = (c or "").strip()
+            if not c:
+                continue
+            if c not in seen:
+                seen.add(c)
+                candidates.append(c)
+        logger.debug("rumble_listener: candidates (priority WINNER fields first) = %r", candidates)
 
         if not candidates:
             return []
 
-        # 5) resolve candidate plain-text names to member IDs (async helper will try cached members then fetch if allowed)
+        # 5) resolve candidate names to member IDs
         try:
             guild = message.guild
-            if not guild:
+            if guild is None:
                 return []
             matched = await self._match_names_to_member_ids(guild, candidates)
+            logger.debug("rumble_listener: matched ids for candidates=%r -> %r", candidates, matched)
             return matched
         except Exception:
+            logger.exception("rumble_listener: name->id matching failed")
             return []
 
     # listener
@@ -536,7 +572,7 @@ class RumbleListenerCog(commands.Cog):
                 if not found_recent_rumble:
                     return
 
-        # Detect a winner-style message
+        # Detect a winner-style message (broad heuristics)
         found = False
         if message.content and WINNER_TITLE_RE.search(message.content):
             found = True
@@ -605,8 +641,7 @@ class RumbleListenerCog(commands.Cog):
                     awarded = False
                     # Persist the award (StockingCog handles saving/rendering). Do not let it announce (announce=False).
                     if hasattr(stocking_cog, "award_part"):
-                        awarded = await getattr(stocking_cog, "award_part")(int(wid), buildable_key, part_key, None,
-                                                                            announce=False)
+                        awarded = await getattr(stocking_cog, "award_part")(int(wid), buildable_key, part_key, None, announce=False)
                     elif hasattr(stocking_cog, "award_sticker"):
                         awarded = await getattr(stocking_cog, "award_sticker")(int(wid), part_key, None, announce=False)
                     if not awarded:
@@ -615,20 +650,18 @@ class RumbleListenerCog(commands.Cog):
                     # Get member object if available
                     member = message.guild.get_member(int(wid)) if message.guild else None
 
-                    # Choose display text: prefer guild member display_name (no mention), otherwise use candidate text if available
-                    display_text = None
+                    # Choose display text: prefer the candidate plain-text name we extracted (id_map),
+                    # otherwise fall back to the member.name, then a generic fallback.
                     try:
-                        if member:
-                            display_text = member.display_name
-                        else:
-                            display_text = id_map.get(int(wid))
+                        display_text = id_map.get(int(wid))
+                        if not display_text and member:
+                            display_text = member.name
                         if not display_text:
-                            # fallback: first candidate, or formatted user id text (no ping)
                             display_text = candidates[0] if candidates else f"User {wid}"
                     except Exception:
                         display_text = f"User {wid}"
 
-                    # --- SANITIZE display_text to avoid accidental pings ---
+                    # Sanitize display_text to ensure embed text will not contain mention tokens
                     try:
                         def _mention_repl(m):
                             try:
@@ -636,49 +669,41 @@ class RumbleListenerCog(commands.Cog):
                                 if message.guild:
                                     mobj = message.guild.get_member(mid)
                                     if mobj:
-                                        return mobj.display_name
+                                        return mobj.name
                                 return f"User {mid}"
                             except Exception:
                                 return ""
-
-                        # replace any <@123...> mention tokens with a safe plain name
                         display_text = re.sub(r"<@!?(\d+)>", _mention_repl, str(display_text))
                     except Exception:
-                        # fallback: remove any remaining mention tokens
                         display_text = re.sub(r"<@!?\d+>", "User", str(display_text))
-                    # -----------------------------------------------------
 
                     emoji = PART_EMOJI.get(part_key.lower(), "")
                     color_int = PART_COLORS.get(part_key.lower(), DEFAULT_COLOR)
                     color = discord.Color(color_int)
 
-                    # Use plain text (no <@..>) in title/description/footer
+                    # Build embed (NO footer, NO part thumbnail; and do NOT suggest /stocking show)
                     embed = discord.Embed(
                         title=f"🎉 {display_text} found a {part_key}!",
-                        description=f"You've been awarded **{part_key}** for **{buildable_key}**. Use `/mysnowman` or `/stocking show` to view your assembled snowman.",
+                        description=f"You've been awarded **{part_key}** for **{buildable_key}**.",
                         color=color,
                     )
-                    embed.set_footer(text=f"Congratulations {display_text}!")
 
-                    # Try to attach the specific part image as a thumbnail (not the composite)
+                    # Announce: small ping line outside the embed (so embed remains plaintext)
                     try:
-                        part_img = ASSETS_DIR / f"buildables/{buildable_key}/parts/{part_key}.png"
-                        if not part_img.exists():
-                            part_img = ASSETS_DIR / f"stickers/{part_key}.png"
-                        if part_img.exists():
-                            attached = discord.File(part_img, filename=part_img.name)
-                            embed.set_thumbnail(url=f"attachment://{part_img.name}")
-                            await message.channel.send(content=f"{emoji} {display_text}", embed=embed, file=attached)
+                        if member:
+                            small_ping = f"-# {member.mention}"
                         else:
-                            await message.channel.send(content=f"{emoji} {display_text}", embed=embed)
+                            small_ping = f"-# {display_text}"
+                        await message.channel.send(content=small_ping, embed=embed)
                     except Exception:
                         try:
-                            await message.channel.send(content=f"{emoji} {display_text}", embed=embed)
+                            await message.channel.send(embed=embed)
                         except Exception:
                             logger.exception("rumble_listener: failed to send award announcement for %s", display_text)
                 except Exception:
                     logger.exception("rumble_listener: individual award handling failed for user %s", wid)
                     continue
+
     def get_config_snapshot(self) -> Dict[str, Any]:
         return {
             "rumble_bot_ids": self.rumble_bot_ids,
