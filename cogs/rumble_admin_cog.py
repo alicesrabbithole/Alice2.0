@@ -1,6 +1,20 @@
 #!/usr/bin/env python3
-# Discord admin commands to manage RumbleListener config and test awards.
-from typing import Optional, Tuple, Dict, Any, List, Union
+"""
+Discord admin commands to manage RumbleListener config and test awards.
+
+Provides:
+- /rumble_list, /rumble_show_config
+- /rumble_set_channel_part, /rumble_remove_channel
+- /rumble_preview
+- /rumble_test_award (accepts optional channel id/mention as string)
+- sync_guild_commands (owner only)
+
+This version auto-generates PART_EMOJI and PART_COLORS from data/buildables.json so
+all parts defined there (e.g., your 7 snowman pieces) will have sensible defaults.
+"""
+from __future__ import annotations
+
+from typing import Optional, Tuple, Dict, Any, List
 import json
 import re
 from pathlib import Path
@@ -16,7 +30,7 @@ ASSETS_DIR = DATA_DIR / "stocking_assets"
 DEFAULT_COLOR = 0x2F3136
 
 # Canonical small mapping for common part names; used as first preference.
-_CANONICAL_EMOJI = {
+_CANONICAL_EMOJI: Dict[str, str] = {
     "hat": "🎩",
     "scarf": "🧣",
     "carrot": "🥕",
@@ -25,7 +39,7 @@ _CANONICAL_EMOJI = {
     "buttons": "⚪",
     "arms": "✋",
 }
-_CANONICAL_COLORS = {
+_CANONICAL_COLORS: Dict[str, int] = {
     "hat": 0x001F3B,       # navy
     "scarf": 0x8B0000,     # dark red
     "carrot": 0xFFA500,    # orange
@@ -57,6 +71,7 @@ def _generate_part_maps_from_buildables() -> Tuple[Dict[str, str], Dict[str, int
         part_colors[key_lower] = color
 
     if not part_emoji:
+        # fallback canonical set so UI doesn't break
         for k, v in _CANONICAL_EMOJI.items():
             part_emoji[k] = v
             part_colors[k] = _CANONICAL_COLORS.get(k, DEFAULT_COLOR)
@@ -64,6 +79,7 @@ def _generate_part_maps_from_buildables() -> Tuple[Dict[str, str], Dict[str, int
     return part_emoji, part_colors
 
 
+# Generated maps used throughout this cog
 PART_EMOJI, PART_COLORS = _generate_part_maps_from_buildables()
 
 
@@ -131,6 +147,10 @@ class RumbleAdminCog(commands.Cog):
         self.bot = bot
 
     async def _ephemeral_reply(self, ctx: commands.Context, content: str, *, mention_author: bool = False):
+        """
+        Prefer ephemeral interaction responses when available for admin commands.
+        Falls back to ctx.reply or ctx.send for prefix invocations.
+        """
         try:
             if getattr(ctx, "interaction", None) and getattr(ctx.interaction, "response", None) and not ctx.interaction.response.is_done():
                 await ctx.interaction.response.send_message(content, ephemeral=True)
@@ -146,6 +166,7 @@ class RumbleAdminCog(commands.Cog):
                 pass
 
     def _parse_snowflake(self, raw: str) -> Optional[int]:
+        """Tolerant snowflake parsing from mention or pasted text. Returns int or None."""
         if not raw:
             return None
         s = str(raw).strip()
@@ -211,6 +232,65 @@ class RumbleAdminCog(commands.Cog):
         else:
             text += "  (none)\n"
         await self._ephemeral_reply(ctx, f"```\n{text}\n```")
+
+    @commands.hybrid_command(name="rumble_remove_bot", description="(Owner) Clear the configured rumble bot (or remove only if matches provided id).")
+    @commands.is_owner()
+    async def rumble_remove_bot(self, ctx: commands.Context, bot_id: Optional[str] = None):
+        """
+        Remove the configured rumble bot. If bot_id is provided, only removes if it matches the stored id.
+        If no bot_id is provided, clears any configured rumble bot.
+        """
+        listener = get_listener(self.bot)
+        if not listener:
+            await self._ephemeral_reply(ctx, "RumbleListenerCog is not loaded.")
+            return
+
+        stored_id = None
+        # read stored id defensively from multiple possible attributes
+        try:
+            stored_id = int(getattr(listener, "rumble_bot_id"))
+        except Exception:
+            try:
+                lst = getattr(listener, "rumble_bot_ids", None)
+                if isinstance(lst, (list, tuple)) and lst:
+                    stored_id = int(lst[0])
+            except Exception:
+                stored_id = None
+
+        if bot_id:
+            bid_int = self._parse_snowflake(bot_id)
+            if not bid_int:
+                await self._ephemeral_reply(ctx, "Please provide a valid bot id to remove.")
+                return
+            if stored_id is None:
+                await self._ephemeral_reply(ctx, f"No rumble bot is configured (nothing to remove).")
+                return
+            if bid_int != stored_id:
+                await self._ephemeral_reply(ctx, f"Configured rumble bot ({stored_id}) does not match the provided id ({bid_int}); no changes made.")
+                return
+
+        # Clear stored id
+        try:
+            if hasattr(listener, "rumble_bot_id"):
+                setattr(listener, "rumble_bot_id", None)
+        except Exception:
+            pass
+        try:
+            listener.rumble_bot_ids = []
+        except Exception:
+            try:
+                if hasattr(listener, "rumble_bot_ids"):
+                    listener.rumble_bot_ids.clear()
+            except Exception:
+                pass
+
+        try:
+            if hasattr(listener, "_save_config_file"):
+                listener._save_config_file()
+        except Exception:
+            pass
+
+        await self._ephemeral_reply(ctx, f"Cleared configured rumble bot (was {stored_id})." if stored_id else "Cleared configured rumble bot.")
 
     @commands.hybrid_command(name="rumble_set_channel_part", description="Set buildable:part to award for a channel")
     @commands.has_permissions(manage_guild=True)
@@ -314,7 +394,11 @@ class RumbleAdminCog(commands.Cog):
 
     @commands.hybrid_command(name="rumble_test_award", description="Simulate awarding a part to a user (for testing)")
     @commands.has_permissions(manage_guild=True)
-    async def rumble_test_award(self, ctx: commands.Context, member: discord.Member, channel_id: Optional[Union[str, int]] = None):
+    async def rumble_test_award(self, ctx: commands.Context, member: discord.Member, channel_id: Optional[str] = None):
+        """
+        Simulate awarding a part to a user in the provided (or current) channel.
+        channel_id may be a mention, id string, or omitted.
+        """
         listener = get_listener(self.bot)
         if not listener:
             await self._ephemeral_reply(ctx, "RumbleListenerCog is not loaded.")
@@ -322,11 +406,8 @@ class RumbleAdminCog(commands.Cog):
 
         target_channel = ctx.channel
         if channel_id is not None:
-            cid = None
-            if isinstance(channel_id, int):
-                cid = int(channel_id)
-            elif isinstance(channel_id, str):
-                cid = self._parse_snowflake(channel_id)
+            # tolerate id as mention or plain digits inside a string
+            cid = self._parse_snowflake(channel_id)
             if cid is None:
                 await self._ephemeral_reply(ctx, f"Channel id {channel_id} not found or bot cannot see it.")
                 return
@@ -378,6 +459,7 @@ class RumbleAdminCog(commands.Cog):
     @commands.command(name="sync_guild_commands")
     @commands.is_owner()
     async def sync_guild_commands(self, ctx: commands.Context):
+        """Force a guild-only slash command sync (immediate)."""
         try:
             await self.bot.tree.sync(guild=ctx.guild)
             await ctx.reply("Synced commands to this guild.", mention_author=False)
