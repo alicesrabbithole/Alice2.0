@@ -6,7 +6,7 @@ StockingCog with buildable assemblies (snowman example)
 - Loads sticker/buildable defs from data/stickers.json and data/buildables.json
 - API: award_sticker(user_id, sticker_key, channel) and award_part(user_id, buildable_key, part_key, channel, announce=True)
 - Renders composites into data/stocking_assets/*
-- Minimal commands omitted here; keep your existing command handlers if you have them
+- Adds /mysnowman command to show the base snowman only (no composite/background)
 """
 from __future__ import annotations
 
@@ -454,6 +454,53 @@ class StockingCog(commands.Cog, name="StockingCog"):
         except Exception:
             logger.exception("_render_user_stocking: failed to render stocking image")
             return None
+
+    # /mysnowman command — show only the base (no composite/background)
+    @commands.hybrid_command(name="mysnowman", description="Show the base snowman image (no background/composite).")
+    async def mysnowman(self, ctx: commands.Context):
+        build_def = self._buildables_def.get("snowman")
+        if not build_def:
+            await self._ephemeral_reply(ctx, "No snowman buildable configured.", mention_author=False)
+            return
+
+        base_rel = build_def.get("base")
+        if not base_rel:
+            await self._ephemeral_reply(ctx, "Snowman base image not configured.", mention_author=False)
+            return
+
+        # Resolve path: accept absolute or relative-to-assets
+        base_path = Path(base_rel)
+        if not base_path.exists():
+            base_path = ASSETS_DIR / base_rel
+        if not base_path.exists():
+            # Also try repo-root relative
+            base_path = Path.cwd() / base_rel
+        if not base_path.exists():
+            await self._ephemeral_reply(ctx, "Base snowman image not found on disk.", mention_author=False)
+            return
+
+        # Send the base image as attachment with an embed
+        try:
+            # Try using PIL to re-encode into PNG to avoid content-type issues
+            from PIL import Image as PILImage  # local import to avoid hard dependency until used
+            with PILImage.open(base_path).convert("RGBA") as img:
+                buf = BytesIO()
+                img.save(buf, format="PNG")
+                buf.seek(0)
+                df = discord.File(buf, filename="mysnowman.png")
+                embed = discord.Embed(title="Your Snowman (base)", color=discord.Color.dark_blue())
+                embed.set_image(url="attachment://mysnowman.png")
+                await ctx.reply(embed=embed, file=df, mention_author=False)
+                return
+        except Exception:
+            # Fallback: send the file directly if PIL unavailable or fails
+            try:
+                await ctx.reply(file=discord.File(base_path, filename=base_path.name), mention_author=False)
+                return
+            except Exception as exc:
+                logger.exception("mysnowman: failed to send base image: %s", exc)
+                await self._ephemeral_reply(ctx, "Failed to send the base snowman image.", mention_author=False)
+                return
 
     async def _maybe_award_role(self, user_id: int, guild: Optional[discord.Guild]) -> None:
         if AUTO_ROLE_ID is None or guild is None:
