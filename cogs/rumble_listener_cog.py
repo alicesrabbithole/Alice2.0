@@ -1,18 +1,19 @@
 #!/usr/bin/env python3
 """
-RumbleListenerCog with improved winner extraction for plain-text/embed winner names.
+RumbleListenerCog — full replacement.
 
-Improvements:
-- Prefer explicit mentions and <@id> references.
-- Parse embed fields, description, and content for "WINNER" labels and the following name lines.
-- Parse "Participants:" blocks for candidate names.
-- Normalize names and match against guild members (exact normalized equality first, then substring).
-- Works for the Rumble Royale format you pasted (WINNER in an embed field, participants block, etc.)
+Features:
+- Robust winner extraction (mentions, <@id>, embed fields, "Participants:" blocks, "WINNER" lines).
+- Async name->member resolution with safe fetch fallback for small guilds.
+- Per-channel mapping, global fallback mapping (channel id 0), and best-effort parsing.
+- Awards parts via StockingCog.award_part(..., announce=False), and posts a small embed with part thumbnail.
+- PART_EMOJI / PART_COLORS auto-generated from data/buildables.json.
 """
 from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import re
 import unicodedata
 from pathlib import Path
@@ -20,6 +21,8 @@ from typing import Dict, List, Optional, Tuple, Any
 
 import discord
 from discord.ext import commands
+
+logger = logging.getLogger(__name__)
 
 DATA_DIR = Path("data")
 CONFIG_FILE = DATA_DIR / "rumble_listener_config.json"
@@ -37,7 +40,7 @@ STARTED_BY_RE = re.compile(
 DEFAULT_COLOR = 0x2F3136
 
 # Canonical small mapping for common part names; used as first preference.
-_CANONICAL_EMOJI = {
+_CANONICAL_EMOJI: Dict[str, str] = {
     "hat": "🎩",
     "scarf": "🧣",
     "carrot": "🥕",
@@ -47,7 +50,7 @@ _CANONICAL_EMOJI = {
     "arms": "✋",
 }
 # color choices by semantic part name (hex ints)
-_CANONICAL_COLORS = {
+_CANONICAL_COLORS: Dict[str, int] = {
     "hat": 0x001F3B,  # navy
     "scarf": 0x8B0000,
     "carrot": 0xFFA500,
@@ -105,13 +108,10 @@ def _normalize_name(s: str) -> str:
     """
     if not s:
         return ""
-    # Unicode normalize and remove combining marks
     nk = unicodedata.normalize("NFKD", s)
     nk = "".join(ch for ch in nk if not unicodedata.combining(ch))
     nk = nk.lower()
-    # Replace punctuation with space
     nk = re.sub(r"[^\w\s]", " ", nk)
-    # Collapse whitespace
     nk = re.sub(r"\s+", " ", nk).strip()
     return nk
 
@@ -124,35 +124,24 @@ def _extract_participants_block(text: str) -> List[str]:
     candidates: List[str] = []
     if not text:
         return candidates
-    # find the Participants: header
     m = re.search(r"participants\s*[:\-]?\s*(?::)?", text, re.IGNORECASE)
     if not m:
         return candidates
     start = m.end()
-    # Capture until next blank line followed by capitalized header (heuristic) or until end
     tail = text[start:]
-    # split into lines and take the first block of up to 20 lines (or until an empty line)
     lines = tail.splitlines()
     for ln in lines:
         ln = ln.strip()
         if not ln:
             break
-        # each participant line often begins with @ or an emoji then a name; strip leading characters
-        # take the last token sequence as name (after optional @ or emoji)
-        # remove leading "@" if present
-        # also remove extra commas/bullets
         ln_clean = ln.lstrip("•-@").strip()
-        # sometimes the line may look like "@Name", or "• @Name", or "emoji Name"
-        # Remove common leading emojis / markers using regex
         ln_clean = re.sub(r"^[^\w@#@]+", "", ln_clean).strip()
-        # if ln_clean contains multiple tokens but includes an @mention like <@...>, keep that literal
         candidates.append(ln_clean)
         if len(candidates) >= 50:
             break
     return candidates
 
 
-# --- Winner extraction logic ----------------------------------------------
 class RumbleListenerCog(commands.Cog):
     def __init__(self, bot: commands.Bot, initial_config: Optional[Dict[str, Any]] = None):
         self.bot = bot
@@ -187,7 +176,7 @@ class RumbleListenerCog(commands.Cog):
                     if isinstance(data, dict):
                         self._load_from_dict(data)
         except Exception:
-            return
+            logger.exception("rumble_listener: failed to load config file")
 
     def _save_config_file(self) -> None:
         try:
@@ -199,7 +188,7 @@ class RumbleListenerCog(commands.Cog):
             with CONFIG_FILE.open("w", encoding="utf-8") as fh:
                 json.dump(out, fh, ensure_ascii=False, indent=2)
         except Exception:
-            return
+            logger.exception("rumble_listener: failed to save config file")
 
     @staticmethod
     def _extract_ids_from_text(text: str) -> List[int]:
@@ -216,87 +205,65 @@ class RumbleListenerCog(commands.Cog):
 
     def _collect_candidate_names(self, message: discord.Message) -> List[str]:
         """
-        Scan message.content and embeds for candidate plain-text names:
-        - lines after 'WINNER' headers
-        - embed fields with 'WINNER' in the name
-        - 'Participants:' block names
-        - small heuristics for lines with 'Runners-up' or rankings
+        Scan message.content and embeds for candidate plain-text names.
         """
         candidates: List[str] = []
-
-        # 1) message content lines
         content = message.content or ""
-        for ln in content.splitlines():
+        # content lines heuristics
+        lines = content.splitlines()
+        for i, ln in enumerate(lines):
             ln = ln.strip()
             if not ln:
                 continue
-            # Winner header followed by name on the next line is common
             if WINNER_TITLE_RE.search(ln):
-                # try next line as name
-                # find index of ln in lines
-                lines = content.splitlines()
-                try:
-                    idx = lines.index(ln)
-                    if idx + 1 < len(lines):
-                        cand = lines[idx + 1].strip()
-                        if cand:
-                            candidates.append(cand)
-                except Exception:
-                    pass
-            # simple "WINNER! name" on same line
+                if i + 1 < len(lines):
+                    cand = lines[i + 1].strip()
+                    if cand:
+                        candidates.append(cand)
             m = re.search(r"WINNER[^\w]*(?P<name>[\w\W]{1,64})", ln, re.IGNORECASE)
             if m:
                 name = m.group("name").strip()
                 if name:
                     candidates.append(name)
 
-        # 2) embed title/description/fields scanning
+        # embed scanning
         try:
             for emb in message.embeds:
-                # full embed text
                 emb_text = " ".join(filter(None, [emb.title or "", emb.description or ""] + [f.value for f in (emb.fields or [])]))
-                # check fields explicitly for WINNER label
                 for f in (emb.fields or []):
                     if WINNER_TITLE_RE.search(f.name or "") or WINNER_TITLE_RE.search(f.value or ""):
-                        # if field.value looks like a username or list, splitlines and take first non-empty token
                         for line in (f.value or "").splitlines():
                             line = line.strip()
                             if line:
                                 candidates.append(line)
                                 break
-                # also check embed.title/description for patterns like "WINNER\nname"
                 if emb.title and WINNER_TITLE_RE.search(emb.title):
-                    # description or first field may contain the name
                     if emb.description:
                         for line in emb.description.splitlines():
                             line = line.strip()
                             if line:
                                 candidates.append(line)
                                 break
-                # attempt to capture participants in embed text too
-                # look for 'Participants' substring and capture following lines
                 if "participants" in emb_text.lower():
                     pc = _extract_participants_block(emb_text)
                     candidates.extend(pc)
         except Exception:
-            pass
+            logger.exception("rumble_listener: embed parsing failed")
 
-        # 3) participants block in message content
         candidates.extend(_extract_participants_block(content))
 
-        # 4) Runners-up or ranking lists can include names; we'll capture nouns after the numbering
+        # ranking lists
         try:
             for ln in content.splitlines():
                 ln = ln.strip()
                 if re.match(r"^\s*\d+\.", ln) or re.match(r"^[\u2022\-\*]\s*", ln):
-                    # take the line minus prefix
                     ln_clean = re.sub(r"^(?:\d+\.\s*|[\u2022\-\*]\s*)", "", ln)
                     if ln_clean:
                         candidates.append(ln_clean.strip())
         except Exception:
             pass
 
-        # final dedupe preserving order, and trim to sane count
+        # dedupe preserve order
         seen = set()
         out = []
         for c in candidates:
@@ -310,19 +277,15 @@ class RumbleListenerCog(commands.Cog):
                 break
         return out
 
-    def _match_names_to_member_ids(self, guild: discord.Guild, candidates: List[str]) -> List[int]:
+    async def _match_names_to_member_ids(self, guild: discord.Guild, candidates: List[str]) -> List[int]:
         """
-        Try to resolve candidate plain-text names to guild member IDs.
-        Strategy:
-        - For each candidate, normalize and try exact normalized equality against member.name and member.display_name.
-        - If no exact matches, attempt substring containment (normalized).
-        - Skip bot accounts by default.
+        Async name->member resolution. Will try cached members first, then (only if guild is small)
+        fetch members from the API as a fallback.
         """
         if not guild or not candidates:
             return []
 
-        # Precompute normalized names for members
-        members = guild.members
+        members = list(guild.members or [])
         norm_map: Dict[int, Tuple[str, str]] = {}
         for m in members:
             try:
@@ -330,104 +293,109 @@ class RumbleListenerCog(commands.Cog):
             except Exception:
                 norm_map[m.id] = ((m.name or "").lower(), (m.display_name or "").lower())
 
-        matched_ids: List[int] = []
-        for cand in candidates:
-            nc = _normalize_name(cand)
-            if not nc:
-                continue
-            # 1) exact normalized equality
-            best = None
-            for mid, (nname, dname) in norm_map.items():
-                try:
-                    if nname and nname == nc:
-                        best = mid
-                        break
-                    if dname and dname == nc:
-                        best = mid
-                        break
-                except Exception:
+        async def _try_match(norm_map_local: Dict[int, Tuple[str, str]]) -> List[int]:
+            out: List[int] = []
+            for cand in candidates:
+                nc = _normalize_name(cand)
+                if not nc:
                     continue
-            if best:
-                if best not in matched_ids:
-                    matched_ids.append(best)
-                continue
-            # 2) try containment: member name inside candidate or candidate inside member name
-            for mid, (nname, dname) in norm_map.items():
-                try:
-                    if nname and (nc in nname or nname in nc):
-                        best = mid
-                        break
-                    if dname and (nc in dname or dname in nc):
-                        best = mid
-                        break
-                except Exception:
-                    continue
-            if best:
-                if best not in matched_ids:
-                    matched_ids.append(best)
-                continue
-            # 3) last resort: try simple token match (first token)
-            tokens = nc.split()
-            if tokens:
-                t0 = tokens[0]
-                for mid, (nname, dname) in norm_map.items():
+                found = None
+                for mid, (nname, dname) in norm_map_local.items():
                     try:
-                        if nname.startswith(t0) or dname.startswith(t0):
-                            if mid not in matched_ids:
-                                matched_ids.append(mid)
-                                break
+                        if nname and nname == nc:
+                            found = mid
+                            break
+                        if dname and dname == nc:
+                            found = mid
+                            break
                     except Exception:
                         continue
-        return matched_ids
+                if found:
+                    out.append(found)
+                    continue
+                for mid, (nname, dname) in norm_map_local.items():
+                    try:
+                        if nname and (nc in nname or nname in nc):
+                            found = mid
+                            break
+                        if dname and (nc in dname or dname in nc):
+                            found = mid
+                            break
+                    except Exception:
+                        continue
+                if found:
+                    if found not in out:
+                        out.append(found)
+                    continue
+                tokens = nc.split()
+                if tokens:
+                    t0 = tokens[0]
+                    for mid, (nname, dname) in norm_map_local.items():
+                        try:
+                            if (nname and nname.startswith(t0)) or (dname and dname.startswith(t0)):
+                                if mid not in out:
+                                    out.append(mid)
+                                    break
+                        except Exception:
+                            continue
+            return out
 
-    @staticmethod
-    def _extract_winner_ids(message: discord.Message) -> List[int]:
+        matched_ids = await _try_match(norm_map)
+        # If nothing matched and guild is small-ish, attempt to fetch members
+        if not matched_ids:
+            try:
+                if guild.member_count and guild.member_count <= 1000:
+                    logger.info("rumble_listener: fetching members for guild %s to resolve names (count=%s)", guild.id, guild.member_count)
+                    fetched = []
+                    async for m in guild.fetch_members(limit=None):
+                        fetched.append(m)
+                    norm_map = {m.id: (_normalize_name(m.name or ""), _normalize_name(m.display_name or "")) for m in fetched}
+                    matched_ids = await _try_match(norm_map)
+            except Exception:
+                logger.exception("rumble_listener: failed to fetch members for name resolution")
+
+        seen = set()
+        out_final = []
+        for mid in matched_ids:
+            if mid not in seen:
+                seen.add(mid)
+                out_final.append(mid)
+        return out_final
+
+    async def _extract_winner_ids(self, message: discord.Message) -> List[int]:
         """
-        Robust winner extraction:
-        1) explicit mentions -> return IDs
-        2) <@id> patterns in text/embeds -> return IDs
-        3) field/title "WINNER" in embeds (value contains name) -> extract candidate names
-        4) participants block or lines following WINNER -> candidate names
-        5) resolve candidate names to guild member IDs via normalization & matching
+        Async extraction that may fetch members to resolve plain-text names.
         """
-        # 1) explicit mentions
         try:
             if message.mentions:
                 return [m.id for m in message.mentions]
         except Exception:
             pass
 
-        # 2) explicit <@id> patterns in content or embed text
-        ids = []
+        ids: List[int] = []
         try:
-            ids.extend(RumbleListenerCog._extract_ids_from_text(message.content or ""))
-            # also from embeds
+            ids.extend(self._extract_ids_from_text(message.content or ""))
             for emb in message.embeds:
                 emb_text = " ".join(filter(None, [emb.title or "", emb.description or ""] + [f.value for f in (emb.fields or [])]))
-                ids.extend(RumbleListenerCog._extract_ids_from_text(emb_text))
+                ids.extend(self._extract_ids_from_text(emb_text))
         except Exception:
-            pass
+            logger.exception("rumble_listener: id extraction failed")
         ids = list(dict.fromkeys(ids))
         if ids:
             return ids
 
-        # 3) Collect candidate plain-text names
-        candidates = RumbleListenerCog._collect_candidate_names(RumbleListenerCog, message)  # type: ignore[arg-type]
-        # If no candidates found return empty
+        candidates = self._collect_candidate_names(message)
         if not candidates:
             return []
 
-        # 4) Attempt to match candidates to guild members
-        try:
-            guild = message.guild
-            if guild is None:
-                return []
-            matched = RumbleListenerCog._match_names_to_member_ids(RumbleListenerCog, guild, candidates)  # type: ignore[arg-type]
-            return matched
-        except Exception:
+        guild = message.guild
+        if guild is None:
             return []
 
-    # rest of listener logic remains unchanged (on_message -> uses _extract_winner_ids)
+        matched = await self._match_names_to_member_ids(guild, candidates)
+        return matched
+
+    # listener
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
         if message.guild is None:
@@ -437,7 +405,7 @@ class RumbleListenerCog(commands.Cog):
         except Exception:
             return
 
-        # If rumble_bot_ids configured, accept only messages from them or preceded by them
+        # If rumble_bot_ids configured, only accept messages from them or preceded by them
         if self.rumble_bot_ids:
             if author_id not in self.rumble_bot_ids:
                 found_recent_rumble = False
@@ -454,7 +422,7 @@ class RumbleListenerCog(commands.Cog):
                 if not found_recent_rumble:
                     return
 
-        # Detect a winner-style message (broad heuristics)
+        # Detect a winner-style message
         found = False
         if message.content and WINNER_TITLE_RE.search(message.content):
             found = True
@@ -475,14 +443,19 @@ class RumbleListenerCog(commands.Cog):
         if not found:
             return
 
-        winner_ids = RumbleListenerCog._extract_winner_ids(message)
+        # Async extraction (may fetch members)
+        try:
+            winner_ids = await self._extract_winner_ids(message)
+        except Exception:
+            logger.exception("rumble_listener: winner id extraction failed")
+            winner_ids = []
+
         if not winner_ids:
-            # nothing to award (can't identify winners)
             return
 
+        # Resolve mapping (channel-specific then global '0')
         mapping = self.channel_part_map.get(message.channel.id)
         if not mapping:
-            # no mapping configured for this channel; try global default (id 0) as fallback
             mapping = self.channel_part_map.get(0) or self.channel_part_map.get("0")
             if not mapping:
                 return
@@ -532,6 +505,7 @@ class RumbleListenerCog(commands.Cog):
                         except Exception:
                             pass
                 except Exception:
+                    logger.exception("rumble_listener: individual award handling failed for user %s", wid)
                     continue
 
     def get_config_snapshot(self) -> Dict[str, Any]:
