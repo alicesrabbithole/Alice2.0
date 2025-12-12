@@ -1,9 +1,6 @@
+#!/usr/bin/env python3
 # Discord admin commands to manage RumbleListener config and test awards.
-# Notes:
-# - The rumble_add_bot command has been removed (single rumble bot is expected to be static).
-# - rumble_preview defers the interaction to avoid "application didn't respond".
-# - Includes a sync_guild_commands owner-only helper to force a guild command sync.
-from typing import Optional, Tuple, Dict, Any, List
+from typing import Optional, Tuple, Dict, Any, List, Union
 import json
 import re
 from pathlib import Path
@@ -14,6 +11,60 @@ from discord import app_commands
 
 DATA_DIR = Path("data")
 BUILDABLES_DEF_FILE = DATA_DIR / "buildables.json"
+ASSETS_DIR = DATA_DIR / "stocking_assets"
+
+DEFAULT_COLOR = 0x2F3136
+
+# Canonical small mapping for common part names; used as first preference.
+_CANONICAL_EMOJI = {
+    "hat": "🎩",
+    "scarf": "🧣",
+    "carrot": "🥕",
+    "eyes": "👀",
+    "mouth": "😄",
+    "buttons": "⚪",
+    "arms": "✋",
+}
+_CANONICAL_COLORS = {
+    "hat": 0x001F3B,       # navy
+    "scarf": 0x8B0000,     # dark red
+    "carrot": 0xFFA500,    # orange
+    "eyes": 0x9E9E9E,      # gray
+    "mouth": 0x9E9E9E,
+    "buttons": 0x9E9E9E,
+    "arms": 0x6B4423,      # brown-ish
+}
+
+
+def _generate_part_maps_from_buildables() -> Tuple[Dict[str, str], Dict[str, int]]:
+    parts_keys = set()
+    try:
+        if BUILDABLES_DEF_FILE.exists():
+            data = json.loads(BUILDABLES_DEF_FILE.read_text(encoding="utf-8") or "{}")
+            for bdef in (data or {}).values():
+                for pk in (bdef.get("parts") or {}).keys():
+                    parts_keys.add(pk)
+    except Exception:
+        parts_keys = set()
+
+    part_emoji: Dict[str, str] = {}
+    part_colors: Dict[str, int] = {}
+    for pk in sorted(parts_keys):
+        key_lower = pk.lower()
+        emoji = _CANONICAL_EMOJI.get(key_lower, "🔸")
+        color = _CANONICAL_COLORS.get(key_lower, DEFAULT_COLOR)
+        part_emoji[key_lower] = emoji
+        part_colors[key_lower] = color
+
+    if not part_emoji:
+        for k, v in _CANONICAL_EMOJI.items():
+            part_emoji[k] = v
+            part_colors[k] = _CANONICAL_COLORS.get(k, DEFAULT_COLOR)
+
+    return part_emoji, part_colors
+
+
+PART_EMOJI, PART_COLORS = _generate_part_maps_from_buildables()
 
 
 def _load_buildables() -> Dict[str, Any]:
@@ -80,10 +131,6 @@ class RumbleAdminCog(commands.Cog):
         self.bot = bot
 
     async def _ephemeral_reply(self, ctx: commands.Context, content: str, *, mention_author: bool = False):
-        """
-        Prefer ephemeral interaction responses when available for admin commands.
-        Falls back to ctx.reply or ctx.send for prefix invocations.
-        """
         try:
             if getattr(ctx, "interaction", None) and getattr(ctx.interaction, "response", None) and not ctx.interaction.response.is_done():
                 await ctx.interaction.response.send_message(content, ephemeral=True)
@@ -99,7 +146,6 @@ class RumbleAdminCog(commands.Cog):
                 pass
 
     def _parse_snowflake(self, raw: str) -> Optional[int]:
-        """Tolerant snowflake parsing from mention or pasted text. Returns int or None."""
         if not raw:
             return None
         s = str(raw).strip()
@@ -138,7 +184,6 @@ class RumbleAdminCog(commands.Cog):
             await self._ephemeral_reply(ctx, "RumbleListenerCog is not loaded.")
             return
 
-        # Prefer single attribute if present, else list fallback
         stored_id = None
         try:
             stored_id = getattr(listener, "rumble_bot_id", None)
@@ -160,69 +205,12 @@ class RumbleAdminCog(commands.Cog):
         cmap = snap.get("channel_part_map", {}) if isinstance(snap, dict) else {}
         if cmap:
             for k, v in cmap.items():
-                text += f"  • {k}: {v[0]} -> {v[1]}\n"
+                emoji = PART_EMOJI.get(v[1].lower(), "")
+                line = f"  • {k}: {v[0]} -> {v[1]} {emoji}"
+                text += f"{line}\n"
         else:
             text += "  (none)\n"
         await self._ephemeral_reply(ctx, f"```\n{text}\n```")
-
-    @commands.hybrid_command(name="rumble_remove_bot", description="(Owner) Clear the configured rumble bot (or remove only if matches provided id).")
-    @commands.is_owner()
-    async def rumble_remove_bot(self, ctx: commands.Context, bot_id: Optional[str] = None):
-        """
-        Remove the configured rumble bot. If bot_id is provided, only removes if it matches the stored id.
-        If no bot_id is provided, clears any configured rumble bot.
-        """
-        listener = get_listener(self.bot)
-        if not listener:
-            await self._ephemeral_reply(ctx, "RumbleListenerCog is not loaded.")
-            return
-
-        stored_id = None
-        # read stored id defensively from multiple possible attributes
-        try:
-            stored_id = int(getattr(listener, "rumble_bot_id"))
-        except Exception:
-            try:
-                lst = getattr(listener, "rumble_bot_ids", None)
-                if isinstance(lst, (list, tuple)) and lst:
-                    stored_id = int(lst[0])
-            except Exception:
-                stored_id = None
-
-        if bot_id:
-            bid_int = self._parse_snowflake(bot_id)
-            if not bid_int:
-                await self._ephemeral_reply(ctx, "Please provide a valid bot id to remove.")
-                return
-            if stored_id is None:
-                await self._ephemeral_reply(ctx, f"No rumble bot is configured (nothing to remove).")
-                return
-            if bid_int != stored_id:
-                await self._ephemeral_reply(ctx, f"Configured rumble bot ({stored_id}) does not match the provided id ({bid_int}); no changes made.")
-                return
-
-        # Clear stored id
-        try:
-            if hasattr(listener, "rumble_bot_id"):
-                setattr(listener, "rumble_bot_id", None)
-        except Exception:
-            pass
-        try:
-            listener.rumble_bot_ids = []
-        except Exception:
-            try:
-                if hasattr(listener, "rumble_bot_ids"):
-                    listener.rumble_bot_ids.clear()
-            except Exception:
-                pass
-
-        try:
-            if hasattr(listener, "_save_config_file"):
-                listener._save_config_file()
-        except Exception:
-            pass
-
-        await self._ephemeral_reply(ctx, f"Cleared configured rumble bot (was {stored_id})." if stored_id else "Cleared configured rumble bot.")
 
     @commands.hybrid_command(name="rumble_set_channel_part", description="Set buildable:part to award for a channel")
     @commands.has_permissions(manage_guild=True)
@@ -244,7 +232,6 @@ class RumbleAdminCog(commands.Cog):
             await self._ephemeral_reply(ctx, "Invalid selection. Use the form `buildable:part` (e.g. `snowman:carrot`).")
             return
 
-        # validate against buildables.json
         buildables = _load_buildables()
         bdef = buildables.get(buildable_key)
         if not bdef or part_key not in (bdef.get("parts") or {}):
@@ -252,7 +239,6 @@ class RumbleAdminCog(commands.Cog):
             return
 
         target = channel or ctx.channel
-        # ensure the mapping container exists
         if not hasattr(listener, "channel_part_map"):
             listener.channel_part_map = {}
         listener.channel_part_map[int(target.id)] = (buildable_key, part_key)
@@ -284,7 +270,6 @@ class RumbleAdminCog(commands.Cog):
             await self._ephemeral_reply(ctx, "RumbleListenerCog is not loaded.")
             return
 
-        # If invoked via an interaction, defer immediately to avoid "application didn't respond".
         did_defer = False
         try:
             if getattr(ctx, "interaction", None) and getattr(ctx.interaction, "response", None) and not ctx.interaction.response.is_done():
@@ -293,8 +278,7 @@ class RumbleAdminCog(commands.Cog):
         except Exception:
             did_defer = False
 
-        # Build embed
-        embed = discord.Embed(title="Rumble Listener — Channel → Part Map", color=0x2F3136)
+        embed = discord.Embed(title="Rumble Listener — Channel → Part Map", color=DEFAULT_COLOR)
         try:
             if getattr(listener, "rumble_bot_ids", None):
                 embed.add_field(name="Monitored Rumble Bot IDs", value="\n".join(str(x) for x in getattr(listener, "rumble_bot_ids", [])), inline=False)
@@ -303,7 +287,7 @@ class RumbleAdminCog(commands.Cog):
             if getattr(listener, "channel_part_map", None):
                 mapping_lines: List[str] = []
                 for ch, (bkey, pkey) in listener.channel_part_map.items():
-                    emoji = getattr(listener, "PART_EMOJI", {}).get(pkey, "")
+                    emoji = PART_EMOJI.get(pkey.lower(), "")
                     line = f"<#{int(ch)}> — **{bkey}** → {pkey} {emoji}"
                     mapping_lines.append(line)
                 embed.add_field(name="Channel Mappings", value="\n".join(mapping_lines), inline=False)
@@ -320,7 +304,6 @@ class RumbleAdminCog(commands.Cog):
                 await self._ephemeral_reply(ctx, "Failed to build preview (see logs).")
             return
 
-        # Send response according to whether we deferred
         try:
             if did_defer:
                 await ctx.interaction.followup.send(embed=embed)
@@ -331,7 +314,7 @@ class RumbleAdminCog(commands.Cog):
 
     @commands.hybrid_command(name="rumble_test_award", description="Simulate awarding a part to a user (for testing)")
     @commands.has_permissions(manage_guild=True)
-    async def rumble_test_award(self, ctx: commands.Context, member: discord.Member, channel_id: Optional[str] = None):
+    async def rumble_test_award(self, ctx: commands.Context, member: discord.Member, channel_id: Optional[Union[str, int]] = None):
         listener = get_listener(self.bot)
         if not listener:
             await self._ephemeral_reply(ctx, "RumbleListenerCog is not loaded.")
@@ -339,8 +322,11 @@ class RumbleAdminCog(commands.Cog):
 
         target_channel = ctx.channel
         if channel_id is not None:
-            # tolerate id as string/mention
-            cid = self._parse_snowflake(channel_id) if isinstance(channel_id, str) else None
+            cid = None
+            if isinstance(channel_id, int):
+                cid = int(channel_id)
+            elif isinstance(channel_id, str):
+                cid = self._parse_snowflake(channel_id)
             if cid is None:
                 await self._ephemeral_reply(ctx, f"Channel id {channel_id} not found or bot cannot see it.")
                 return
@@ -367,8 +353,9 @@ class RumbleAdminCog(commands.Cog):
         if not awarded:
             await self._ephemeral_reply(ctx, f"Failed to award {part_key} to {member.mention} (maybe already has it).")
             return
-        emoji = getattr(listener, "PART_EMOJI", {}).get(part_key, "")
-        color = getattr(listener, "PART_COLORS", {}).get(part_key, 0x2F3136)
+
+        emoji = PART_EMOJI.get(part_key.lower(), "")
+        color = PART_COLORS.get(part_key.lower(), DEFAULT_COLOR)
         embed = discord.Embed(
             title=f"🎉 {member.display_name} found a {part_key}!",
             description=f"You've been awarded **{part_key}** for **{buildable_key}**. Use `/stocking show` to view your progress.",
@@ -376,9 +363,9 @@ class RumbleAdminCog(commands.Cog):
         )
         embed.set_footer(text="Test award simulated by admin")
         try:
-            part_file = getattr(listener, "ASSETS_DIR", Path(".")) / f"buildables/{buildable_key}/parts/{part_key}.png"
+            part_file = ASSETS_DIR / f"buildables/{buildable_key}/parts/{part_key}.png"
             if not part_file.exists():
-                part_file = getattr(listener, "ASSETS_DIR", Path(".")) / f"stickers/{part_key}.png"
+                part_file = ASSETS_DIR / f"stickers/{part_key}.png"
             if part_file.exists():
                 f = discord.File(part_file, filename=part_file.name)
                 embed.set_thumbnail(url=f"attachment://{part_file.name}")
@@ -391,7 +378,6 @@ class RumbleAdminCog(commands.Cog):
     @commands.command(name="sync_guild_commands")
     @commands.is_owner()
     async def sync_guild_commands(self, ctx: commands.Context):
-        """Force a guild-only slash command sync (immediate)."""
         try:
             await self.bot.tree.sync(guild=ctx.guild)
             await ctx.reply("Synced commands to this guild.", mention_author=False)
