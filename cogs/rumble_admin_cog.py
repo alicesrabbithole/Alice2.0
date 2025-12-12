@@ -39,10 +39,10 @@ _CANONICAL_EMOJI: Dict[str, str] = {
     "buttons": "⚪",
     "arms": "✋",
 }
-_CANONICAL_COLORS: Dict[str, int] = {
+_CANONICAL_COLORS = {
     "hat": 0x001F3B,       # navy
     "scarf": 0x8B0000,     # dark red
-    "carrot": 0xFFA500,    # orange
+    "carrot": 0xFFA500,    # orange  <- carrot orange
     "eyes": 0x9E9E9E,      # gray
     "mouth": 0x9E9E9E,
     "buttons": 0x9E9E9E,
