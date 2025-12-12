@@ -1,7 +1,7 @@
 # RumbleListenerCog with persistent config and embedded announcements
 # - Persists RUMBLE_BOT_IDS and CHANNEL_PART_MAP to data/rumble_listener_config.json
 # - Loads config on startup; admin commands update + persist config
-# - Awards buildable parts via StockingCog.award_part(...)
+# - Awards buildable parts via StockingCog.award_part(..., announce=False)
 # - Sends a styled embed announcement in-channel (colors per part) and attaches the part image if available
 
 import asyncio
@@ -175,8 +175,27 @@ class RumbleListenerCog(commands.Cog):
             author_id = int(message.author.id)
         except Exception:
             return
-        if self.rumble_bot_ids and author_id not in self.rumble_bot_ids:
-            return
+
+        # If rumble_bot_ids configured, accept message if author is in list OR
+        # a recent prior message in channel was authored by a configured rumble bot.
+        if self.rumble_bot_ids:
+            if author_id in self.rumble_bot_ids:
+                pass
+            else:
+                found_recent_rumble = False
+                try:
+                    async for prev in message.channel.history(limit=6, before=message.created_at, oldest_first=False):
+                        try:
+                            if int(prev.author.id) in self.rumble_bot_ids:
+                                found_recent_rumble = True
+                                break
+                        except Exception:
+                            continue
+                except Exception:
+                    found_recent_rumble = False
+                if not found_recent_rumble:
+                    return
+
         found = False
         if message.content and WINNER_TITLE_RE.search(message.content):
             found = True
@@ -206,10 +225,11 @@ class RumbleListenerCog(commands.Cog):
             for wid in winner_ids:
                 try:
                     awarded = False
+                    # ask stocking to award and render but do not announce (listener will announce)
                     if hasattr(stocking_cog, "award_part"):
-                        awarded = await getattr(stocking_cog, "award_part")(int(wid), buildable_key, part_key, message.channel)
+                        awarded = await getattr(stocking_cog, "award_part")(int(wid), buildable_key, part_key, None, announce=False)
                     elif hasattr(stocking_cog, "award_sticker"):
-                        awarded = await getattr(stocking_cog, "award_sticker")(int(wid), part_key, message.channel)
+                        awarded = await getattr(stocking_cog, "award_sticker")(int(wid), part_key, None, announce=False)
                     if awarded:
                         member = message.guild.get_member(int(wid))
                         mention = member.mention if member else f"<@{wid}>"
@@ -222,15 +242,29 @@ class RumbleListenerCog(commands.Cog):
                         )
                         embed.set_footer(text=f"Congratulations {member.display_name if member else mention}!")
                         try:
-                            part_img = ASSETS_DIR / f"buildables/{buildable_key}/parts/{part_key}.png"
-                            if not part_img.exists():
-                                part_img = ASSETS_DIR / f"stickers/{part_key}.png"
-                            if part_img.exists():
-                                attached = discord.File(part_img, filename=part_img.name)
-                                embed.set_thumbnail(url=f"attachment://{part_img.name}")
+                            # prefer full composite if available
+                            composite = None
+                            try:
+                                if hasattr(stocking_cog, "render_buildable"):
+                                    composite = await stocking_cog.render_buildable(int(wid), buildable_key)
+                            except Exception:
+                                composite = None
+
+                            part_img = None
+                            if composite and composite.exists():
+                                attached = discord.File(composite, filename=composite.name)
+                                embed.set_image(url=f"attachment://{composite.name}")
                                 await message.channel.send(content=f"{emoji} {mention}", embed=embed, file=attached)
                             else:
-                                await message.channel.send(content=f"{emoji} {mention}", embed=embed)
+                                part_img = ASSETS_DIR / f"buildables/{buildable_key}/parts/{part_key}.png"
+                                if not part_img.exists():
+                                    part_img = ASSETS_DIR / f"stickers/{part_key}.png"
+                                if part_img.exists():
+                                    attached = discord.File(part_img, filename=part_img.name)
+                                    embed.set_thumbnail(url=f"attachment://{part_img.name}")
+                                    await message.channel.send(content=f"{emoji} {mention}", embed=embed, file=attached)
+                                else:
+                                    await message.channel.send(content=f"{emoji} {mention}", embed=embed)
                         except Exception:
                             try:
                                 await message.channel.send(content=f"{emoji} {mention}", embed=embed)
@@ -239,7 +273,6 @@ class RumbleListenerCog(commands.Cog):
                 except Exception:
                     continue
 
-    # config snapshot helper
     def get_config_snapshot(self) -> Dict[str, Any]:
         return {
             "rumble_bot_ids": self.rumble_bot_ids,

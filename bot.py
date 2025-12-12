@@ -40,6 +40,8 @@ class AliceBot(commands.Bot):
             "cogs.admin_cog",
             "cogs.afk_cog",
             "cogs.alice_help_cog",
+            "cogs.channel_alias_cog",
+            "cogs.copy_category_cog",
             "cogs.giveaway_cog",
             "cogs.global_message_leaderboard_cog",
             "cogs.moderation_cog",
@@ -47,16 +49,14 @@ class AliceBot(commands.Bot):
             "cogs.puzzles_cog",
             "cogs.reminder_cog",
             "cogs.role_utility_cog",
-            "cogs.sticky_cog",
-            "cogs.copy_category_cog",
-            "games.wordle_cog",
-            "games.twentyone_questions_cog",
-            "games.rolling_cog",
             "cogs.rumble_admin_cog",
             "cogs.rumble_listener_cog",
+            "cogs.sticky_cog",
             "cogs.stocking_cog",
-            "cogs.channel_alias_cog",
-            "cogs.usage_logger_cog"
+            "cogs.usage_logger_cog",
+            "games.wordle_cog",
+            "games.twentyone_questions_cog",
+            "games.rolling_cog"
         ]
 
     # --- THIS IS THE FIX ---

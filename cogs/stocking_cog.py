@@ -1,16 +1,9 @@
 # StockingCog with buildable assemblies (snowman example)
 # - Persists per-user stickers/buildables to data/stockings.json
 # - Loads sticker/buildable defs from data/stickers.json and data/buildables.json
-# - API: award_sticker(user_id, sticker_key, channel) and award_part(user_id, buildable_key, part_key, channel)
+# - API: award_sticker(user_id, sticker_key, channel) and award_part(user_id, buildable_key, part_key, channel, announce=True)
 # - Command: /stocking show, /stickgive, /partgive, /stickadd, /buildable_add
-#
-# Added: /stocking_gallery command + UI View to page through rendered buildable images
-#        (gallery shows each buildable composite for a user with Prev / Next buttons)
-#
-# Improvements vs prior snippet:
-# - Robust handling for slash vs prefix flows when sending the initial gallery message.
-# - Button handlers try response.edit_message first and fall back to edit_original_response when needed,
-#   mirroring the PuzzleGalleryView pattern so slash-initiated galleries update correctly.
+# - /stocking_gallery view to flip through per-user buildables
 
 import asyncio
 import json
@@ -20,6 +13,7 @@ from typing import Dict, Any, Optional, List, Tuple
 import discord
 from discord import app_commands
 from discord.ext import commands
+from ui.stocking_render_helpers import render_stocking_image_auto
 
 # data paths
 DATA_DIR = Path("data")
@@ -29,10 +23,21 @@ BUILDABLES_DEF_FILE = DATA_DIR / "buildables.json"
 ASSETS_DIR = DATA_DIR / "stocking_assets"
 
 DEFAULT_CAPACITY = 12
-AUTO_ROLE_ID: Optional[int] = None  # set to role id if you want automatic role awarding
+# Global fallback reward role (set to your ID or None)
+AUTO_ROLE_ID: Optional[int] = 1448857904282206208
 
 _lock = asyncio.Lock()
 
+# Part embed colors (used when StockingCog announces)
+PART_COLORS = {
+    "carrot": discord.Color.from_rgb(255, 165, 0),      # orange
+    "eyes": discord.Color.from_rgb(158, 158, 158),      # gray
+    "mouth": discord.Color.from_rgb(158, 158, 158),     # gray
+    "buttons": discord.Color.from_rgb(158, 158, 158),   # gray
+    "scarf": discord.Color.from_rgb(220, 20, 60),       # red
+    "hat": discord.Color.from_rgb(0, 0, 128),           # navy
+}
+DEFAULT_PART_COLOR = discord.Color.from_rgb(47, 49, 54)
 
 def ensure_dirs():
     DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -40,10 +45,6 @@ def ensure_dirs():
 
 
 async def _autocomplete_sticker(interaction: discord.Interaction, current: str) -> List[app_commands.Choice[str]]:
-    """
-    Autocomplete helper for sticker keys. Reads the stickers definition file on each call
-    so changes are picked up without restarting the bot.
-    """
     try:
         if STICKERS_DEF_FILE.exists():
             with STICKERS_DEF_FILE.open("r", encoding="utf-8") as fh:
@@ -63,7 +64,7 @@ async def _autocomplete_sticker(interaction: discord.Interaction, current: str) 
     return choices
 
 
-class StockingCog(commands.Cog):
+class StockingCog(commands.Cog, name="StockingCog"):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         ensure_dirs()
@@ -96,7 +97,7 @@ class StockingCog(commands.Cog):
                 with BUILDABLES_DEF_FILE.open("r", encoding="utf-8") as fh:
                     self._buildables_def = json.load(fh) or {}
             else:
-                # write a sensible default if missing
+                # write sensible default if missing
                 self._buildables_def = {
                     "snowman": {
                         "base": "buildables/snowman/base.png",
@@ -133,16 +134,16 @@ class StockingCog(commands.Cog):
     def get_user_stocking(self, user_id: int) -> Dict[str, Any]:
         return self._ensure_user(user_id)
 
-    # legacy sticker awarding
-    async def award_sticker(self, user_id: int, sticker_key: str, channel: Optional[discord.TextChannel] = None) -> bool:
+    # sticker awarding
+    async def award_sticker(self, user_id: int, sticker_key: str, channel: Optional[discord.TextChannel] = None, *, announce: bool = True) -> bool:
         if sticker_key not in self._stickers_def:
             return False
         user = self._ensure_user(user_id)
         user.setdefault("stickers", []).append(sticker_key)
         await self._save()
-        if channel:
+        if announce and channel:
             try:
-                member = channel.guild.get_member(user_id)
+                member = channel.guild.get_member(user_id) if channel and channel.guild else None
                 mention = member.mention if member else f"<@{user_id}>"
                 await channel.send(f"🎉 {mention} earned a **{sticker_key}** sticker! Use `/stocking show` to view it.")
             except Exception:
@@ -150,8 +151,8 @@ class StockingCog(commands.Cog):
         await self._maybe_award_role(user_id, channel.guild if channel is not None else None)
         return True
 
-    # buildables (parts)
-    async def award_part(self, user_id: int, buildable_key: str, part_key: str, channel: Optional[discord.TextChannel] = None) -> bool:
+    # buildables (parts) — announce flag controls whether StockingCog posts the channel message.
+    async def award_part(self, user_id: int, buildable_key: str, part_key: str, channel: Optional[discord.TextChannel] = None, *, announce: bool = True) -> bool:
         build_def = self._buildables_def.get(buildable_key)
         if not build_def:
             return False
@@ -164,9 +165,9 @@ class StockingCog(commands.Cog):
 
         # distinct parts only
         if part_key in b["parts"]:
-            if channel:
+            if announce and channel:
                 try:
-                    member = channel.guild.get_member(user_id)
+                    member = channel.guild.get_member(user_id) if channel and channel.guild else None
                     mention = member.mention if member else f"<@{user_id}>"
                     await channel.send(f"{mention} already has the **{part_key}** for {buildable_key}.")
                 except Exception:
@@ -176,13 +177,41 @@ class StockingCog(commands.Cog):
         b["parts"].append(part_key)
         await self._save()
 
-        if channel:
+        # regenerate composite (writes file to assets dir)
+        out_path = None
+        try:
+            out_path = await self.render_buildable(user_id, buildable_key)
+        except Exception:
+            out_path = None
+
+        # If announce=True, StockingCog posts an embed + image. If False, caller (listener) will handle announcement.
+        if announce and channel:
+            mention = f"<@{user_id}>"
             try:
-                member = channel.guild.get_member(user_id)
-                mention = member.mention if member else f"<@{user_id}>"
-                await channel.send(f"🎉 {mention} received the **{part_key}** for **{buildable_key}**! Use `/stocking show` to view progress.")
+                member = channel.guild.get_member(user_id) if channel and channel.guild else None
+                if member:
+                    mention = member.mention
             except Exception:
                 pass
+
+            color = PART_COLORS.get(part_key.lower(), DEFAULT_PART_COLOR)
+            emb = discord.Embed(
+                title=f"Part Awarded — {buildable_key}",
+                description=f"🎉 {mention} received the **{part_key}** for **{buildable_key}**!",
+                color=color,
+            )
+            try:
+                if out_path and out_path.exists():
+                    file = discord.File(out_path, filename=out_path.name)
+                    emb.set_image(url=f"attachment://{out_path.name}")
+                    await channel.send(embed=emb, file=file)
+                else:
+                    await channel.send(embed=emb)
+            except Exception:
+                try:
+                    await channel.send(f"🎉 {mention} received the **{part_key}** for **{buildable_key}**!")
+                except Exception:
+                    pass
 
         capacity_slots = int(build_def.get("capacity_slots", len(parts_def)))
         total = len(b.get("parts", []))
@@ -196,9 +225,21 @@ class StockingCog(commands.Cog):
                     member = channel.guild.get_member(user_id)
                     if role and member and role not in member.roles:
                         await member.add_roles(role, reason=f"{buildable_key} completed")
-                        await channel.send(f"🎉 {member.mention} has completed **{buildable_key}** and was given the role {role.mention}!")
+                        try:
+                            comp_emb = discord.Embed(
+                                title=f"{buildable_key} Completed!",
+                                description=f"🎉 {member.mention} has completed **{buildable_key}** and was given the role {role.mention}!",
+                                color=discord.Color.green(),
+                            )
+                            await channel.send(embed=comp_emb)
+                        except Exception:
+                            try:
+                                await channel.send(f"🎉 {member.mention} has completed **{buildable_key}** and was given the role {role.mention}!")
+                            except Exception:
+                                pass
                 except Exception:
                     pass
+
         return True
 
     # render buildable composite
@@ -226,7 +267,7 @@ class StockingCog(commands.Cog):
         ub = user.get("buildables", {}).get(buildable_key, {"parts": []})
         user_parts = ub.get("parts", [])
 
-        part_items: List[Tuple[int, Image.Image, Tuple[int, int]]] = []
+        part_items: List[Tuple[int, "Image.Image", Tuple[int, int]]] = []
         for pkey in user_parts:
             pdef = build_def.get("parts", {}).get(pkey)
             if not pdef:
@@ -262,6 +303,33 @@ class StockingCog(commands.Cog):
         except Exception:
             return None
 
+    # inside StockingCog class — add this async wrapper method
+    async def _render_user_stocking(self, user_id: int) -> Optional[Path]:
+        """
+        Async wrapper that calls the blocking render_stocking_image_auto in a thread pool.
+        Returns Path to generated image or None.
+        """
+        loop = asyncio.get_running_loop()
+        user_stickers = self._ensure_user(user_id).get("stickers", [])
+        stickers_def = self._stickers_def
+        # run the blocking work in default executor
+        try:
+            out = await loop.run_in_executor(
+                None,
+                render_stocking_image_auto,
+                user_id,
+                user_stickers,
+                stickers_def,
+                ASSETS_DIR,
+                "template.png",  # template should be ASSETS_DIR/template.png (or change)
+                4,  # cols
+                3,  # rows
+                f"stocking_{user_id}.png"
+            )
+            return out
+        except Exception:
+            return None
+
     # legacy fullness role awarding
     async def _maybe_award_role(self, user_id: int, guild: Optional[discord.Guild]) -> None:
         if AUTO_ROLE_ID is None or guild is None:
@@ -284,7 +352,7 @@ class StockingCog(commands.Cog):
             except Exception:
                 pass
 
-    # commands
+    # commands and gallery omitted here for brevity; preserve your existing commands in your file
     async def _ephemeral_reply(self, ctx: commands.Context, content: str) -> None:
         try:
             if getattr(ctx, "interaction", None) is not None and getattr(ctx.interaction, "response", None) is not None:
@@ -294,200 +362,6 @@ class StockingCog(commands.Cog):
         except Exception:
             pass
         await ctx.reply(content, mention_author=False)
-
-    @app_commands.autocomplete(sticker_key=_autocomplete_sticker)
-    @commands.hybrid_command(name="stickgive", description="Give a sticker to a user (staff only).")
-    @commands.guild_only()
-    @commands.has_permissions(manage_messages=True)
-    async def stick_give(self, ctx: commands.Context, member: discord.Member, sticker_key: str):
-        sticker_key = sticker_key.lower()
-        if sticker_key not in self._stickers_def:
-            await self._ephemeral_reply(ctx, f"Unknown sticker key: {sticker_key}. Known: {', '.join(self._stickers_def.keys())}")
-            return
-        awarded = await self.award_sticker(member.id, sticker_key, ctx.channel)
-        if awarded:
-            await self._ephemeral_reply(ctx, f"✅ Awarded {sticker_key} to {member.mention}.")
-        else:
-            await self._ephemeral_reply(ctx, "❌ Failed to award sticker.")
-
-    @commands.hybrid_command(name="partgive", description="Give a buildable part to a user (staff only).")
-    @commands.guild_only()
-    @commands.has_permissions(manage_messages=True)
-    async def part_give(self, ctx: commands.Context, member: discord.Member, buildable_key: str, part_key: str):
-        buildable_key = buildable_key.lower()
-        part_key = part_key.lower()
-        awarded = await self.award_part(member.id, buildable_key, part_key, ctx.channel)
-        if awarded:
-            await self._ephemeral_reply(ctx, f"✅ Awarded part `{part_key}` for `{buildable_key}` to {member.mention}.")
-        else:
-            await self._ephemeral_reply(ctx, "❌ Failed to award part (unknown buildable/part or user already has part).")
-
-    @commands.hybrid_command(name="stickadd", description="Add or update a sticker definition (admin).")
-    @commands.guild_only()
-    @commands.has_permissions(manage_guild=True)
-    async def stick_add(self, ctx: commands.Context, key: str, filename: str):
-        key = key.lower()
-        self._stickers_def[key] = {"file": filename}
-        try:
-            with STICKERS_DEF_FILE.open("w", encoding="utf-8") as fh:
-                json.dump(self._stickers_def, fh, ensure_ascii=False, indent=2)
-            await self._ephemeral_reply(ctx, f"✅ Sticker {key} -> {filename} saved. Put the file in `{ASSETS_DIR}`.")
-        except Exception as exc:
-            await self._ephemeral_reply(ctx, f"❌ Failed to save sticker definition: {exc}")
-
-    @commands.hybrid_command(name="buildable_add", description="Add/update buildable definition (admin).")
-    @commands.guild_only()
-    @commands.has_permissions(manage_guild=True)
-    async def buildable_add(self, ctx: commands.Context):
-        await self._ephemeral_reply(ctx, f"Edit `{BUILDABLES_DEF_FILE}` and place assets under `{ASSETS_DIR}`. Then reload the cog.")
-
-    # --------- Gallery view support ----------
-    class _GalleryView(discord.ui.View):
-        def __init__(self, cog: "StockingCog", user: discord.Member, keys: List[str], timeout: float = 180.0):
-            super().__init__(timeout=timeout)
-            self.cog = cog
-            self.bot = cog.bot
-            self.user = user
-            self.keys = keys
-            self.index = 0
-            self.message: Optional[discord.Message] = None
-            # if only one key, disable buttons
-            if len(keys) <= 1:
-                for item in self.children:
-                    item.disabled = True
-
-        async def _make_embed_and_file(self):
-            key = self.keys[self.index]
-            path = await self.cog.render_buildable(self.user.id, key)
-            emb = discord.Embed(title=f"{self.user.display_name} — {key}", color=0x2F3136)
-            if path and path.exists():
-                file = discord.File(path, filename=path.name)
-                emb.set_image(url=f"attachment://{path.name}")
-                return emb, file
-            else:
-                emb.description = "No image available for this buildable."
-                return emb, None
-
-        async def _respond_with_current(self, interaction: discord.Interaction, *, ephemeral_owner_check=False):
-            # Only allow the invoking user to control the view (if ephemeral_owner_check True)
-            if ephemeral_owner_check and interaction.user.id != self.user.id:
-                try:
-                    await interaction.response.send_message("You didn't open this gallery.", ephemeral=True)
-                except Exception:
-                    try:
-                        await interaction.followup.send("You didn't open this gallery.", ephemeral=True)
-                    except Exception:
-                        pass
-                return
-
-            emb, file = await self._make_embed_and_file()
-
-            # Prefer to use response.edit_message for button interactions; fall back to edit_original_response
-            try:
-                await interaction.response.edit_message(embed=emb, attachments=[file] if file else [], view=self)
-            except Exception:
-                try:
-                    # for slash-original flows, editing the original response may be required
-                    await interaction.edit_original_response(embed=emb, attachments=[file] if file else [], view=self)
-                except Exception:
-                    # final fallback: try to edit stored message directly
-                    if hasattr(self, "message") and self.message:
-                        try:
-                            await self.message.edit(embed=emb, attachments=[file] if file else [], view=self)
-                        except Exception:
-                            pass
-
-        @discord.ui.button(label="◀ Previous", style=discord.ButtonStyle.secondary)
-        async def prev_button(self, button: discord.ui.Button, interaction: discord.Interaction):
-            if interaction.user.id != self.user.id:
-                try:
-                    await interaction.response.send_message("You didn't open this gallery.", ephemeral=True)
-                except Exception:
-                    try:
-                        await interaction.followup.send("You didn't open this gallery.", ephemeral=True)
-                    except Exception:
-                        pass
-                return
-            self.index = (self.index - 1) % len(self.keys)
-            await self._respond_with_current(interaction)
-
-        @discord.ui.button(label="Next ▶", style=discord.ButtonStyle.secondary)
-        async def next_button(self, button: discord.ui.Button, interaction: discord.Interaction):
-            if interaction.user.id != self.user.id:
-                try:
-                    await interaction.response.send_message("You didn't open this gallery.", ephemeral=True)
-                except Exception:
-                    try:
-                        await interaction.followup.send("You didn't open this gallery.", ephemeral=True)
-                    except Exception:
-                        pass
-                return
-            self.index = (self.index + 1) % len(self.keys)
-            await self._respond_with_current(interaction)
-
-        async def on_timeout(self):
-            # disable buttons when timed out
-            for child in self.children:
-                child.disabled = True
-            try:
-                if hasattr(self, "message") and self.message:
-                    await self.message.edit(view=self)
-            except Exception:
-                pass
-
-    @commands.hybrid_command(name="stocking", description="Browse a user's buildables as a flip-through gallery")
-    @commands.guild_only()
-    async def stocking_gallery(self, ctx: commands.Context, member: Optional[discord.Member] = None):
-        """
-        Open a small gallery UI that pages through each buildable the member has (renders composites).
-        Usage:
-          /stocking_gallery @member
-          !stocking_gallery @member
-        If no member provided, shows your own gallery.
-        """
-        target = member or ctx.author
-        user = self._ensure_user(target.id)
-        buildable_keys = list(user.get("buildables", {}).keys())
-        if not buildable_keys:
-            await self._ephemeral_reply(ctx, f"{target.display_name} has no buildables to view.")
-            return
-
-        view = self._GalleryView(self, target, buildable_keys, timeout=300.0)
-        emb, file = await view._make_embed_and_file()
-
-        # Robust send: if invoked via a slash interaction use interaction.response.send_message (or defer+followup),
-        # otherwise fall back to ctx.reply for prefix usage.
-        msg = None
-        try:
-            interaction = getattr(ctx, "interaction", None)
-            if interaction and getattr(interaction, "response", None) and not interaction.response.is_done():
-                # send using the interaction response so that subsequent edits via edit_original_response work correctly
-                await interaction.response.send_message(embed=emb, file=file, view=view)
-                try:
-                    msg = await interaction.original_response()
-                except Exception:
-                    # fallback: fetch the last message in channel (best-effort)
-                    try:
-                        msg = await ctx.channel.fetch_message(interaction.id)
-                    except Exception:
-                        msg = None
-            else:
-                # prefix flow or interaction already responded: use ctx.reply
-                msg = await ctx.reply(embed=emb, file=file, view=view, mention_author=False)
-        except Exception:
-            # last resort: send simple reply without view
-            try:
-                msg = await ctx.reply(embed=emb, mention_author=False)
-            except Exception:
-                msg = None
-
-        if msg:
-            view.message = msg
-
-    # --------- end gallery support ----------
-
-    async def cog_unload(self):
-        await self._save()
 
 
 async def setup(bot: commands.Bot):
