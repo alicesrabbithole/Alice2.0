@@ -629,6 +629,10 @@ class RumbleListenerCog(commands.Cog):
             logger.exception("rumble_listener: winner id extraction failed")
             winner_ids = []
 
+            # DEBUG: show what winner ids we found and channel mapping
+            logger.info("rumble:found_winner_ids=%r channel=%s", winner_ids, message.channel.id)
+            logger.info("rumble:channel_mapping_for_channel=%r", self.channel_part_map.get(message.channel.id))
+
         if not winner_ids:
             return
 
@@ -643,6 +647,8 @@ class RumbleListenerCog(commands.Cog):
         stocking_cog = self.bot.get_cog("StockingCog")
         if stocking_cog is None:
             return
+
+        logger.info("rumble:stocking_cog_present=%s", stocking_cog is not None)
 
         async with self._lock:
             # Collect candidate names (plain text) from this message and resolve them to member IDs
