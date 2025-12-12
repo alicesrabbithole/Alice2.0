@@ -2,32 +2,15 @@
   "snowman": {
     "base": "buildables/snowman/base.png",
     "parts": {
-      "carrot": {
-        "file": "buildables/snowman/parts/carrot.png",
-        "offset": [
-          350,
-          170
-        ],
-        "z": 10
-      },
-      "hat": {
-        "file": "buildables/snowman/parts/hat.png",
-        "offset": [
-          210,
-          60
-        ],
-        "z": 30
-      },
-      "scarf": {
-        "file": "buildables/snowman/parts/scarf.png",
-        "offset": [
-          170,
-          240
-        ],
-        "z": 20
-      }
+      "arms":    { "file": "buildables/snowman/parts/arms.png",    "offset": [120, 160], "z": 10 },
+      "carrot":  { "file": "buildables/snowman/parts/carrot.png",  "offset": [360, 100], "z": 40 },
+      "scarf":   { "file": "buildables/snowman/parts/scarf.png",   "offset": [170, 240], "z": 20 },
+      "eyes":    { "file": "buildables/snowman/parts/eyes.png",    "offset": [320, 80],  "z": 35 },
+      "buttons": { "file": "buildables/snowman/parts/buttons.png", "offset": [340,200],  "z": 20 },
+      "mouth":   { "file": "buildables/snowman/parts/mouth.png",   "offset": [330,120],  "z": 30 },
+      "hat":     { "file": "buildables/snowman/parts/hat.png",     "offset": [210, 60],  "z": 30 }
     },
-    "capacity_slots": 3,
-    "role_on_complete": null
+    "capacity_slots": 7,
+    "role_on_complete": 1448857904282206208
   }
 }
