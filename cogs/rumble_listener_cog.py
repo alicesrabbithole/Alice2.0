@@ -364,36 +364,98 @@ class RumbleListenerCog(commands.Cog):
 
     async def _extract_winner_ids(self, message: discord.Message) -> List[int]:
         """
-        Async extraction that may fetch members to resolve plain-text names.
+        Robust async winner ID extraction that:
+        - Prefers explicit mentions on the same message
+        - Falls back to scanning recent prior messages for mentions (useful when embed follows a mention)
+        - Scans content and embeds for <@id> patterns
+        - If necessary, extracts plain-text candidate names from WINNER fields and resolves them to member IDs
         """
+        # 1) explicit mentions on the message (best)
         try:
             if message.mentions:
                 return [m.id for m in message.mentions]
         except Exception:
             pass
 
-        ids: List[int] = []
+        # 2) look for explicit mention tokens (<@12345>) in the message content or embed text
         try:
-            ids.extend(self._extract_ids_from_text(message.content or ""))
+            ids = []
+            if message.content:
+                ids.extend(re.findall(r"<@!?(?P<id>\d+)>", message.content))
             for emb in message.embeds:
-                emb_text = " ".join(filter(None, [emb.title or "", emb.description or ""] + [f.value for f in (emb.fields or [])]))
-                ids.extend(self._extract_ids_from_text(emb_text))
+                text = " ".join(
+                    filter(None, [emb.title or "", emb.description or ""] + [f.value for f in (emb.fields or [])]))
+                ids.extend(re.findall(r"<@!?(?P<id>\d+)>", text))
+            ids = [int(x) for x in dict.fromkeys(ids)]  # dedupe preserving order
+            if ids:
+                return ids
         except Exception:
-            logger.exception("rumble_listener: id extraction failed")
-        ids = list(dict.fromkeys(ids))
-        if ids:
-            return ids
+            pass
 
-        candidates = self._collect_candidate_names(message)
+        # 3) If we didn't find direct mentions, scan recent prior messages for mentions.
+        #    Embed often follows a short plain-text message that contains the ping.
+        try:
+            async for prev in message.channel.history(limit=8, before=message.created_at, oldest_first=False):
+                if prev.mentions:
+                    return [m.id for m in prev.mentions]
+                # also check textual <@id> in prior message
+                if prev.content:
+                    m_ids = re.findall(r"<@!?(?P<id>\d+)>", prev.content)
+                    if m_ids:
+                        return [int(m_ids[0])]
+        except Exception:
+            pass
+
+        # 4) No explicit mentions nearby. Try to extract candidate names from embed WINNER fields / description.
+        candidates = []
+        try:
+            # look for fields or descriptions that include the word WINNER or the WINNER art block followed by a name line
+            for emb in message.embeds:
+                # fields with "WINNER" in name or value
+                for f in (emb.fields or []):
+                    if WINNER_TITLE_RE.search(f.name or "") or WINNER_TITLE_RE.search(f.value or ""):
+                        # take first non-empty line from the value as candidate
+                        for ln in (f.value or "").splitlines():
+                            ln = ln.strip()
+                            if ln:
+                                candidates.append(ln)
+                                break
+                # check description/title for "WINNER" followed by a line
+                if emb.title and WINNER_TITLE_RE.search(emb.title) and emb.description:
+                    for ln in emb.description.splitlines():
+                        ln = ln.strip()
+                        if ln:
+                            candidates.append(ln)
+                            break
+                # fallback: sometimes the winner name is present as a short line in description
+                if emb.description:
+                    # look for lines under "WINNER" keyword in the description
+                    lines = emb.description.splitlines()
+                    for i, ln in enumerate(lines):
+                        if WINNER_TITLE_RE.search(ln):
+                            if i + 1 < len(lines):
+                                cand = lines[i + 1].strip()
+                                if cand:
+                                    candidates.append(cand)
+        except Exception:
+            pass
+
+        # dedupe candidates in order
+        seen = set()
+        candidates = [c for c in candidates if c and not (c in seen or seen.add(c))]
+
         if not candidates:
             return []
 
-        guild = message.guild
-        if guild is None:
+        # 5) resolve candidate plain-text names to member IDs (async helper will try cached members then fetch if allowed)
+        try:
+            guild = message.guild
+            if not guild:
+                return []
+            matched = await self._match_names_to_member_ids(guild, candidates)
+            return matched
+        except Exception:
             return []
-
-        matched = await self._match_names_to_member_ids(guild, candidates)
-        return matched
 
     # listener
     @commands.Cog.listener()
