@@ -23,64 +23,15 @@ import discord
 from discord.ext import commands
 from discord import app_commands
 
+# shared theme generator
+from utils.snowman_theme import DEFAULT_COLOR, generate_part_maps_from_buildables
+
 DATA_DIR = Path("data")
 BUILDABLES_DEF_FILE = DATA_DIR / "buildables.json"
 ASSETS_DIR = DATA_DIR / "stocking_assets"
 
-DEFAULT_COLOR = 0x2F3136
-
-# Canonical small mapping for common part names; used as first preference.
-_CANONICAL_EMOJI: Dict[str, str] = {
-    "hat": "🎩",
-    "scarf": "🧣",
-    "carrot": "🥕",
-    "eyes": "👀",
-    "mouth": "😄",
-    "buttons": "⚪",
-    "arms": "✋",
-}
-_CANONICAL_COLORS = {
-    "hat": 0x001F3B,       # navy
-    "scarf": 0x8B0000,     # dark red
-    "carrot": 0xFFA500,    # orange  <- carrot orange
-    "eyes": 0x9E9E9E,      # gray
-    "mouth": 0x9E9E9E,
-    "buttons": 0x9E9E9E,
-    "arms": 0x6B4423,      # brown-ish
-}
-
-
-def _generate_part_maps_from_buildables() -> Tuple[Dict[str, str], Dict[str, int]]:
-    parts_keys = set()
-    try:
-        if BUILDABLES_DEF_FILE.exists():
-            data = json.loads(BUILDABLES_DEF_FILE.read_text(encoding="utf-8") or "{}")
-            for bdef in (data or {}).values():
-                for pk in (bdef.get("parts") or {}).keys():
-                    parts_keys.add(pk)
-    except Exception:
-        parts_keys = set()
-
-    part_emoji: Dict[str, str] = {}
-    part_colors: Dict[str, int] = {}
-    for pk in sorted(parts_keys):
-        key_lower = pk.lower()
-        emoji = _CANONICAL_EMOJI.get(key_lower, "🔸")
-        color = _CANONICAL_COLORS.get(key_lower, DEFAULT_COLOR)
-        part_emoji[key_lower] = emoji
-        part_colors[key_lower] = color
-
-    if not part_emoji:
-        # fallback canonical set so UI doesn't break
-        for k, v in _CANONICAL_EMOJI.items():
-            part_emoji[k] = v
-            part_colors[k] = _CANONICAL_COLORS.get(k, DEFAULT_COLOR)
-
-    return part_emoji, part_colors
-
-
 # Generated maps used throughout this cog
-PART_EMOJI, PART_COLORS = _generate_part_maps_from_buildables()
+PART_EMOJI, PART_COLORS = generate_part_maps_from_buildables()
 
 
 def _load_buildables() -> Dict[str, Any]:
@@ -321,6 +272,7 @@ class RumbleAdminCog(commands.Cog):
         target = channel or ctx.channel
         if not hasattr(listener, "channel_part_map"):
             listener.channel_part_map = {}
+        # Overwrite any existing mapping for this channel (keep only latest)
         listener.channel_part_map[int(target.id)] = (buildable_key, part_key)
         if hasattr(listener, "_save_config_file"):
             listener._save_config_file()
@@ -471,4 +423,3 @@ class RumbleAdminCog(commands.Cog):
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(RumbleAdminCog(bot))
-

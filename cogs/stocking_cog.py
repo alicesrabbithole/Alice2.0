@@ -5,6 +5,7 @@ StockingCog with buildable assemblies (snowman example)
 - Persists per-user stickers/buildables to data/stockings.json
 - Loads sticker/buildable defs from data/stickers.json and data/buildables.json
 - API: award_sticker(user_id, sticker_key, channel) and award_part(user_id, buildable_key, part_key, channel, announce=True)
+- Provides remove_part / revoke_part to allow removal (admin use)
 - Renders composites into data/stocking_assets/*
 - Adds /mysnowman command to show the user's assembled snowman (composite of collected parts), falling back to base image.
 """
@@ -20,6 +21,9 @@ from typing import Dict, Any, Optional, List, Tuple
 import discord
 from discord import app_commands
 from discord.ext import commands
+
+# Shared theme/constants (emoji/color and generator)
+from utils.snowman_theme import DEFAULT_COLOR, generate_part_maps_from_buildables
 
 # Optional helper; your repo may provide this if you use the gallery renderer
 try:
@@ -44,64 +48,11 @@ AUTO_ROLE_ID: Optional[int] = 1448857904282206208
 
 _lock = asyncio.Lock()
 
-# Default color fallback (int)
-DEFAULT_PART_COLOR = discord.Color.from_rgb(47, 49, 54).value
-
-# Canonical small mapping for common part names; used as first preference.
-_CANONICAL_EMOJI = {
-    "hat": "🎩",
-    "scarf": "🧣",
-    "carrot": "🥕",
-    "eyes": "👀",
-    "mouth": "😄",
-    "buttons": "⚪",
-    "arms": "✋",
-}
-_CANONICAL_COLORS = {
-    "hat": 0x001F3B,       # navy
-    "scarf": 0x8B0000,     # dark red
-    "carrot": 0xFFA500,    # orange  <- ensure carrot is orange
-    "eyes": 0x9E9E9E,      # gray
-    "mouth": 0x9E9E9E,
-    "buttons": 0x9E9E9E,
-    "arms": 0x6B4423,      # brown-ish
-}
+# PART_EMOJI / PART_COLORS derived from buildables.json (falls back to canonical maps in theme)
+PART_EMOJI, PART_COLORS = generate_part_maps_from_buildables()
 
 
-def _generate_part_maps_from_buildables() -> Tuple[Dict[str, str], Dict[str, int]]:
-    """Return (part_emoji, part_colors) keyed by lowercased part_key."""
-    parts_keys = set()
-    try:
-        if BUILDABLES_DEF_FILE.exists():
-            data = json.loads(BUILDABLES_DEF_FILE.read_text(encoding="utf-8") or "{}")
-            for bdef in (data or {}).values():
-                for pk in (bdef.get("parts") or {}).keys():
-                    parts_keys.add(pk)
-    except Exception:
-        parts_keys = set()
-
-    part_emoji: Dict[str, str] = {}
-    part_colors: Dict[str, int] = {}
-    for pk in sorted(parts_keys):
-        key_lower = pk.lower()
-        emoji = _CANONICAL_EMOJI.get(key_lower, "🔸")
-        color = _CANONICAL_COLORS.get(key_lower, DEFAULT_PART_COLOR)
-        part_emoji[key_lower] = emoji
-        part_colors[key_lower] = color
-
-    if not part_emoji:
-        # fallback canonical set
-        for k, v in _CANONICAL_EMOJI.items():
-            part_emoji[k] = v
-            part_colors[k] = _CANONICAL_COLORS.get(k, DEFAULT_PART_COLOR)
-
-    return part_emoji, part_colors
-
-
-# generate maps
-PART_EMOJI, PART_COLORS = _generate_part_maps_from_buildables()
-
-
+# --- helper functions for autocomplete ---
 async def _autocomplete_sticker(interaction: discord.Interaction, current: str) -> List[app_commands.Choice[str]]:
     try:
         if STICKERS_DEF_FILE.exists():
@@ -267,8 +218,8 @@ class StockingCog(commands.Cog, name="StockingCog"):
             except Exception:
                 logger.exception("award_part: failed to get member for mention")
 
-            # color lookup uses lowercased keys
-            color_int = PART_COLORS.get(part_key.lower(), DEFAULT_PART_COLOR)
+            # color lookup uses lowercased keys, fallback to DEFAULT_COLOR from theme
+            color_int = PART_COLORS.get(part_key.lower(), DEFAULT_COLOR)
             color = discord.Color(color_int)
             emb = discord.Embed(
                 title=f"Part Awarded — {buildable_key}",
@@ -317,18 +268,41 @@ class StockingCog(commands.Cog, name="StockingCog"):
 
         return True
 
+    # removal API — allow admin or other cogs to remove a part
+    async def remove_part(self, user_id: int, buildable_key: str, part_key: str) -> bool:
+        """
+        Remove a previously-awarded part from a user's buildable.
+        Returns True if removed and saved, False if the user didn't have that part.
+        """
+        user = self._ensure_user(user_id)
+        b = user.get("buildables", {}).get(buildable_key)
+        if not b:
+            return False
+        parts = b.get("parts", [])
+        if part_key not in parts:
+            return False
+        try:
+            parts.remove(part_key)
+            # If the buildable was marked completed, unset it if not complete anymore
+            build_def = self._buildables_def.get(buildable_key, {})
+            parts_def = build_def.get("parts", {}) or {}
+            capacity_slots = int(build_def.get("capacity_slots", len(parts_def)))
+            if len(parts) < min(capacity_slots, len(parts_def)):
+                b["completed"] = False
+            await self._save()
+            return True
+        except Exception:
+            logger.exception("remove_part: failed to remove part %s for user %s", part_key, user_id)
+            return False
+
+    # alias for different naming conventions
+    async def revoke_part(self, user_id: int, buildable_key: str, part_key: str) -> bool:
+        return await self.remove_part(user_id, buildable_key, part_key)
+
     # render buildable composite
     async def render_buildable(self, user_id: int, buildable_key: str) -> Optional[Path]:
         """
         Render a composite for a user's buildable.
-
-        Behavior changes to handle two part image styles:
-        - sprite style (default): part image contains only the piece; use offsets from buildables.json
-        - full-canvas style: part image is already positioned on a full-size canvas (same size as base).
-          The renderer will paste it at (0,0). You can force this mode by setting "full_canvas": true
-          in the part's definition in data/buildables.json.
-
-        Also logs part/base sizes and chosen paste coordinates for debugging.
         """
         try:
             from PIL import Image as PILImage
@@ -387,14 +361,11 @@ class StockingCog(commands.Cog, name="StockingCog"):
                 continue
 
             # Determine paste mode: full-canvas vs sprite with offset
-            # Priority: explicit flag in buildables.json, else auto-detect by image size == base size
-            full_canvas_flag = bool(pdef.get("full_canvas")) if isinstance(pdef.get("full_canvas"),
-                                                                           (bool, int)) else False
+            full_canvas_flag = bool(pdef.get("full_canvas")) if isinstance(pdef.get("full_canvas"), (bool, int)) else False
             if not full_canvas_flag:
                 try:
                     if img.size == base.size:
-                        logger.info("render_buildable: auto-detected full_canvas for part %s (img size == base size)",
-                                    pkey)
+                        logger.info("render_buildable: auto-detected full_canvas for part %s (img size == base size)", pkey)
                         full_canvas_flag = True
                 except Exception:
                     pass
@@ -403,19 +374,14 @@ class StockingCog(commands.Cog, name="StockingCog"):
                 paste_x, paste_y = 0, 0
                 logger.debug("render_buildable: part %s is full_canvas -> paste at (0,0)", pkey)
             else:
-                # Use defined offset (default to [0,0]) and apply as top-left of part sprite
                 offset = pdef.get("offset", [0, 0]) or [0, 0]
                 try:
                     paste_x = int(offset[0])
                     paste_y = int(offset[1])
                 except Exception:
                     paste_x, paste_y = 0, 0
-                logger.debug("render_buildable: part %s using offset %s -> paste at (%s,%s)", pkey, offset, paste_x,
-                             paste_y)
+                logger.debug("render_buildable: part %s using offset %s -> paste at (%s,%s)", pkey, offset, paste_x, paste_y)
 
-            # Allow optional per-part anchor adjustments in pdef (e.g., "anchor": "center") later if desired
-
-            # z order (default 0)
             try:
                 z = int(pdef.get("z", 0))
             except Exception:
