@@ -550,27 +550,56 @@ class RumbleListenerCog(commands.Cog):
     async def on_message(self, message: discord.Message):
         if message.guild is None:
             return
+
+        # DEBUG: brief incoming message summary (use getattr so we don't rely on author id existing)
         try:
-            author_id = int(message.author.id)
+            if logger.isEnabledFor(logging.INFO):
+                logger.info(
+                    "rumble:on_message author=%r author_id=%r channel=%r guild=%r embeds=%d",
+                    getattr(message.author, "name", None),
+                    getattr(message.author, "id", None),
+                    getattr(message.channel, "id", None),
+                    getattr(message.guild, "id", None),
+                    len(message.embeds or []),
+                )
+            if logger.isEnabledFor(logging.DEBUG):
+                logger.debug("rumble:on_message content=%r", message.content)
+                for i, emb in enumerate(message.embeds or []):
+                    try:
+                        logger.debug("rumble:embed[%d] title=%r", i, emb.title)
+                        logger.debug("rumble:embed[%d] description=%r", i, emb.description)
+                        for j, f in enumerate(emb.fields or []):
+                            logger.debug("rumble:embed[%d].field[%d] name=%r value=%r", i, j, f.name, f.value)
+                    except Exception:
+                        logger.exception("rumble:on_message: failed to inspect embed %d", i)
+        except Exception:
+            logger.exception("rumble:on_message: debug logging failed")
+
+        # safe author id extraction (some messages may not have an id attribute)
+        try:
+            author_id = int(getattr(message.author, "id", 0))
         except Exception:
             return
 
-        # If rumble_bot_ids configured, only accept messages from them or preceded by them
-        if self.rumble_bot_ids:
-            if author_id not in self.rumble_bot_ids:
-                found_recent_rumble = False
-                try:
-                    async for prev in message.channel.history(limit=6, before=message.created_at, oldest_first=False):
-                        try:
-                            if int(prev.author.id) in self.rumble_bot_ids:
-                                found_recent_rumble = True
-                                break
-                        except Exception:
+        # If rumble_bot_ids configured, only accept messages from them or messages immediately preceded by them
+        if self.rumble_bot_ids and author_id not in self.rumble_bot_ids:
+            found_recent_rumble = False
+            try:
+                async for prev in message.channel.history(limit=6, before=message.created_at, oldest_first=False):
+                    try:
+                        prev_author_id = getattr(prev.author, "id", None)
+                        if prev_author_id is None:
                             continue
-                except Exception:
-                    found_recent_rumble = False
-                if not found_recent_rumble:
-                    return
+                        if int(prev_author_id) in self.rumble_bot_ids:
+                            found_recent_rumble = True
+                            break
+                    except Exception:
+                        continue
+            except Exception:
+                found_recent_rumble = False
+
+            if not found_recent_rumble:
+                return
 
         # Detect a winner-style message (broad heuristics)
         found = False
@@ -620,11 +649,15 @@ class RumbleListenerCog(commands.Cog):
             candidates = self._collect_candidate_names(message)  # list[str]
             id_map: Dict[int, str] = {}
 
+            if logger.isEnabledFor(logging.DEBUG):
+                logger.debug("rumble:candidates_extracted=%r", candidates)
+
             try:
                 # Resolve candidate names to member IDs (tries cache, may fetch if allowed)
-                matched_ids = []
+                matched_ids: List[int] = []
                 if message.guild is not None and candidates:
                     matched_ids = await self._match_names_to_member_ids(message.guild, candidates)
+
                 # Pair matched ids to candidates in order (best-effort)
                 for i, mid in enumerate(matched_ids):
                     try:
@@ -632,6 +665,9 @@ class RumbleListenerCog(commands.Cog):
                             id_map[int(mid)] = candidates[i]
                     except Exception:
                         continue
+
+                if logger.isEnabledFor(logging.DEBUG):
+                    logger.debug("rumble:id_map=%r matched_ids=%r", id_map, matched_ids)
             except Exception:
                 logger.exception("rumble_listener: candidate->id mapping failed")
 
