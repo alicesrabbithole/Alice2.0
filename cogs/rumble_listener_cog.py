@@ -22,6 +22,7 @@ from typing import Dict, List, Optional, Tuple, Any
 import discord
 from discord.ext import commands
 
+# shared theme module (adjust import if your project uses a different module name)
 from utils.snowman_theme import DEFAULT_COLOR, CANONICAL_EMOJI, CANONICAL_COLORS, generate_part_maps_from_buildables
 
 logger = logging.getLogger(__name__)
@@ -89,6 +90,8 @@ class RumbleListenerCog(commands.Cog):
         if initial_config:
             self._load_from_dict(initial_config)
         self._load_config_file()
+        # startup/info log so we can verify the running process loaded the cog and its config
+        logger.info("rumble_listener: loaded rumble_bot_ids=%r channel_part_map=%r", self.rumble_bot_ids, self.channel_part_map)
 
     def _load_from_dict(self, data: Dict[str, Any]) -> None:
         rids = data.get("rumble_bot_ids", [])
