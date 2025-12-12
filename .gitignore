@@ -17,18 +17,28 @@ ENV/
 
 # --- Alice Bot Specific ---
 
-# Ignore contents of data directory...
+# Ignore everything under data by default
 data/*
 
-# But explicitly allow and track these important files and asset directories:
+# Keep some important data files tracked
 !data/.gitkeep
 !data/stickers.json
 !data/buildables.json
 !data/rumble_listener_config.json
-!data/stocking_assets/
-!data/stocking_assets/**
-# Keep runtime user data ignored
-/data/stockings.json
+
+# Stocking assets:
+# - ignore generated per-user composites
+data/stocking_assets/*_user_*.png
+# - ignore everything under stocking_assets, but explicitly allow the buildables subtree
+data/stocking_assets/**
+!data/stocking_assets/buildables/
+!data/stocking_assets/buildables/**
+
+# Keep runtime / ephemeral / backup files ignored
+data/collected_pieces.json
+data/*.bak
+puzzles/*/meta.json.bak
+utilities.json
 
 # Web UI (if you want to ignore it for now)
 web/*
