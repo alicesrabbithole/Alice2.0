@@ -6,7 +6,7 @@ StockingCog with buildable assemblies (snowman example)
 - Loads sticker/buildable defs from data/stickers.json and data/buildables.json
 - API: award_sticker(user_id, sticker_key, channel) and award_part(user_id, buildable_key, part_key, channel, announce=True)
 - Renders composites into data/stocking_assets/*
-- Adds /mysnowman command to show the base snowman only (no composite/background)
+- Adds /mysnowman command to show the user's assembled snowman (composite of collected parts), falling back to base image.
 """
 from __future__ import annotations
 
@@ -35,7 +35,6 @@ DATA_DIR.mkdir(parents=True, exist_ok=True)
 ASSETS_DIR = DATA_DIR / "stocking_assets"
 ASSETS_DIR.mkdir(parents=True, exist_ok=True)
 
-COLLECTED_PATH = DATA_DIR / "collected_pieces.json"
 STOCKINGS_FILE = DATA_DIR / "stockings.json"
 STICKERS_DEF_FILE = DATA_DIR / "stickers.json"
 BUILDABLES_DEF_FILE = DATA_DIR / "buildables.json"
@@ -45,8 +44,8 @@ AUTO_ROLE_ID: Optional[int] = 1448857904282206208
 
 _lock = asyncio.Lock()
 
-# Default color fallback
-DEFAULT_PART_COLOR = discord.Color.from_rgb(47, 49, 54).value  # use int for generated maps
+# Default color fallback (int)
+DEFAULT_PART_COLOR = discord.Color.from_rgb(47, 49, 54).value
 
 # Canonical small mapping for common part names; used as first preference.
 _CANONICAL_EMOJI = {
@@ -126,40 +125,6 @@ async def _autocomplete_sticker(interaction: discord.Interaction, current: str) 
 def ensure_dirs():
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     ASSETS_DIR.mkdir(parents=True, exist_ok=True)
-
-
-def persist_awarded_part(user_id: int, buildable_key: str, part_key: str) -> bool:
-    """
-    Add `part_key` for user_id/buildable_key into data/collected_pieces.json if not present.
-    Returns True if file was modified (part added), False if already present.
-    Logs helpful info for debugging.
-    """
-    try:
-        data = {}
-        if COLLECTED_PATH.exists():
-            try:
-                text = COLLECTED_PATH.read_text(encoding="utf-8").strip()
-                data = json.loads(text) if text else {}
-            except Exception as e:
-                logger.warning("Could not parse %s: %s — starting with empty data", COLLECTED_PATH, e)
-                data = {}
-
-        user_key = str(user_id)
-        user_entries = data.setdefault(user_key, {})
-        parts = user_entries.setdefault(buildable_key, [])
-
-        part_key_str = str(part_key)
-        if part_key_str in parts:
-            logger.info("persist_awarded_part: user=%s already has part=%s for %s", user_id, part_key_str, buildable_key)
-            return False
-
-        parts.append(part_key_str)
-        COLLECTED_PATH.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-        logger.info("persist_awarded_part: persisted user=%s part=%s for %s", user_id, part_key_str, buildable_key)
-        return True
-    except Exception as exc:
-        logger.exception("persist_awarded_part: failed to persist award for user=%s (%s/%s): %s", user_id, buildable_key, part_key, exc)
-        return False
 
 
 class StockingCog(commands.Cog, name="StockingCog"):
@@ -455,17 +420,41 @@ class StockingCog(commands.Cog, name="StockingCog"):
             logger.exception("_render_user_stocking: failed to render stocking image")
             return None
 
-    # /mysnowman command — show only the base (no composite/background)
-    @commands.hybrid_command(name="mysnowman", description="Show the base snowman image (no background/composite).")
+    # /mysnowman command — show the user's assembled snowman (composite) if parts exist, otherwise show base
+    @commands.hybrid_command(name="mysnowman", description="Show your snowman assembled from collected parts (falls back to base).")
     async def mysnowman(self, ctx: commands.Context):
-        build_def = self._buildables_def.get("snowman")
-        if not build_def:
-            await self._ephemeral_reply(ctx, "No snowman buildable configured.", mention_author=False)
+        user_id = getattr(ctx.author, "id", None)
+        if user_id is None:
+            await self._ephemeral_reply(ctx, "Could not determine user id.")
             return
 
+        build_def = self._buildables_def.get("snowman")
+        if not build_def:
+            await self._ephemeral_reply(ctx, "No snowman buildable configured.")
+            return
+
+        # First, try to render a composite for this user
+        composite_path = None
+        try:
+            composite_path = await self.render_buildable(user_id, "snowman")
+        except Exception:
+            composite_path = None
+
+        if composite_path and composite_path.exists():
+            # Send composite image
+            try:
+                file = discord.File(composite_path, filename=composite_path.name)
+                embed = discord.Embed(title="Your Snowman", color=discord.Color.dark_blue())
+                embed.set_image(url=f"attachment://{composite_path.name}")
+                await ctx.reply(embed=embed, file=file, mention_author=False)
+                return
+            except Exception:
+                logger.exception("mysnowman: failed to send composite image, falling back to base")
+
+        # Fallback: send the base only
         base_rel = build_def.get("base")
         if not base_rel:
-            await self._ephemeral_reply(ctx, "Snowman base image not configured.", mention_author=False)
+            await self._ephemeral_reply(ctx, "Snowman base image not configured.")
             return
 
         # Resolve path: accept absolute or relative-to-assets
@@ -476,12 +465,10 @@ class StockingCog(commands.Cog, name="StockingCog"):
             # Also try repo-root relative
             base_path = Path.cwd() / base_rel
         if not base_path.exists():
-            await self._ephemeral_reply(ctx, "Base snowman image not found on disk.", mention_author=False)
+            await self._ephemeral_reply(ctx, "Base snowman image not found on disk.")
             return
 
-        # Send the base image as attachment with an embed
         try:
-            # Try using PIL to re-encode into PNG to avoid content-type issues
             from PIL import Image as PILImage  # local import to avoid hard dependency until used
             with PILImage.open(base_path).convert("RGBA") as img:
                 buf = BytesIO()
@@ -499,7 +486,7 @@ class StockingCog(commands.Cog, name="StockingCog"):
                 return
             except Exception as exc:
                 logger.exception("mysnowman: failed to send base image: %s", exc)
-                await self._ephemeral_reply(ctx, "Failed to send the base snowman image.", mention_author=False)
+                await self._ephemeral_reply(ctx, "Failed to send the base snowman image.")
                 return
 
     async def _maybe_award_role(self, user_id: int, guild: Optional[discord.Guild]) -> None:
@@ -523,7 +510,7 @@ class StockingCog(commands.Cog, name="StockingCog"):
             except Exception:
                 logger.exception("_maybe_award_role: failed to award role")
 
-    async def _ephemeral_reply(self, ctx: commands.Context, content: str) -> None:
+    async def _ephemeral_reply(self, ctx: commands.Context, content: str, *, mention_author: bool = False) -> None:
         try:
             if getattr(ctx, "interaction", None) is not None and getattr(ctx.interaction, "response", None) is not None:
                 if not ctx.interaction.response.is_done():
@@ -531,7 +518,13 @@ class StockingCog(commands.Cog, name="StockingCog"):
                     return
         except Exception:
             pass
-        await ctx.reply(content, mention_author=False)
+        try:
+            await ctx.reply(content, mention_author=mention_author)
+        except Exception:
+            try:
+                await ctx.send(content)
+            except Exception:
+                pass
 
 
 async def setup(bot: commands.Bot):
