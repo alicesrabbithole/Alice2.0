@@ -7,6 +7,7 @@ Provides:
 - /rumble_set_channel_part, /rumble_remove_channel
 - /rumble_preview
 - /rumble_test_award (accepts optional channel id/mention as string)
+- /rumble_give_part, /rumble_take_part (admin hybrid slash commands)
 - sync_guild_commands (owner only)
 
 This version auto-generates PART_EMOJI and PART_COLORS from data/buildables.json so
@@ -14,17 +15,27 @@ all parts defined there (e.g., your 7 snowman pieces) will have sensible default
 """
 from __future__ import annotations
 
-from typing import Optional, Tuple, Dict, Any, List
 import json
+import logging
 import re
 from pathlib import Path
+from typing import Optional, Tuple, Dict, Any, List
 
 import discord
-from discord.ext import commands
 from discord import app_commands
+from discord.ext import commands
 
-# shared theme generator
-from utils.snowman_theme import DEFAULT_COLOR, generate_part_maps_from_buildables
+# Shared theme generator if present (fallback to defaults if missing)
+try:
+    from utils.snowman_theme import DEFAULT_COLOR, generate_part_maps_from_buildables
+except Exception:
+    DEFAULT_COLOR = 0x2F3136
+
+    def generate_part_maps_from_buildables():
+        return ({}, {})
+
+
+logger = logging.getLogger(__name__)
 
 DATA_DIR = Path("data")
 BUILDABLES_DEF_FILE = DATA_DIR / "buildables.json"
@@ -40,7 +51,7 @@ def _load_buildables() -> Dict[str, Any]:
             with BUILDABLES_DEF_FILE.open("r", encoding="utf-8") as fh:
                 return json.load(fh) or {}
     except Exception:
-        pass
+        logger.exception("rumble_admin: failed to load buildables")
     return {}
 
 
@@ -380,10 +391,16 @@ class RumbleAdminCog(commands.Cog):
 
         # Persist + render composite, but do NOT let StockingCog announce it (announce=False).
         awarded = False
-        if hasattr(stocking, "award_part"):
-            awarded = await getattr(stocking, "award_part")(member.id, buildable_key, part_key, None, announce=False)
-        elif hasattr(stocking, "award_sticker"):
-            awarded = await getattr(stocking, "award_sticker")(member.id, part_key, None, announce=False)
+        try:
+            if hasattr(stocking, "award_part"):
+                awarded = await getattr(stocking, "award_part")(member.id, buildable_key, part_key, None, announce=False)
+            elif hasattr(stocking, "award_sticker"):
+                awarded = await getattr(stocking, "award_sticker")(member.id, part_key, None, announce=False)
+        except Exception:
+            logger.exception("rumble_admin: award_part raised for test_award")
+            await self._ephemeral_reply(ctx, "Award attempt raised an exception; see logs.")
+            return
+
         if not awarded:
             await self._ephemeral_reply(ctx, f"Failed to award {part_key} to {member.mention} (maybe already has it).")
             return
@@ -409,6 +426,99 @@ class RumbleAdminCog(commands.Cog):
         except Exception:
             pass
         await ctx.reply(content=f"{emoji} {member.mention}", embed=embed, mention_author=False)
+
+    # --- New hybrid admin commands for give/take parts (appear in slash UI) ---
+    @commands.hybrid_command(name="rumble_give_part", description="(Admin) Give (persist) a part to a user. Example: /rumble_give_part @user snowman:carrot")
+    @commands.has_permissions(manage_guild=True)
+    @app_commands.autocomplete(selection=_autocomplete_buildable_part)
+    async def rumble_give_part(self, ctx: commands.Context, member: discord.Member, selection: str):
+        try:
+            if not selection or ":" not in selection:
+                await self._ephemeral_reply(ctx, "Provide part as `buildable:part` (use autocomplete).")
+                return
+            buildable, part = (s.strip() for s in selection.split(":", 1))
+        except Exception:
+            await self._ephemeral_reply(ctx, "Invalid selection format; use `buildable:part`.")
+            return
+
+        stocking = self.bot.get_cog("StockingCog")
+        if stocking is None:
+            await self._ephemeral_reply(ctx, "StockingCog not loaded; cannot give parts.")
+            return
+
+        try:
+            if hasattr(stocking, "award_part"):
+                ok = await getattr(stocking, "award_part")(int(member.id), buildable, part, None, announce=False)
+            elif hasattr(stocking, "award_sticker"):
+                ok = await getattr(stocking, "award_sticker")(int(member.id), part, None, announce=False)
+            else:
+                await self._ephemeral_reply(ctx, "StockingCog does not provide award API.")
+                return
+        except Exception:
+            logger.exception("rumble_admin: give_part call raised")
+            await self._ephemeral_reply(ctx, "Give operation raised an exception; check logs.")
+            return
+
+        if ok:
+            await self._ephemeral_reply(ctx, f"Gave `{part}` ({buildable}) to {member.mention}.")
+        else:
+            await self._ephemeral_reply(ctx, f"Give operation did not persist (maybe user already has it).")
+
+    @commands.hybrid_command(name="rumble_take_part", description="(Admin) Remove a part from a user. Use `buildable:part` or `part` with optional buildable.")
+    @commands.has_permissions(manage_guild=True)
+    @app_commands.autocomplete(selection=_autocomplete_buildable_part)
+    async def rumble_take_part(self, ctx: commands.Context, member: discord.Member, selection: str):
+        """
+        Remove a part. selection may be 'buildable:part' or just 'part' (will try to remove from all buildables).
+        """
+        stocking = self.bot.get_cog("StockingCog")
+        if stocking is None:
+            await self._ephemeral_reply(ctx, "StockingCog not loaded; cannot remove parts.")
+            return
+
+        # parse selection
+        buildable = None
+        part = None
+        if ":" in (selection or ""):
+            buildable, part = (s.strip() for s in selection.split(":", 1))
+        else:
+            part = (selection or "").strip()
+
+        if not part:
+            await self._ephemeral_reply(ctx, "Provide a part to remove (e.g. `snowman:arms` or `arms`).")
+            return
+
+        removed = False
+        try:
+            # prefer explicit remove_part(buildable, part)
+            if buildable and hasattr(stocking, "remove_part"):
+                removed = await getattr(stocking, "remove_part")(int(member.id), buildable, part)
+            else:
+                # try remove_part across user's buildables if implementation doesn't require buildable
+                if hasattr(stocking, "remove_part"):
+                    # try signature remove_part(user_id, part) first
+                    try:
+                        removed = await getattr(stocking, "remove_part")(int(member.id), part)
+                    except TypeError:
+                        # try remove_part(user_id, None, part)
+                        try:
+                            removed = await getattr(stocking, "remove_part")(int(member.id), None, part)
+                        except Exception:
+                            removed = False
+                elif hasattr(stocking, "revoke_part"):
+                    removed = await getattr(stocking, "revoke_part")(int(member.id), part)
+                else:
+                    await self._ephemeral_reply(ctx, "StockingCog does not expose a removal API.")
+                    return
+        except Exception:
+            logger.exception("rumble_admin: take_part raised exception")
+            await self._ephemeral_reply(ctx, "Removal attempt raised an exception; check logs.")
+            return
+
+        if removed:
+            await self._ephemeral_reply(ctx, f"Removed `{part}` from {member.mention}.")
+        else:
+            await self._ephemeral_reply(ctx, f"Could not remove `{part}` from {member.mention} (maybe they don't have it).")
 
     @commands.command(name="sync_guild_commands")
     @commands.is_owner()
