@@ -673,18 +673,39 @@ class RumbleListenerCog(commands.Cog):
 
             # Now award and announce for each resolved winner id
             for wid in winner_ids:
+                # --- put this inside your for wid in winner_ids: loop, replacing the award block ---
                 try:
+                    # Ensure wid is an int
+                    target_id = int(wid)
+
+                    # Debug: what we're about to try to award
+                    logger.debug("rumble:awarding attempt wid=%s buildable=%s part=%s channel=%s", target_id,
+                                 buildable_key, part_key, message.channel.id)
+
                     awarded = False
-                    # Persist the award (StockingCog handles saving/rendering). Do not let it announce (announce=False).
-                    if hasattr(stocking_cog, "award_part"):
-                        awarded = await getattr(stocking_cog, "award_part")(int(wid), buildable_key, part_key, None, announce=False)
-                    elif hasattr(stocking_cog, "award_sticker"):
-                        awarded = await getattr(stocking_cog, "award_sticker")(int(wid), part_key, None, announce=False)
+                    try:
+                        if hasattr(stocking_cog, "award_part"):
+                            awarded = await getattr(stocking_cog, "award_part")(target_id, buildable_key, part_key,
+                                                                                None, announce=False)
+                        elif hasattr(stocking_cog, "award_sticker"):
+                            awarded = await getattr(stocking_cog, "award_sticker")(target_id, part_key, None,
+                                                                                   announce=False)
+                    except Exception as e:
+                        logger.exception("rumble: award call raised for wid=%s", target_id)
+                        awarded = False
+
+                    # Log the result so we know why nothing was announced
+                    logger.debug("rumble:award_result wid=%s awarded=%s", target_id, bool(awarded))
+
                     if not awarded:
+                        # No announcement if the award didn't persist — log a hint
+                        logger.info(
+                            "rumble:award skipped for wid=%s (already has part or award failed): buildable=%s part=%s",
+                            target_id, buildable_key, part_key)
                         continue
 
-                    # Get member object if available
-                    member = message.guild.get_member(int(wid)) if message.guild else None
+                    # Continue with the existing announce code (build embed, small ping)
+                    member = message.guild.get_member(target_id) if message.guild else None
 
                     # Choose display text: prefer the candidate plain-text name we extracted (id_map),
                     # otherwise fall back to the member.name, then a generic fallback.
