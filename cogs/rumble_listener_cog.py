@@ -629,7 +629,8 @@ class RumbleListenerCog(commands.Cog):
                     awarded = False
                     try:
                         if hasattr(stocking_cog, "award_part"):
-                            awarded = await getattr(stocking_cog, "award_part")(target_id, buildable_key, part_key, None, announce=False)
+                            # WITH this (pass the message channel so StockingCog can award roles / announce if needed):
+                            awarded = await getattr(stocking_cog, "award_part")(target_id, buildable_key, part_key, message.channel, announce=False)
                         elif hasattr(stocking_cog, "award_sticker"):
                             awarded = await getattr(stocking_cog, "award_sticker")(target_id, part_key, None, announce=False)
                     except Exception:

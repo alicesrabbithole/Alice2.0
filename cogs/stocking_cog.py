@@ -241,32 +241,78 @@ class StockingCog(commands.Cog, name="StockingCog"):
 
         capacity_slots = int(build_def.get("capacity_slots", len(parts_def)))
         total = len(b.get("parts", []))
+        # ... after you mark completed and save ...
         if total >= capacity_slots or total >= len(parts_def):
             b["completed"] = True
             await self._save()
             role_id = build_def.get("role_on_complete") or AUTO_ROLE_ID
-            if role_id and channel and channel.guild:
+
+            # Try to determine the guild if channel wasn't provided
+            guild = channel.guild if channel and channel.guild else None
+            if not guild:
+                # attempt to find a guild via any available context (best-effort)
                 try:
-                    role = channel.guild.get_role(int(role_id))
-                    member = channel.guild.get_member(user_id)
-                    if role and member and role not in member.roles:
-                        await member.add_roles(role, reason=f"{buildable_key} completed")
+                    # If the bot shares only one guild with the member, you might be able to infer it,
+                    # otherwise callers should pass channel to be explicit.
+                    # We attempt to find any guild that has the member cached.
+                    for g in self.bot.guilds:
+                        m = g.get_member(user_id)
+                        if m:
+                            guild = g
+                            break
+                except Exception:
+                    guild = None
+
+            if role_id and guild:
+                try:
+                    role = guild.get_role(int(role_id))
+                    member = guild.get_member(user_id)
+                    if role is None:
+                        logger.warning("award_part: configured completion role id %s not found in guild %s", role_id,
+                                       guild.id)
+                    if member is None:
                         try:
-                            comp_emb = discord.Embed(
-                                title=f"{buildable_key} Completed!",
-                                description=f"🎉 {member.mention} has completed **{buildable_key}** and was given the role {role.mention}!",
-                                color=discord.Color.green(),
-                            )
-                            await channel.send(embed=comp_emb)
+                            member = await guild.fetch_member(user_id)
                         except Exception:
+                            member = None
+                            logger.warning("award_part: member %s not found in guild %s for role grant", user_id,
+                                           guild.id)
+                    if role and member and role not in member.roles:
+                        # permission & hierarchy check
+                        bot_member = guild.me
+                        if not bot_member:
+                            logger.warning("award_part: guild.me is None; cannot add role %s to user %s", role.id,
+                                           user_id)
+                        elif not bot_member.guild_permissions.manage_roles:
+                            logger.warning(
+                                "award_part: bot lacks Manage Roles permission in guild %s; cannot grant role %s",
+                                guild.id, role.id)
+                        elif role.position >= bot_member.top_role.position:
+                            logger.warning(
+                                "award_part: cannot assign role %s (position %s) because bot top role position is %s",
+                                role.id, role.position, bot_member.top_role.position if bot_member.top_role else None)
+                        else:
+                            await member.add_roles(role, reason=f"{buildable_key} completed")
+                            logger.info("award_part: granted completion role %s to user %s in guild %s", role.id,
+                                        user_id, guild.id)
                             try:
-                                await channel.send(f"🎉 {member.mention} has completed **{buildable_key}** and was given the role {role.mention}!")
+                                comp_emb = discord.Embed(
+                                    title=f"{buildable_key} Completed!",
+                                    description=f"🎉 {member.mention} has completed **{buildable_key}** and was given the role {role.mention}!",
+                                    color=discord.Color.green(),
+                                )
+                                # If channel present use it; else try to use system_channel
+                                post_chan = channel if channel and channel.guild else (
+                                    guild.system_channel if getattr(guild, "system_channel", None) else None)
+                                if post_chan:
+                                    await post_chan.send(embed=comp_emb)
                             except Exception:
-                                logger.exception("award_part: failed to announce completion fallback")
+                                logger.exception("award_part: failed to announce completion")
                 except Exception:
                     logger.exception("award_part: failed to assign completion role")
-
-        return True
+            else:
+                logger.debug("award_part: no completion role configured or guild not available (role_id=%r, guild=%r)",
+                             role_id, getattr(guild, "id", None))
 
     # removal API — allow admin or other cogs to remove a part
     async def remove_part(self, user_id: int, buildable_key: str, part_key: str) -> bool:
@@ -298,6 +344,92 @@ class StockingCog(commands.Cog, name="StockingCog"):
     # alias for different naming conventions
     async def revoke_part(self, user_id: int, buildable_key: str, part_key: str) -> bool:
         return await self.remove_part(user_id, buildable_key, part_key)
+
+    # Helper: grant buildable completion role (used from /mysnowman and as fallback)
+    async def _grant_buildable_completion_role(
+        self, user_id: int, buildable_key: str, guild: Optional[discord.Guild], channel: Optional[discord.TextChannel] = None
+    ) -> bool:
+        """
+        Grant the configured completion role for a buildable to a user (if configured).
+        Returns True if role was granted or already present; False otherwise.
+        Logs reasons if it cannot grant.
+        """
+        if guild is None:
+            logger.debug("_grant_buildable_completion_role: no guild provided for user=%s buildable=%s", user_id, buildable_key)
+            return False
+
+        build_def = self._buildables_def.get(buildable_key, {})
+        role_id = build_def.get("role_on_complete") or AUTO_ROLE_ID
+        if not role_id:
+            logger.debug("_grant_buildable_completion_role: no role configured for buildable=%s", buildable_key)
+            return False
+
+        try:
+            role = guild.get_role(int(role_id))
+        except Exception:
+            role = None
+
+        try:
+            member = guild.get_member(user_id)
+        except Exception:
+            member = None
+
+        if member is None:
+            # try fetch as a fallback
+            try:
+                member = await guild.fetch_member(user_id)
+            except Exception:
+                member = None
+
+        if role is None:
+            logger.warning("_grant_buildable_completion_role: role id %s not found in guild %s", role_id, guild.id)
+            return False
+        if member is None:
+            logger.warning("_grant_buildable_completion_role: member %s not found in guild %s", user_id, guild.id)
+            return False
+
+        # Already has role?
+        if role in member.roles:
+            logger.debug("_grant_buildable_completion_role: member %s already has role %s", user_id, role.id)
+            return True
+
+        # Permission / hierarchy checks
+        bot_member = guild.me
+        if not bot_member:
+            logger.warning("_grant_buildable_completion_role: guild.me is None in guild %s", guild.id)
+            return False
+        if not bot_member.guild_permissions.manage_roles:
+            logger.warning("_grant_buildable_completion_role: bot lacks Manage Roles in guild %s", guild.id)
+            return False
+        try:
+            bot_top_pos = bot_member.top_role.position if bot_member.top_role else -1
+            if role.position >= bot_top_pos:
+                logger.warning(
+                    "_grant_buildable_completion_role: cannot assign role %s (pos %s) because bot top role pos is %s",
+                    role.id,
+                    role.position,
+                    bot_top_pos,
+                )
+                return False
+        except Exception:
+            # non-fatal; continue and let add_roles raise if it's going to
+            logger.exception("_grant_buildable_completion_role: failed to inspect role positions")
+
+        # Try to add the role
+        try:
+            await member.add_roles(role, reason=f"{buildable_key} completed via /mysnowman")
+            logger.info("_grant_buildable_completion_role: granted role %s to user %s in guild %s", role.id, user_id, guild.id)
+            # Announce to channel if provided; otherwise try guild.system_channel
+            post_chan = channel if channel and getattr(channel, "guild", None) else (guild.system_channel if getattr(guild, "system_channel", None) else None)
+            try:
+                if post_chan:
+                    await post_chan.send(f"🎉 {member.mention} has completed **{buildable_key}** and was awarded {role.mention}!")
+            except Exception:
+                logger.exception("_grant_buildable_completion_role: failed to announce role grant in guild %s", guild.id)
+            return True
+        except Exception:
+            logger.exception("_grant_buildable_completion_role: failed to add role %s to user %s in guild %s", role.id, user_id, guild.id)
+            return False
 
     # render buildable composite
     async def render_buildable(self, user_id: int, buildable_key: str) -> Optional[Path]:
@@ -421,15 +553,35 @@ class StockingCog(commands.Cog, name="StockingCog"):
             await self._ephemeral_reply(ctx, "Could not determine user id.")
             return
 
-        build_def = self._buildables_def.get("snowman")
+        build_key = "snowman"
+        build_def = self._buildables_def.get(build_key)
         if not build_def:
             await self._ephemeral_reply(ctx, "No snowman buildable configured.")
             return
 
+        # Ensure user record exists
+        user = self._ensure_user(user_id)
+        b = user.get("buildables", {}).get(build_key, {"parts": [], "completed": False})
+        user_parts = b.get("parts", [])
+        parts_def = build_def.get("parts", {}) or {}
+        capacity_slots = int(build_def.get("capacity_slots", len(parts_def)))
+
+        # If completed (or qualifies), try granting completion role before/after showing
+        # (we do it here so users who already completed but didn't get the role will be handled)
+        is_complete = bool(b.get("completed")) or (len(user_parts) >= capacity_slots or len(user_parts) >= len(parts_def))
+        if is_complete:
+            try:
+                granted = await self._grant_buildable_completion_role(user_id, build_key, ctx.guild, ctx.channel)
+                if granted:
+                    # continue to show the snowman; announcement already sent by helper
+                    logger.debug("mysnowman: completion role ensured for user %s buildable %s", user_id, build_key)
+            except Exception:
+                logger.exception("mysnowman: error while attempting to grant completion role for user %s", user_id)
+
         # First, try to render a composite for this user
         composite_path = None
         try:
-            composite_path = await self.render_buildable(user_id, "snowman")
+            composite_path = await self.render_buildable(user_id, build_key)
         except Exception:
             composite_path = None
 

@@ -393,7 +393,7 @@ class RumbleAdminCog(commands.Cog):
         awarded = False
         try:
             if hasattr(stocking, "award_part"):
-                awarded = await getattr(stocking, "award_part")(member.id, buildable_key, part_key, None, announce=False)
+                awarded = await getattr(stocking, "award_part")(member.id, buildable_key, part_key, target_channel, announce=False)
             elif hasattr(stocking, "award_sticker"):
                 awarded = await getattr(stocking, "award_sticker")(member.id, part_key, None, announce=False)
         except Exception:
