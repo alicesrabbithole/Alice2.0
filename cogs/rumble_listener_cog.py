@@ -691,8 +691,8 @@ class RumbleListenerCog(commands.Cog):
                     color = discord.Color(color_int)
 
                     embed = discord.Embed(
-                        title=f"🎉 {display_text} found a {part_key}!",
-                        description=f"You've been awarded **{part_key}** for **{buildable_key}**.",
+                        title=f"🎉 {display_text} found an item!",
+                        description=f"You've been awarded an item for your **{buildable_key}**: **{part_key}**",
                         color=color,
                     )
 
