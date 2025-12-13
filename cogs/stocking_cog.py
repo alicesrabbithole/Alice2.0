@@ -146,6 +146,16 @@ class StockingCog(commands.Cog, name="StockingCog"):
             except Exception:
                 logger.exception("Failed to save stockings data")
 
+    async def _save_buildables_def(self) -> None:
+        """Persist the current buildables definitions to disk."""
+        try:
+            BUILDABLES_DEF_FILE.parent.mkdir(parents=True, exist_ok=True)
+            with BUILDABLES_DEF_FILE.open("w", encoding="utf-8") as fh:
+                json.dump(self._buildables_def, fh, ensure_ascii=False, indent=2)
+            logger.info("Saved buildables definitions to %s", BUILDABLES_DEF_FILE)
+        except Exception:
+            logger.exception("Failed to save buildables definitions")
+
     # user data helpers
     def _ensure_user(self, user_id: int) -> Dict[str, Any]:
         key = str(user_id)
@@ -293,6 +303,14 @@ class StockingCog(commands.Cog, name="StockingCog"):
                                 role.id, role.position, bot_member.top_role.position if bot_member.top_role else None)
                         else:
                             await member.add_roles(role, reason=f"{buildable_key} completed")
+                            # Mark that we granted the role so we can detect manual removals later
+                            try:
+                                user_rec = self._ensure_user(user_id)
+                                brec = user_rec.setdefault("buildables", {}).setdefault(buildable_key, {})
+                                brec["role_granted"] = True
+                                await self._save()
+                            except Exception:
+                                logger.exception("award_part: failed to persist role_granted flag")
                             logger.info("award_part: granted completion role %s to user %s in guild %s", role.id,
                                         user_id, guild.id)
                             try:
@@ -313,6 +331,8 @@ class StockingCog(commands.Cog, name="StockingCog"):
             else:
                 logger.debug("award_part: no completion role configured or guild not available (role_id=%r, guild=%r)",
                              role_id, getattr(guild, "id", None))
+
+        return True
 
     # removal API — allow admin or other cogs to remove a part
     async def remove_part(self, user_id: int, buildable_key: str, part_key: str) -> bool:
@@ -391,6 +411,15 @@ class StockingCog(commands.Cog, name="StockingCog"):
         # Already has role?
         if role in member.roles:
             logger.debug("_grant_buildable_completion_role: member %s already has role %s", user_id, role.id)
+            # Ensure persistent flag is set so future checks know we granted it
+            try:
+                user_rec = self._ensure_user(user_id)
+                brec = user_rec.setdefault("buildables", {}).setdefault(buildable_key, {})
+                if not brec.get("role_granted"):
+                    brec["role_granted"] = True
+                    await self._save()
+            except Exception:
+                logger.exception("_grant_buildable_completion_role: failed to persist role_granted flag on already-has")
             return True
 
         # Permission / hierarchy checks
@@ -418,6 +447,14 @@ class StockingCog(commands.Cog, name="StockingCog"):
         # Try to add the role
         try:
             await member.add_roles(role, reason=f"{buildable_key} completed via /mysnowman")
+            # Persist that we granted the role
+            try:
+                user_rec = self._ensure_user(user_id)
+                brec = user_rec.setdefault("buildables", {}).setdefault(buildable_key, {})
+                brec["role_granted"] = True
+                await self._save()
+            except Exception:
+                logger.exception("_grant_buildable_completion_role: failed to persist role_granted flag")
             logger.info("_grant_buildable_completion_role: granted role %s to user %s in guild %s", role.id, user_id, guild.id)
             # Announce to channel if provided; otherwise try guild.system_channel
             post_chan = channel if channel and getattr(channel, "guild", None) else (guild.system_channel if getattr(guild, "system_channel", None) else None)
@@ -430,6 +467,41 @@ class StockingCog(commands.Cog, name="StockingCog"):
         except Exception:
             logger.exception("_grant_buildable_completion_role: failed to add role %s to user %s in guild %s", role.id, user_id, guild.id)
             return False
+
+    # Event listener: clear stored role_granted flag if a tracked completion role was removed from a member
+    @commands.Cog.listener()
+    async def on_member_update(self, before: discord.Member, after: discord.Member) -> None:
+        try:
+            # compute removed role ids
+            before_ids = {r.id for r in getattr(before, "roles", [])}
+            after_ids = {r.id for r in getattr(after, "roles", [])}
+            removed_ids = before_ids - after_ids
+            if not removed_ids:
+                return
+
+            user_id = after.id
+            changed = False
+            # For each buildable, if its role_on_complete (or AUTO_ROLE_ID) is in removed_ids,
+            # clear the persisted role_granted flag so /mysnowman can re-grant.
+            for bk, bdef in self._buildables_def.items():
+                rid = bdef.get("role_on_complete") or AUTO_ROLE_ID
+                if rid is None:
+                    continue
+                try:
+                    if int(rid) in removed_ids:
+                        user_rec = self._ensure_user(user_id)
+                        brec = user_rec.get("buildables", {}).get(bk)
+                        if brec and brec.get("role_granted"):
+                            brec["role_granted"] = False
+                            changed = True
+                            logger.info("on_member_update: cleared role_granted for user %s buildable %s because role %s was removed", user_id, bk, rid)
+                except Exception:
+                    logger.exception("on_member_update: error processing buildable %s for member %s", bk, user_id)
+
+            if changed:
+                await self._save()
+        except Exception:
+            logger.exception("on_member_update: unexpected error")
 
     # render buildable composite
     async def render_buildable(self, user_id: int, buildable_key: str) -> Optional[Path]:
@@ -571,9 +643,12 @@ class StockingCog(commands.Cog, name="StockingCog"):
         is_complete = bool(b.get("completed")) or (len(user_parts) >= capacity_slots or len(user_parts) >= len(parts_def))
         if is_complete:
             try:
+                # If the user already has a persisted "role_granted" flag and the role still exists, skip attempting
+                build_rec = user.get("buildables", {}).get(build_key, {})
+                role_granted_flag = bool(build_rec.get("role_granted"))
+                # If flagged but role missing (manual removal), on_member_update clears the flag; so a False here means we should try
                 granted = await self._grant_buildable_completion_role(user_id, build_key, ctx.guild, ctx.channel)
                 if granted:
-                    # continue to show the snowman; announcement already sent by helper
                     logger.debug("mysnowman: completion role ensured for user %s buildable %s", user_id, build_key)
             except Exception:
                 logger.exception("mysnowman: error while attempting to grant completion role for user %s", user_id)
