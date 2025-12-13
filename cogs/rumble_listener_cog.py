@@ -77,11 +77,13 @@ def _extract_participants_block(text: str) -> List[str]:
             break
     return candidates
 
+
 def _indefinite_article(word: str) -> str:
     """Simple 'a' vs 'an' heuristic."""
     if not word:
         return "a"
     return "an" if word[0].lower() in "aeiou" else "a"
+
 
 def format_award_phrase_for_listener(buildable_key: str, part_key: str, build_def: Optional[dict] = None) -> str:
     """
@@ -106,6 +108,7 @@ def format_award_phrase_for_listener(buildable_key: str, part_key: str, build_de
         article = _indefinite_article(display)
     return f"awarded {article} **{display}** for your **{buildable_key}**"
 
+
 class RumbleListenerCog(commands.Cog):
     def __init__(self, bot: commands.Bot, initial_config: Optional[Dict[str, Any]] = None):
         self.bot = bot
@@ -118,8 +121,11 @@ class RumbleListenerCog(commands.Cog):
         if initial_config:
             self._load_from_dict(initial_config)
         self._load_config_file()
-        # startup/info log so we can verify the running process loaded the cog and its config
-        logger.info("rumble_listener: loaded rumble_bot_ids=%r channel_part_map=%r", self.rumble_bot_ids, self.channel_part_map)
+        logger.info(
+            "rumble_listener: loaded rumble_bot_ids=%r channel_part_map=%r",
+            self.rumble_bot_ids,
+            self.channel_part_map,
+        )
 
     def _load_from_dict(self, data: Dict[str, Any]) -> None:
         rids = data.get("rumble_bot_ids", [])
@@ -208,7 +214,12 @@ class RumbleListenerCog(commands.Cog):
         # 2) Embed scanning
         try:
             for emb in message.embeds:
-                emb_text = " ".join(filter(None, [emb.title or "", emb.description or ""] + [f.value for f in (emb.fields or [])]))
+                emb_text = " ".join(
+                    filter(
+                        None,
+                        [emb.title or "", emb.description or ""] + [f.value for f in (emb.fields or [])],
+                    )
+                )
 
                 for f in (emb.fields or []):
                     fname = (f.name or "").strip()
@@ -342,7 +353,11 @@ class RumbleListenerCog(commands.Cog):
         if not matched_ids:
             try:
                 if guild.member_count and guild.member_count <= 1000:
-                    logger.info("rumble_listener: fetching members for guild %s to resolve names (count=%s)", guild.id, guild.member_count)
+                    logger.info(
+                        "rumble_listener: fetching members for guild %s to resolve names (count=%s)",
+                        guild.id,
+                        guild.member_count,
+                    )
                     fetched = []
                     async for m in guild.fetch_members(limit=None):
                         fetched.append(m)
@@ -355,6 +370,7 @@ class RumbleListenerCog(commands.Cog):
         if not matched_ids:
             try:
                 import difflib
+
                 name_to_id: Dict[str, int] = {}
                 for mid, (nname, dname) in norm_map.items():
                     if nname:
@@ -534,13 +550,19 @@ class RumbleListenerCog(commands.Cog):
         if not found and message.content and ADDITIONAL_WIN_RE.search(message.content):
             found = True
         for emb in message.embeds:
-            if (emb.title and (WINNER_TITLE_RE.search(emb.title) or ADDITIONAL_WIN_RE.search(emb.title))) or \
-               (emb.description and (WINNER_TITLE_RE.search(emb.description) or ADDITIONAL_WIN_RE.search(emb.description))):
+            if (emb.title and (WINNER_TITLE_RE.search(emb.title) or ADDITIONAL_WIN_RE.search(emb.title))) or (
+                emb.description
+                and (WINNER_TITLE_RE.search(emb.description) or ADDITIONAL_WIN_RE.search(emb.description))
+            ):
                 found = True
                 break
             for f in (emb.fields or []):
-                if WINNER_TITLE_RE.search(f.name or "") or WINNER_TITLE_RE.search(f.value or "") or \
-                   ADDITIONAL_WIN_RE.search(f.name or "") or ADDITIONAL_WIN_RE.search(f.value or ""):
+                if (
+                    WINNER_TITLE_RE.search(f.name or "")
+                    or WINNER_TITLE_RE.search(f.value or "")
+                    or ADDITIONAL_WIN_RE.search(f.name or "")
+                    or ADDITIONAL_WIN_RE.search(f.value or "")
+                ):
                     found = True
                     break
             if found:
@@ -555,7 +577,6 @@ class RumbleListenerCog(commands.Cog):
             logger.exception("rumble_listener: winner id extraction failed")
             winner_ids = []
 
-        # ALWAYS log what we found and mapping for debugging
         logger.info("rumble:found_winner_ids=%r channel=%s", winner_ids, message.channel.id)
         logger.info("rumble:channel_mapping_for_channel=%r", self.channel_part_map.get(message.channel.id))
 
@@ -657,11 +678,11 @@ class RumbleListenerCog(commands.Cog):
                     awarded = False
                     try:
                         if hasattr(stocking_cog, "award_part"):
-                            awarded = await getattr(stocking_cog, "award_part")(target_id, buildable_key, part_key,
-                                                                                message.channel, announce=False)
+                            awarded = await getattr(stocking_cog, "award_part")(
+                                target_id, buildable_key, part_key, message.channel, announce=False
+                            )
                         elif hasattr(stocking_cog, "award_sticker"):
-                            awarded = await getattr(stocking_cog, "award_sticker")(target_id, part_key, None,
-                                                                                   announce=False)
+                            awarded = await getattr(stocking_cog, "award_sticker")(target_id, part_key, None, announce=False)
                     except Exception:
                         logger.exception("rumble: award call raised for wid=%s", target_id)
                         awarded = False
@@ -696,12 +717,12 @@ class RumbleListenerCog(commands.Cog):
                         elif user_obj:
                             display_text = getattr(user_obj, "name", f"User {target_id}")
                         else:
-                            display_text = id_map.get(int(target_id)) or (
-                                candidates[0] if candidates else f"User {target_id}")
+                            display_text = id_map.get(int(target_id)) or (candidates[0] if candidates else f"User {target_id}")
                     except Exception:
                         display_text = id_map.get(int(target_id)) or f"User {target_id}"
 
                     try:
+
                         def _mention_repl(m):
                             try:
                                 mid = int(m.group(1))
@@ -736,31 +757,13 @@ class RumbleListenerCog(commands.Cog):
                     color = discord.Color(color_int)
 
                     # Build the embed
-                    embed_title = f"{snowman_emoji} 🎉 Congratulations, {display_text}!"
+                    embed_title = f"{snowman_emoji} Congratulations, {display_text}!"
                     embed = discord.Embed(title=embed_title, description=f"You've been {award_phrase}.", color=color)
 
-                    if emoji:
-                        try:
-                            embed.set_footer(text=emoji)
-                        except Exception:
-                            pass
-
-                    # Try to attach rendered composite if available, else just send embed + external mention line
+                    # Send embed (no image attachment) with external mention line to ping the user
                     try:
-                        out_path = None
-                        if stocking_cog and hasattr(stocking_cog, "render_buildable"):
-                            try:
-                                out_path = await stocking_cog.render_buildable(target_id, buildable_key)
-                            except Exception:
-                                out_path = None
-
-                        external_mention = member.mention if member else (
-                                    getattr(user_obj, "mention", None) or f"<@{target_id}>")
-                        if out_path and getattr(out_path, "exists", lambda: False)():
-                            file = discord.File(out_path, filename=out_path.name)
-                            await message.channel.send(content=f"-# {external_mention}", embed=embed, file=file)
-                        else:
-                            await message.channel.send(content=f"-# {external_mention}", embed=embed)
+                        external_mention = member.mention if member else (getattr(user_obj, "mention", None) or f"<@{target_id}>")
+                        await message.channel.send(content=f"-# {external_mention}", embed=embed)
                     except Exception:
                         try:
                             await message.channel.send(embed=embed)
