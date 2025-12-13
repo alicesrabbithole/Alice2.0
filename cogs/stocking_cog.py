@@ -72,7 +72,6 @@ async def _autocomplete_sticker(interaction: discord.Interaction, current: str) 
                 break
     return choices
 
-
 def ensure_dirs():
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     ASSETS_DIR.mkdir(parents=True, exist_ok=True)

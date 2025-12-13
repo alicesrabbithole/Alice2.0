@@ -77,6 +77,34 @@ def _extract_participants_block(text: str) -> List[str]:
             break
     return candidates
 
+def _indefinite_article(word: str) -> str:
+    """Simple 'a' vs 'an' heuristic."""
+    if not word:
+        return "a"
+    return "an" if word[0].lower() in "aeiou" else "a"
+
+def format_award_phrase_for_listener(buildable_key: str, part_key: str, build_def: Optional[dict] = None) -> str:
+    """
+    Return phrases like:
+      "awarded a carrot for your snowman"
+      "awarded arms for your snowman"
+    Uses build_def if provided (looks for parts.<part>.display_name / plural / article).
+    Otherwise falls back to safe heuristics.
+    """
+    build_def = build_def or {}
+    pdef = (build_def.get("parts", {}) or {}).get(part_key, {}) or {}
+    display = pdef.get("display_name") or part_key.replace("_", " ")
+
+    # explicit plural flag or heuristic (endswith 's')
+    is_plural = bool(pdef.get("plural")) or display.endswith("s")
+    if is_plural:
+        return f"awarded **{display}** for your **{buildable_key}**"
+
+    # explicit article override
+    article = pdef.get("article")
+    if not article:
+        article = _indefinite_article(display)
+    return f"awarded {article} **{display}** for your **{buildable_key}**"
 
 class RumbleListenerCog(commands.Cog):
     def __init__(self, bot: commands.Bot, initial_config: Optional[Dict[str, Any]] = None):
@@ -629,10 +657,11 @@ class RumbleListenerCog(commands.Cog):
                     awarded = False
                     try:
                         if hasattr(stocking_cog, "award_part"):
-                            # WITH this (pass the message channel so StockingCog can award roles / announce if needed):
-                            awarded = await getattr(stocking_cog, "award_part")(target_id, buildable_key, part_key, message.channel, announce=False)
+                            awarded = await getattr(stocking_cog, "award_part")(target_id, buildable_key, part_key,
+                                                                                message.channel, announce=False)
                         elif hasattr(stocking_cog, "award_sticker"):
-                            awarded = await getattr(stocking_cog, "award_sticker")(target_id, part_key, None, announce=False)
+                            awarded = await getattr(stocking_cog, "award_sticker")(target_id, part_key, None,
+                                                                                   announce=False)
                     except Exception:
                         logger.exception("rumble: award call raised for wid=%s", target_id)
                         awarded = False
@@ -667,7 +696,8 @@ class RumbleListenerCog(commands.Cog):
                         elif user_obj:
                             display_text = getattr(user_obj, "name", f"User {target_id}")
                         else:
-                            display_text = id_map.get(int(target_id)) or (candidates[0] if candidates else f"User {target_id}")
+                            display_text = id_map.get(int(target_id)) or (
+                                candidates[0] if candidates else f"User {target_id}")
                     except Exception:
                         display_text = id_map.get(int(target_id)) or f"User {target_id}"
 
@@ -682,24 +712,55 @@ class RumbleListenerCog(commands.Cog):
                                 return f"User {mid}"
                             except Exception:
                                 return ""
+
                         display_text = re.sub(r"<@!?(\d+)>", _mention_repl, str(display_text))
                     except Exception:
                         display_text = re.sub(r"<@!?\d+>", "User", str(display_text))
 
+                    # Build award phrase (use stocking metadata if available)
+                    try:
+                        build_def = None
+                        if stocking_cog:
+                            build_def = getattr(stocking_cog, "_buildables_def", {}).get(buildable_key)
+                        award_phrase = format_award_phrase_for_listener(buildable_key, part_key, build_def)
+                    except Exception:
+                        logger.exception("rumble_listener: failed to format award phrase")
+                        award_phrase = f"received **{part_key}** for your **{buildable_key}**"
+
+                    # snowman emoji on the left of the title
+                    snowman_emoji = "☃️"
+
+                    # color and optional small emoji
                     emoji = PART_EMOJI.get(part_key.lower(), "")
                     color_int = PART_COLORS.get(part_key.lower(), DEFAULT_COLOR)
                     color = discord.Color(color_int)
 
-                    embed = discord.Embed(
-                        title=f"🎉 Congratulations, {display_text}!",
-                        description=f"You've been awarded an item for your **{buildable_key}**: **{part_key}**",
-                        color=color,
-                    )
+                    # Build the embed
+                    embed_title = f"{snowman_emoji} 🎉 Congratulations, {display_text}!"
+                    embed = discord.Embed(title=embed_title, description=f"You've been {award_phrase}.", color=color)
 
-                    # External mention line (keeps embed non-pinging)
+                    if emoji:
+                        try:
+                            embed.set_footer(text=emoji)
+                        except Exception:
+                            pass
+
+                    # Try to attach rendered composite if available, else just send embed + external mention line
                     try:
-                        external_mention = member.mention if member else (user_obj.mention if user_obj else f"<@{target_id}>")
-                        await message.channel.send(content=f"-# {external_mention}", embed=embed)
+                        out_path = None
+                        if stocking_cog and hasattr(stocking_cog, "render_buildable"):
+                            try:
+                                out_path = await stocking_cog.render_buildable(target_id, buildable_key)
+                            except Exception:
+                                out_path = None
+
+                        external_mention = member.mention if member else (
+                                    getattr(user_obj, "mention", None) or f"<@{target_id}>")
+                        if out_path and getattr(out_path, "exists", lambda: False)():
+                            file = discord.File(out_path, filename=out_path.name)
+                            await message.channel.send(content=f"-# {external_mention}", embed=embed, file=file)
+                        else:
+                            await message.channel.send(content=f"-# {external_mention}", embed=embed)
                     except Exception:
                         try:
                             await message.channel.send(embed=embed)
