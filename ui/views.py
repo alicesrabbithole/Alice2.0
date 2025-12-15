@@ -23,7 +23,8 @@ logger = logging.getLogger(__name__)
 _award_lock = asyncio.Lock()
 
 
-async def _attempt_award_completion(interaction: discord.Interaction, bot: discord.Client, puzzle_key: str, user_id: int):
+async def _attempt_award_completion(interaction: discord.Interaction, bot: discord.Client, puzzle_key: str,
+                                    user_id: int):
     """
     Safe helper to attempt awarding the completion/reward role and sending a congrats followup.
     Uses a lock to avoid racing multiple concurrent collectors.
@@ -99,7 +100,8 @@ async def _attempt_award_completion(interaction: discord.Interaction, bot: disco
                 # followup may fail if not deferred; attempt response if available
                 try:
                     if not interaction.response.is_done():
-                        await interaction.response.send_message(congrats_text, ephemeral=False, allowed_mentions=no_pings)
+                        await interaction.response.send_message(congrats_text, ephemeral=False,
+                                                                allowed_mentions=no_pings)
                 except Exception:
                     logger.debug("Could not send congrats via followup or response", exc_info=True)
 
@@ -130,14 +132,14 @@ class DropView(discord.ui.View):
     """The view for a puzzle piece drop, containing the 'Collect' button."""
 
     def __init__(
-        self,
-        bot,
-        puzzle_key: str,
-        puzzle_display_name: str,
-        piece_id: str,
-        claim_limit: int,
-        button_color=None,
-        timeout: float = 30.0,
+            self,
+            bot,
+            puzzle_key: str,
+            puzzle_display_name: str,
+            piece_id: str,
+            claim_limit: int,
+            button_color=None,
+            timeout: float = 30.0,
     ):
         super().__init__(timeout=timeout)
         self.bot = bot
@@ -210,10 +212,13 @@ class DropView(discord.ui.View):
         # ==== Reward Role, Finisher, and Logging ====
         # Run awarding helper (will re-check completeness and handle messaging)
         try:
-            awarded, reason = await _attempt_award_completion(interaction, self.bot, self.puzzle_key, interaction.user.id)
-            logger.debug("Award attempt result for %s on %s: %s", interaction.user.id, self.puzzle_key, (awarded, reason))
+            awarded, reason = await _attempt_award_completion(interaction, self.bot, self.puzzle_key,
+                                                              interaction.user.id)
+            logger.debug("Award attempt result for %s on %s: %s", interaction.user.id, self.puzzle_key,
+                         (awarded, reason))
         except Exception:
-            logger.exception("Error while attempting to award completion for %s on %s", interaction.user.id, self.puzzle_key)
+            logger.exception("Error while attempting to award completion for %s on %s", interaction.user.id,
+                             self.puzzle_key)
 
         # Track first finisher (persisted) — store only user_id (no timestamp)
         meta = PUZZLE_CONFIG.get(self.puzzle_key, {})
@@ -272,13 +277,13 @@ class PuzzleGalleryView(discord.ui.View):
     PROGRESS_BAR_CROP_HEIGHT = 0
 
     def __init__(
-        self,
-        bot,
-        interaction: Optional[Interaction],
-        user_puzzle_keys: list[str],
-        current_index: int = 0,
-        owner_id: Optional[int] = None,
-        opener_id: Optional[int] = None,
+            self,
+            bot,
+            interaction: Optional[Interaction],
+            user_puzzle_keys: list[str],
+            current_index: int = 0,
+            owner_id: Optional[int] = None,
+            opener_id: Optional[int] = None,
     ):
         super().__init__(timeout=300.0)
         self.bot = bot
@@ -424,7 +429,8 @@ class PuzzleGalleryView(discord.ui.View):
         if target_interaction:
             # If we have an Interaction, edit the original response (slash flow)
             try:
-                await target_interaction.edit_original_response(embed=embed, view=self, attachments=[file] if file else [])
+                await target_interaction.edit_original_response(embed=embed, view=self,
+                                                                attachments=[file] if file else [])
                 return
             except Exception:
                 # fall through to no-interaction path
@@ -496,7 +502,8 @@ class LeaderboardView(discord.ui.View):
 
     PAGE_SIZE = 10
 
-    def __init__(self, bot, guild: Optional[discord.Guild], puzzle_key: str, leaderboard_data: List[tuple], page: int = 0, opener_id: Optional[int] = None):
+    def __init__(self, bot, guild: Optional[discord.Guild], puzzle_key: str, leaderboard_data: List[tuple],
+                 page: int = 0, opener_id: Optional[int] = None):
         super().__init__(timeout=300.0)
         self.bot = bot
         self.guild = guild
@@ -635,6 +642,55 @@ async def open_leaderboard_view(bot, interaction: Interaction, puzzle_key: str):
     This helper only defers when safe and attaches opener_id so only the opener can
     control the leaderboard view by default.
     """
+
+    # --- enforce hidden-puzzle policy centrally ---
+    try:
+        hidden = set(getattr(bot, "data", {}).get("hidden_puzzles", []))
+    except Exception:
+        hidden = set()
+
+    if puzzle_key in hidden:
+        # determine admin permission in this guild (conservative default: not admin)
+        is_admin_user = False
+        try:
+            if interaction and interaction.guild is not None:
+                is_admin_user = (
+                        interaction.user.id == getattr(interaction.guild, "owner_id", None)
+                        or (getattr(interaction.user, "guild_permissions",
+                                    None) and interaction.user.guild_permissions.manage_guild)
+                )
+        except Exception:
+            is_admin_user = False
+
+        # privileged list from persistent data (list of user IDs)
+        try:
+            privileged = set(getattr(bot, "data", {}).get("always_show_for", []))
+            is_privileged_user = int(interaction.user.id) in {int(x) for x in privileged} if privileged else False
+        except Exception:
+            is_privileged_user = False
+
+        if not (is_admin_user or is_privileged_user):
+            # don't leak existence — reply ephemeral and stop
+            try:
+                if interaction and getattr(interaction, "response",
+                                           None) is not None and not interaction.response.is_done():
+                    await interaction.response.send_message("Puzzle not found.", ephemeral=True)
+                else:
+                    try:
+                        if interaction and getattr(interaction, "followup", None) is not None:
+                            await interaction.followup.send("Puzzle not found.", ephemeral=True)
+                        else:
+                            await interaction.response.send_message("Puzzle not found.", ephemeral=True)
+                    except Exception:
+                        try:
+                            await interaction.response.send_message("Puzzle not found.", ephemeral=True)
+                        except Exception:
+                            pass
+            except Exception:
+                pass
+            return None
+    # --- end hidden-puzzle policy ---
+
     try:
         # Only defer if the interaction hasn't been responded to already.
         if not interaction.response.is_done():
@@ -651,7 +707,8 @@ async def open_leaderboard_view(bot, interaction: Interaction, puzzle_key: str):
     ]
     leaderboard_data.sort(key=lambda x: (-x[1], x[0]))
 
-    view = LeaderboardView(bot, interaction.guild, puzzle_key, leaderboard_data, page=0, opener_id=(interaction.user.id if interaction and interaction.user else None))
+    view = LeaderboardView(bot, interaction.guild, puzzle_key, leaderboard_data, page=0,
+                           opener_id=(interaction.user.id if interaction and interaction.user else None))
     embed = await view.generate_embed()
 
     # Use followup (works after defer or if interaction already responded)

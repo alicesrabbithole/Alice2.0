@@ -89,6 +89,29 @@ class PuzzlesCog(commands.Cog, name="Puzzles"):
         if not puzzle_key:
             return await ctx.send(f"{Emojis.FAILURE} Puzzle not found: `{puzzle_name}`", ephemeral=True)
 
+        # Hidden puzzles policy:
+        # - Admins can always see them (guild owner or manage_guild).
+        # - Users listed in bot.data['always_show_for'] can always see them (your exception).
+        # - Everyone else sees "not found" for hidden puzzles to avoid leaking existence.
+        hidden = set(self.bot.data.get("hidden_puzzles", []))
+
+        # Determine admin permission in this guild (conservative default: not admin)
+        is_admin_user = False
+        try:
+            if ctx.guild is not None:
+                is_admin_user = ctx.author.id == getattr(ctx.guild, "owner_id", None) or ctx.author.guild_permissions.manage_guild
+        except Exception:
+            is_admin_user = False
+
+        # Privileged list from persistent data (list of user IDs)
+        privileged = set(self.bot.data.get("always_show_for", []))  # put your user id here to always see
+        is_privileged_user = int(ctx.author.id) in {int(x) for x in privileged} if privileged else False
+
+        # If puzzle is hidden, only allow admins or privileged users
+        if puzzle_key in hidden and not (is_admin_user or is_privileged_user):
+            # Treat as "not found" for non-admin/non-privileged to avoid leaking existence
+            return await ctx.send(f"{Emojis.FAILURE} Puzzle not found: `{puzzle_name}`", ephemeral=True)
+
         # If invoked as a slash command, prefer the interaction-based helper (keeps behavior consistent).
         interaction = getattr(ctx, "interaction", None)
         if interaction:
@@ -175,6 +198,61 @@ class PuzzlesCog(commands.Cog, name="Puzzles"):
             display = get_puzzle_display_name(self.bot.data, key)
             lines.append(f"- {display} (`{key}`)")
         await ctx.send("Hidden puzzles:\n" + "\n".join(lines), ephemeral=True)
+
+    # -------------------------
+    # Admin helpers to manage privileged 'always_show_for' list
+    # -------------------------
+    @commands.hybrid_command(name="always_show_add", description="Allow a user to always see hidden puzzles (admin only).")
+    @is_admin()
+    async def always_show_add(self, ctx: commands.Context, user: discord.User):
+        """Add a user to the always-show list so they can view hidden puzzles."""
+        uid = int(user.id)
+        self.bot.data.setdefault("always_show_for", [])
+        if any(int(x) == uid for x in self.bot.data["always_show_for"]):
+            return await ctx.send(f"✅ {user} is already privileged to view hidden puzzles.", ephemeral=True)
+
+        self.bot.data["always_show_for"].append(uid)
+        try:
+            save_data(self.bot.data)
+        except Exception:
+            logger.exception("Failed to persist always_show_for list")
+
+        await ctx.send(f"✅ {user} can now see hidden puzzles.", ephemeral=True)
+
+    @commands.hybrid_command(name="always_show_remove", description="Remove a user from the always-show list (admin only).")
+    @is_admin()
+    async def always_show_remove(self, ctx: commands.Context, user: discord.User):
+        """Remove a user from the always-show list."""
+        uid = int(user.id)
+        current = [int(x) for x in self.bot.data.get("always_show_for", [])]
+        if uid not in current:
+            return await ctx.send(f"ℹ️ {user} is not in the always-show list.", ephemeral=True)
+
+        self.bot.data["always_show_for"] = [x for x in current if int(x) != uid]
+        try:
+            save_data(self.bot.data)
+        except Exception:
+            logger.exception("Failed to persist always_show_for list")
+
+        await ctx.send(f"✅ {user} no longer has privileged access to hidden puzzles.", ephemeral=True)
+
+    @commands.hybrid_command(name="always_show_list", description="List users who can always view hidden puzzles (admin only).")
+    @is_admin()
+    async def always_show_list(self, ctx: commands.Context):
+        """List privileged users who can view hidden puzzles regardless of admin status."""
+        raw = self.bot.data.get("always_show_for", [])
+        if not raw:
+            return await ctx.send("No users are currently privileged to view hidden puzzles.", ephemeral=True)
+
+        lines = []
+        for uid in raw:
+            try:
+                u = self.bot.get_user(int(uid)) or await self.bot.fetch_user(int(uid))
+                lines.append(f"- {u} (`{int(uid)}`)")
+            except Exception:
+                lines.append(f"- <unknown user> (`{int(uid)}`)")
+
+        await ctx.send("Privileged users who can always view hidden puzzles:\n" + "\n".join(lines), ephemeral=True)
 
 
 async def setup(bot: commands.Bot):
