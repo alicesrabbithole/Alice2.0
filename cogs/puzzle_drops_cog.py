@@ -229,20 +229,30 @@ class PuzzleDropsCog(commands.Cog, name="Puzzle Drops"):
 
                 # If either condition is met, trigger. Update state *before* calling _spawn_drop to avoid races.
                 if time_ready or msgs_reached:
-                    # choose from non-hidden puzzles only
-                    candidates = self._available_puzzles()
-                    if not candidates:
-                        logger.debug("drop_scheduler: no available (non-hidden) puzzles to spawn for random frequency mode; skipping.")
-                        continue
-                    puzzle_key = random.choice(candidates)
-                    # Update timing state up-front
-                    raw_cfg["last_drop_time"] = now.isoformat()
-                    raw_cfg["next_trigger_time"] = random.randint(min_secs, max_secs)
-                    raw_cfg["next_trigger_messages"] = random.randint(min_msgs, max_msgs)
-                    raw_cfg["message_count"] = 0
-                    data_changed = True
+                    stored_puzzle = raw_cfg.get("puzzle", "all_puzzles")
+                    # If configured for a specific puzzle, respect it (unless hidden). Otherwise choose from non-hidden puzzles.
+                    if stored_puzzle and stored_puzzle != "all_puzzles":
+                        puzzle_key = resolve_puzzle_key(self.bot.data, stored_puzzle)
+                        if puzzle_key and puzzle_key in set(self.bot.data.get("hidden_puzzles", []) or []):
+                            logger.debug("drop_scheduler: random-frequency configured for specific puzzle %s but it's hidden; skipping.", puzzle_key)
+                            puzzle_key = None
+                    else:
+                        candidates = self._available_puzzles()
+                        if not candidates:
+                            logger.debug("drop_scheduler: no available (non-hidden) puzzles to spawn for random frequency mode; skipping.")
+                            puzzle_key = None
+                        else:
+                            puzzle_key = random.choice(candidates)
 
-                    await self._spawn_drop(channel, puzzle_key)
+                    if puzzle_key:
+                        # Update timing state up-front
+                        raw_cfg["last_drop_time"] = now.isoformat()
+                        raw_cfg["next_trigger_time"] = random.randint(min_secs, max_secs)
+                        raw_cfg["next_trigger_messages"] = random.randint(min_msgs, max_msgs)
+                        raw_cfg["message_count"] = 0
+                        data_changed = True
+
+                        await self._spawn_drop(channel, puzzle_key)
                 continue
 
             # --- Timer mode ---
@@ -259,12 +269,10 @@ class PuzzleDropsCog(commands.Cog, name="Puzzle Drops"):
                     if not puzzle_slug:
                         continue
                     if puzzle_slug == "all_puzzles":
-                        # choose from non-hidden puzzles only
                         candidates = self._available_puzzles()
                         puzzle_key = random.choice(candidates) if candidates else None
                     else:
                         puzzle_key = resolve_puzzle_key(self.bot.data, puzzle_slug)
-                        # if the chosen puzzle is hidden, skip the spawn
                         if puzzle_key and puzzle_key in set(self.bot.data.get("hidden_puzzles", []) or []):
                             logger.debug("drop_scheduler: timer mode would spawn hidden puzzle %s; skipping.", puzzle_key)
                             puzzle_key = None
@@ -314,18 +322,27 @@ class PuzzleDropsCog(commands.Cog, name="Puzzle Drops"):
 
             # If either condition met, trigger; update state before spawn to avoid duplicates.
             if msgs_reached or time_ready:
-                # choose from non-hidden puzzles only
-                candidates = self._available_puzzles()
-                if candidates:
-                    puzzle_key = random.choice(candidates)
+                stored_puzzle = raw_cfg.get("puzzle", "all_puzzles")
+                if stored_puzzle and stored_puzzle != "all_puzzles":
+                    puzzle_key = resolve_puzzle_key(self.bot.data, stored_puzzle)
+                    if puzzle_key and puzzle_key in set(self.bot.data.get("hidden_puzzles", []) or []):
+                        logger.debug("on_message: random-frequency configured for specific puzzle %s but it's hidden; skipping.", puzzle_key)
+                        puzzle_key = None
+                else:
+                    candidates = self._available_puzzles()
+                    if candidates:
+                        puzzle_key = random.choice(candidates)
+                    else:
+                        logger.debug("on_message: no available (non-hidden) puzzles to spawn for random frequency mode; skipping.")
+                        puzzle_key = None
+
+                if puzzle_key:
                     raw_cfg["last_drop_time"] = now.isoformat()
                     raw_cfg["next_trigger_time"] = random.randint(min_secs, max_secs)
                     raw_cfg["next_trigger_messages"] = random.randint(min_msgs, max_msgs)
                     raw_cfg["message_count"] = 0
                     save_data(self.bot.data)
                     await self._spawn_drop(message.channel, puzzle_key)
-                else:
-                    logger.debug("on_message: no available (non-hidden) puzzles to spawn for random frequency mode; skipping.")
             return
 
         # --- Old messages mode ---
@@ -334,12 +351,10 @@ class PuzzleDropsCog(commands.Cog, name="Puzzle Drops"):
             if raw_cfg["message_count"] >= raw_cfg.get("next_trigger", raw_cfg.get("value")):
                 puzzle_slug = raw_cfg.get("puzzle")
                 if puzzle_slug == "all_puzzles":
-                    # choose from non-hidden puzzles only
                     candidates = self._available_puzzles()
                     puzzle_key = random.choice(candidates) if candidates else None
                 else:
                     puzzle_key = resolve_puzzle_key(self.bot.data, puzzle_slug)
-                    # skip if hidden
                     if puzzle_key and puzzle_key in set(self.bot.data.get("hidden_puzzles", []) or []):
                         logger.debug("on_message: messages mode would spawn hidden puzzle %s; skipping.", puzzle_key)
                         puzzle_key = None
@@ -463,9 +478,9 @@ class PuzzleDropsCog(commands.Cog, name="Puzzle Drops"):
             ranges = FREQUENCY_LEVELS[level]
             min_secs, max_secs = ranges["time"]
             min_msgs, max_msgs = ranges["messages"]
-            # Keep existing behavior of using "all_puzzles" for random frequency mode.
+            # Respect the passed puzzle argument: allow "all_puzzles" or a specific puzzle slug
             drop_channels[str(channel.id)] = {
-                "puzzle": "all_puzzles",
+                "puzzle": puzzle,
                 "mode": "random",
                 "trigger": "frequency",
                 "frequency_level": level,
@@ -474,7 +489,15 @@ class PuzzleDropsCog(commands.Cog, name="Puzzle Drops"):
                 "next_trigger_messages": random.randint(min_msgs, max_msgs),
                 "message_count": 0,
             }
-            summary = f"{level} random: every {min_secs//60}-{max_secs//60} minutes OR {min_msgs}-{max_msgs} messages"
+            if puzzle == "all_puzzles":
+                summary = f"{level} random: every {min_secs//60}-{max_secs//60} minutes OR {min_msgs}-{max_msgs} messages"
+            else:
+                try:
+                    pk = resolve_puzzle_key(self.bot.data, puzzle)
+                    pretty = get_puzzle_display_name(self.bot.data, pk) if pk else puzzle
+                except Exception:
+                    pretty = puzzle
+                summary = f"{level} random (within **{pretty}**)"
 
         else:
             return await ctx.send("❌ Invalid mode. Use 'timer', 'messages', or 'random'.", ephemeral=True)
