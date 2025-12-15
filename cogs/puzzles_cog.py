@@ -18,6 +18,7 @@ from utils.db_utils import (
 from ui.views import PuzzleGalleryView, open_leaderboard_view, LeaderboardView
 from utils.theme import Emojis, Colors
 from utils.checks import is_admin
+from typing import Literal
 
 logger = logging.getLogger(__name__)
 
@@ -27,6 +28,49 @@ class PuzzlesCog(commands.Cog, name="Puzzles"):
 
     def __init__(self, bot: commands.Bot):
         self.bot = bot
+
+    async def _reply(
+        self,
+        ctx: commands.Context,
+        content: Optional[str] = None,
+        *,
+        embed: Optional[discord.Embed] = None,
+        file: Optional[discord.File] = None,
+        view: Optional[discord.ui.View] = None,
+        ephemeral: bool = False,
+        mention_author: bool = False,
+    ):
+        """
+        Unified reply helper that works for both prefix (Context) and slash (Interaction) invocations.
+        - If invoked via Interaction, prefer interaction.response.send_message (or followup if already responded).
+        - Otherwise fall back to ctx.send for prefix commands.
+        Accepts content, embed, file, view and ephemeral flag.
+        """
+        interaction = getattr(ctx, "interaction", None)
+        try:
+            if interaction and isinstance(interaction, discord.Interaction):
+                # If the response isn't used yet, use response.send_message
+                if not interaction.response.is_done():
+                    await interaction.response.send_message(
+                        content, embed=embed, file=file, view=view, ephemeral=ephemeral, mention_author=mention_author
+                    )
+                else:
+                    await interaction.followup.send(
+                        content, embed=embed, file=file, view=view, ephemeral=ephemeral, mention_author=mention_author
+                    )
+                return
+        except Exception:
+            logger.debug("Reply via interaction failed, falling back to ctx.send", exc_info=True)
+
+        # Fallback for prefix context
+        try:
+            await ctx.send(content, embed=embed, file=file, view=view, mention_author=mention_author)
+        except Exception:
+            # last resort: try a plain send without extras
+            try:
+                await ctx.send(content or (embed.title if embed else None))
+            except Exception:
+                logger.exception("Failed to send message via ctx.send")
 
     async def puzzle_autocomplete(self, interaction: discord.Interaction, current: str) -> List[app_commands.Choice[str]]:
         """Autocomplete for puzzle names, showing the display name."""
@@ -80,7 +124,7 @@ class PuzzlesCog(commands.Cog, name="Puzzles"):
 
         # If there are no puzzles configured at all, inform the user.
         if not user_puzzle_keys:
-            return await ctx.send("There are no puzzles configured yet.", ephemeral=True)
+            return await self._reply(ctx, "There are no puzzles configured yet.", ephemeral=True)
 
         # Pass the interaction when available so the view can edit the original response later.
         interaction = getattr(ctx, "interaction", None)
@@ -89,10 +133,9 @@ class PuzzlesCog(commands.Cog, name="Puzzles"):
 
         # Send using interaction context if available (slash), otherwise ctx.send works for prefix.
         if interaction:
-            # For slash commands we can attach view and file directly via ctx.send
-            await ctx.send(embed=embed, file=file, view=view, ephemeral=False)
+            await self._reply(ctx, None, embed=embed, file=file, view=view, ephemeral=False)
         else:
-            await ctx.send(embed=embed, file=file, view=view)
+            await self._reply(ctx, None, embed=embed, file=file, view=view, ephemeral=False)
 
     @commands.hybrid_command(name="leaderboard", description="Show the top collectors for a puzzle.")
     @app_commands.autocomplete(puzzle_name=puzzle_autocomplete)
@@ -101,7 +144,7 @@ class PuzzlesCog(commands.Cog, name="Puzzles"):
         await ctx.defer(ephemeral=False)
         puzzle_key = resolve_puzzle_key(self.bot.data, puzzle_name)
         if not puzzle_key:
-            return await ctx.send(f"{Emojis.FAILURE} Puzzle not found: `{puzzle_name}`", ephemeral=True)
+            return await self._reply(ctx, f"{Emojis.FAILURE} Puzzle not found: `{puzzle_name}`", ephemeral=True)
 
         # Hidden puzzles policy:
         # - Admins can always see them (guild owner or manage_guild).
@@ -124,7 +167,7 @@ class PuzzlesCog(commands.Cog, name="Puzzles"):
         # If puzzle is hidden, only allow admins or privileged users
         if puzzle_key in hidden and not (is_admin_user or is_privileged_user):
             # Treat as "not found" for non-admin/non-privileged to avoid leaking existence
-            return await ctx.send(f"{Emojis.FAILURE} Puzzle not found: `{puzzle_name}`", ephemeral=True)
+            return await self._reply(ctx, f"{Emojis.FAILURE} Puzzle not found: `{puzzle_name}`", ephemeral=True)
 
         # If invoked as a slash command, prefer the interaction-based helper (keeps behavior consistent).
         interaction = getattr(ctx, "interaction", None)
@@ -144,7 +187,7 @@ class PuzzlesCog(commands.Cog, name="Puzzles"):
         # Use the same LeaderboardView from ui.views so the styling/pagination matches the gallery.
         view = LeaderboardView(self.bot, ctx.guild, puzzle_key, leaderboard_data, page=0)
         embed = await view.generate_embed()
-        await ctx.send(embed=embed, view=view, ephemeral=False)
+        await self._reply(ctx, None, embed=embed, view=view, ephemeral=False)
 
     @commands.hybrid_command(name="firstfinisher", description="Show who finished a puzzle first!")
     @app_commands.autocomplete(puzzle_name=puzzle_autocomplete)
@@ -152,12 +195,13 @@ class PuzzlesCog(commands.Cog, name="Puzzles"):
         puzzle_key = resolve_puzzle_key(self.bot.data, puzzle_name)
         finishers = self.bot.data.get("puzzle_finishers", {}).get(puzzle_key, [])
         if not finishers:
-            return await ctx.send("No one has completed this puzzle yet!", ephemeral=True)
+            return await self._reply(ctx, "No one has completed this puzzle yet!", ephemeral=True)
         first = finishers[0]
         user = self.bot.get_user(first["user_id"]) or await self.bot.fetch_user(first["user_id"])
-        await ctx.send(
+        await self._reply(
+            ctx,
             f"The first person to complete **{get_puzzle_display_name(self.bot.data, puzzle_key)}** was: {user.mention}`!",
-            ephemeral=False
+            ephemeral=False,
         )
 
     # -------------------------
@@ -165,8 +209,15 @@ class PuzzlesCog(commands.Cog, name="Puzzles"):
     # -------------------------
     @commands.hybrid_command(name="puzzle_toggle", description="Toggle hide/unhide state for a puzzle (admin only).")
     @app_commands.autocomplete(puzzle_name=puzzle_autocomplete)
+    @app_commands.choices(
+        action=[
+            app_commands.Choice(name="hide", value="hide"),
+            app_commands.Choice(name="unhide", value="unhide"),
+        ]
+    )
     @is_admin()
-    async def puzzle_toggle(self, ctx: commands.Context, puzzle_name: str, action: Optional[str] = None):
+    async def puzzle_toggle(self, ctx: commands.Context, puzzle_name: str,
+                            action: Optional[Literal["hide", "unhide"]] = None):
         """
         Toggle whether a puzzle is hidden from non-admin galleries.
 
@@ -178,25 +229,29 @@ class PuzzlesCog(commands.Cog, name="Puzzles"):
         await ctx.defer(ephemeral=True)
         puzzle_key = resolve_puzzle_key(self.bot.data, puzzle_name)
         if not puzzle_key:
-            return await ctx.followup.send(f"❌ Puzzle not found: `{puzzle_name}`", ephemeral=True)
+            return await self._reply(ctx, f"❌ Puzzle not found: `{puzzle_name}`", ephemeral=True)
 
         hidden = set(self.bot.data.get("hidden_puzzles", []))
 
         action_norm = (action or "").strip().lower()
         if action_norm not in ("hide", "unhide", ""):
-            return await ctx.followup.send("Invalid action. Use `hide`, `unhide`, or omit to toggle.", ephemeral=True)
+            return await self._reply(ctx, "Invalid action. Use `hide`, `unhide`, or omit to toggle.", ephemeral=True)
 
         changed = False
         if action_norm == "hide":
             if puzzle_key in hidden:
-                return await ctx.followup.send(f"ℹ️ Puzzle **{get_puzzle_display_name(self.bot.data, puzzle_key)}** is already hidden.", ephemeral=True)
+                return await self._reply(ctx,
+                                         f"ℹ️ Puzzle **{get_puzzle_display_name(self.bot.data, puzzle_key)}** is already hidden.",
+                                         ephemeral=True)
             hidden.add(puzzle_key)
             changed = True
             result_msg = f"✅ Hidden puzzle **{get_puzzle_display_name(self.bot.data, puzzle_key)}**."
             action_taken = "hide"
         elif action_norm == "unhide":
             if puzzle_key not in hidden:
-                return await ctx.followup.send(f"ℹ️ Puzzle **{get_puzzle_display_name(self.bot.data, puzzle_key)}** is not hidden.", ephemeral=True)
+                return await self._reply(ctx,
+                                         f"ℹ️ Puzzle **{get_puzzle_display_name(self.bot.data, puzzle_key)}** is not hidden.",
+                                         ephemeral=True)
             hidden.remove(puzzle_key)
             changed = True
             result_msg = f"✅ Unhidden puzzle **{get_puzzle_display_name(self.bot.data, puzzle_key)}**."
@@ -256,7 +311,7 @@ class PuzzlesCog(commands.Cog, name="Puzzles"):
                 except Exception:
                     logger.exception("puzzle_toggle: failed to resolve audit channel %r", audit_id)
 
-        await ctx.followup.send(result_msg, ephemeral=True)
+        await self._reply(ctx, result_msg, ephemeral=True)
 
     @commands.hybrid_command(name="puzzle_hidden_list", description="List puzzles currently hidden from member galleries.")
     @is_admin()
@@ -265,18 +320,17 @@ class PuzzlesCog(commands.Cog, name="Puzzles"):
         await ctx.defer(ephemeral=True)
         hidden = list(self.bot.data.get("hidden_puzzles", []))
         if not hidden:
-            await ctx.followup.send("No puzzles are currently hidden.", ephemeral=True)
-            return
+            return await self._reply(ctx, "No puzzles are currently hidden.", ephemeral=True)
         lines = []
         for key in hidden:
             display = get_puzzle_display_name(self.bot.data, key)
             lines.append(f"- {display} (`{key}`)")
         # Log that an admin listed hidden puzzles (audit trail)
         try:
-            logger.info("puzzle_hidden_list: user=%s(%s) listed %d hidden puzzles", getattr(ctx.author,"name",None), getattr(ctx.author,"id",None), len(hidden))
+            logger.info("puzzle_hidden_list: user=%s(%s) listed %d hidden puzzles", getattr(ctx.author, "name", None), getattr(ctx.author, "id", None), len(hidden))
         except Exception:
             logger.exception("puzzle_hidden_list: logger.info failed")
-        await ctx.followup.send("Hidden puzzles:\n" + "\n".join(lines), ephemeral=True)
+        await self._reply(ctx, "Hidden puzzles:\n" + "\n".join(lines), ephemeral=True)
 
     # -------------------------
     # Admin helpers to manage privileged 'always_show_for' list
@@ -288,7 +342,7 @@ class PuzzlesCog(commands.Cog, name="Puzzles"):
         uid = int(user.id)
         self.bot.data.setdefault("always_show_for", [])
         if any(int(x) == uid for x in self.bot.data["always_show_for"]):
-            return await ctx.send(f"✅ {user} is already privileged to view hidden puzzles.", ephemeral=True)
+            return await self._reply(ctx, f"✅ {user} is already privileged to view hidden puzzles.", ephemeral=True)
 
         self.bot.data["always_show_for"].append(uid)
         try:
@@ -296,7 +350,7 @@ class PuzzlesCog(commands.Cog, name="Puzzles"):
         except Exception:
             logger.exception("Failed to persist always_show_for list")
 
-        await ctx.send(f"✅ {user} can now see hidden puzzles.", ephemeral=True)
+        await self._reply(ctx, f"✅ {user} can now see hidden puzzles.", ephemeral=True)
 
     @commands.hybrid_command(name="always_show_remove", description="Remove a user from the always-show list (admin only).")
     @is_admin()
@@ -305,7 +359,7 @@ class PuzzlesCog(commands.Cog, name="Puzzles"):
         uid = int(user.id)
         current = [int(x) for x in self.bot.data.get("always_show_for", [])]
         if uid not in current:
-            return await ctx.send(f"ℹ️ {user} is not in the always-show list.", ephemeral=True)
+            return await self._reply(ctx, f"ℹ️ {user} is not in the always-show list.", ephemeral=True)
 
         self.bot.data["always_show_for"] = [x for x in current if int(x) != uid]
         try:
@@ -313,7 +367,7 @@ class PuzzlesCog(commands.Cog, name="Puzzles"):
         except Exception:
             logger.exception("Failed to persist always_show_for list")
 
-        await ctx.send(f"✅ {user} no longer has privileged access to hidden puzzles.", ephemeral=True)
+        await self._reply(ctx, f"✅ {user} no longer has privileged access to hidden puzzles.", ephemeral=True)
 
     @commands.hybrid_command(name="always_show_list", description="List users who can always view hidden puzzles (admin only).")
     @is_admin()
@@ -321,7 +375,7 @@ class PuzzlesCog(commands.Cog, name="Puzzles"):
         """List privileged users who can view hidden puzzles regardless of admin status."""
         raw = self.bot.data.get("always_show_for", [])
         if not raw:
-            return await ctx.send("No users are currently privileged to view hidden puzzles.", ephemeral=True)
+            return await self._reply(ctx, "No users are currently privileged to view hidden puzzles.", ephemeral=True)
 
         lines = []
         for uid in raw:
@@ -331,7 +385,7 @@ class PuzzlesCog(commands.Cog, name="Puzzles"):
             except Exception:
                 lines.append(f"- <unknown user> (`{int(uid)}`)")
 
-        await ctx.send("Privileged users who can always view hidden puzzles:\n" + "\n".join(lines), ephemeral=True)
+        await self._reply(ctx, "Privileged users who can always view hidden puzzles:\n" + "\n".join(lines), ephemeral=True)
 
     # -------------------------
     # Finishes log / overall leaderboard utilities
@@ -417,9 +471,9 @@ class PuzzlesCog(commands.Cog, name="Puzzles"):
             bio = io.BytesIO(content.encode("utf-8"))
             bio.seek(0)
             file = discord.File(bio, filename="finishes_log.csv")
-            await ctx.followup.send("Here is the finishes log:", file=file, ephemeral=True)
+            await self._reply(ctx, "Here is the finishes log:", file=file, ephemeral=True)
         else:
-            await ctx.followup.send(f"```\n{content}\n```", ephemeral=True)
+            await self._reply(ctx, f"```\n{content}\n```", ephemeral=True)
 
     @commands.hybrid_command(name="finishes_overall", description="Show overall leaderboard of puzzles finished per user.")
     async def finishes_overall(self, ctx: commands.Context):
@@ -473,9 +527,9 @@ class PuzzlesCog(commands.Cog, name="Puzzles"):
             bio = io.BytesIO(out.encode("utf-8"))
             bio.seek(0)
             file = discord.File(bio, filename="finishes_overall.txt")
-            await ctx.send(file=file)
+            await self._reply(ctx, None, file=file)
         else:
-            await ctx.send(f"```\n{out}\n```")
+            await self._reply(ctx, f"```\n{out}\n```")
 
     @commands.hybrid_command(name="finishes_backfill_ts", description="(admin) Backfill missing timestamps on existing finish records.")
     @is_admin()
@@ -502,10 +556,10 @@ class PuzzlesCog(commands.Cog, name="Puzzles"):
                 delta_seconds += 1
 
         if not to_update:
-            return await ctx.send("No missing timestamps found; nothing to backfill.", ephemeral=True)
+            return await self._reply(ctx, "No missing timestamps found; nothing to backfill.", ephemeral=True)
 
         if not apply:
-            return await ctx.send(f"Dry-run: {len(to_update)} finish records would be backfilled. Re-run with apply=True to commit.", ephemeral=True)
+            return await self._reply(ctx, f"Dry-run: {len(to_update)} finish records would be backfilled. Re-run with apply=True to commit.", ephemeral=True)
 
         # Apply updates
         for puzzle_key, idx, ts in to_update:
@@ -525,7 +579,7 @@ class PuzzlesCog(commands.Cog, name="Puzzles"):
         except Exception:
             logger.exception("Failed to persist after finishes_backfill_ts")
 
-        await ctx.send(f"Backfilled {len(to_update)} finish records with timestamps.", ephemeral=True)
+        await self._reply(ctx, f"Backfilled {len(to_update)} finish records with timestamps.", ephemeral=True)
 
     # -------------------------
     # Finishes by puzzle (sequential per puzzle)
@@ -576,16 +630,16 @@ class PuzzlesCog(commands.Cog, name="Puzzles"):
             lines.append("")  # blank line between puzzles
 
         if not lines:
-            await ctx.followup.send("No finishers recorded.", ephemeral=True)
-            return
+            return await self._reply(ctx, "No finishers recorded.", ephemeral=True)
 
         out = "\n".join(lines)
         if len(out) > 1900:
             bio = io.BytesIO(out.encode("utf-8"))
             bio.seek(0)
-            await ctx.followup.send("Finishes by puzzle (file):", file=discord.File(bio, filename="finishes_by_puzzle.txt"), ephemeral=True)
+            file = discord.File(bio, filename="finishes_by_puzzle.txt")
+            await self._reply(ctx, "Finishes by puzzle (file):", file=file, ephemeral=True)
         else:
-            await ctx.followup.send(f"```\n{out}\n```", ephemeral=True)
+            await self._reply(ctx, f"```\n{out}\n```", ephemeral=True)
 
     # -------------------------
     # Give item (snowman part or puzzle piece)
@@ -611,7 +665,8 @@ class PuzzlesCog(commands.Cog, name="Puzzles"):
 
         # Basic param checks
         if not item_type or not key or not spec:
-            return await ctx.send(
+            return await self._reply(
+                ctx,
                 "Usage: /giveitem @user <required:bool> <snowman|puzzle> <buildable_or_puzzle_key> <part_or_piece_id>",
                 ephemeral=True,
             )
@@ -621,7 +676,7 @@ class PuzzlesCog(commands.Cog, name="Puzzles"):
         if itype in ("snowman", "stocking", "buildable"):
             stocking_cog = self.bot.get_cog("StockingCog")
             if not stocking_cog:
-                return await ctx.send("Stocking cog is not available on this bot (cannot give snowman parts).", ephemeral=True)
+                return await self._reply(ctx, "Stocking cog is not available on this bot (cannot give snowman parts).", ephemeral=True)
 
             buildable_key = key.strip()
             part_key = spec.strip()
@@ -630,9 +685,9 @@ class PuzzlesCog(commands.Cog, name="Puzzles"):
             try:
                 buildables_def = getattr(stocking_cog, "_buildables_def", {}) or {}
                 if buildables_def and buildable_key not in buildables_def:
-                    return await ctx.send(f"Unknown buildable '{buildable_key}'. Valid keys: {', '.join(sorted(buildables_def.keys()))}", ephemeral=True)
+                    return await self._reply(ctx, f"Unknown buildable '{buildable_key}'. Valid keys: {', '.join(sorted(buildables_def.keys()))}", ephemeral=True)
                 if buildables_def and part_key not in (buildables_def.get(buildable_key, {}).get("parts") or {}):
-                    return await ctx.send(f"Unknown part '{part_key}' for buildable '{buildable_key}'. Valid parts: {', '.join(sorted((buildables_def.get(buildable_key,{}).get('parts') or {}).keys()))}", ephemeral=True)
+                    return await self._reply(ctx, f"Unknown part '{part_key}' for buildable '{buildable_key}'. Valid parts: {', '.join(sorted((buildables_def.get(buildable_key,{}).get('parts') or {}).keys()))}", ephemeral=True)
             except Exception:
                 pass
 
@@ -643,15 +698,15 @@ class PuzzlesCog(commands.Cog, name="Puzzles"):
                 elif hasattr(stocking_cog, "award_sticker"):
                     awarded = await getattr(stocking_cog, "award_sticker")(int(member.id), part_key, None, announce=True)
                 else:
-                    return await ctx.send("StockingCog does not expose an award API I can call.", ephemeral=True)
+                    return await self._reply(ctx, "StockingCog does not expose an award API I can call.", ephemeral=True)
             except Exception:
                 logger.exception("giveitem: award_part call failed")
-                return await ctx.send("Failed to give snowman part due to an internal error. See logs.", ephemeral=True)
+                return await self._reply(ctx, "Failed to give snowman part due to an internal error. See logs.", ephemeral=True)
 
             if awarded:
-                return await ctx.send(f"✅ Gave {part_key} ({buildable_key}) to {member.mention}.", ephemeral=True)
+                return await self._reply(ctx, f"✅ Gave {part_key} ({buildable_key}) to {member.mention}.", ephemeral=True)
             else:
-                return await ctx.send(f"ℹ️ {member.mention} already had that part or the award was skipped.", ephemeral=True)
+                return await self._reply(ctx, f"ℹ️ {member.mention} already had that part or the award was skipped.", ephemeral=True)
 
         # PUZZLE path
         elif itype in ("puzzle", "piece", "puzz"):
@@ -661,7 +716,7 @@ class PuzzlesCog(commands.Cog, name="Puzzles"):
             # resolve puzzle key (accept display name or key)
             resolved = resolve_puzzle_key(self.bot.data, puzzle_key_raw)
             if not resolved:
-                return await ctx.send(f"Puzzle not found: `{puzzle_key_raw}`", ephemeral=True)
+                return await self._reply(ctx, f"Puzzle not found: `{puzzle_key_raw}`", ephemeral=True)
             puzzle_key = resolved
 
             # validate piece exists in pieces registry (if you maintain pieces per puzzle)
@@ -679,16 +734,16 @@ class PuzzlesCog(commands.Cog, name="Puzzles"):
                 piece_exists = False
 
             if pieces_map and not piece_exists:
-                return await ctx.send(f"Piece id `{piece_id}` not found for puzzle `{puzzle_key}`.", ephemeral=True)
+                return await self._reply(ctx, f"Piece id `{piece_id}` not found for puzzle `{puzzle_key}`.", ephemeral=True)
 
             try:
                 added = add_piece_to_user(self.bot.data, int(member.id), puzzle_key, piece_id)
             except Exception:
                 logger.exception("giveitem: add_piece_to_user failed")
-                return await ctx.send("Failed to grant puzzle piece due to internal error.", ephemeral=True)
+                return await self._reply(ctx, "Failed to grant puzzle piece due to internal error.", ephemeral=True)
 
             if not added:
-                return await ctx.send(f"ℹ️ {member.mention} already has piece `{piece_id}` for puzzle `{puzzle_key}`.", ephemeral=True)
+                return await self._reply(ctx, f"ℹ️ {member.mention} already has piece `{piece_id}` for puzzle `{puzzle_key}`.", ephemeral=True)
 
             # persist
             try:
@@ -704,17 +759,18 @@ class PuzzlesCog(commands.Cog, name="Puzzles"):
                     try:
                         awarded, reason = await _attempt_award_completion(interaction, self.bot, puzzle_key, int(member.id))
                         if awarded:
-                            return await ctx.send(f"✅ Granted piece `{piece_id}` to {member.mention} and awarded completion rewards.", ephemeral=True)
+                            return await self._reply(ctx, f"✅ Granted piece `{piece_id}` to {member.mention} and awarded completion rewards.", ephemeral=True)
                     except Exception:
                         logger.exception("giveitem: _attempt_award_completion raised")
             except Exception:
                 # helper not present or failed to import — that's fine
                 pass
 
-            return await ctx.send(f"✅ Granted piece `{piece_id}` for puzzle `{puzzle_key}` to {member.mention}.", ephemeral=True)
+            return await self._reply(ctx, f"✅ Granted piece `{piece_id}` for puzzle `{puzzle_key}` to {member.mention}.", ephemeral=True)
 
         else:
-            return await ctx.send("Unknown item_type — expected 'snowman' or 'puzzle'.", ephemeral=True)
+            return await self._reply(ctx, "Unknown item_type — expected 'snowman' or 'puzzle'.", ephemeral=True)
+
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(PuzzlesCog(bot))
