@@ -394,6 +394,20 @@ class RumbleListenerCog(commands.Cog):
             logger.debug("rumble_listener: found explicit id tokens -> %r", ids)
             return ids
 
+        # TEMP DIAGNOSTIC: log what we saw so we can debug missed winners
+        logger.info("rumble:_extract_winner_ids: message.mentions=%r",
+                    [getattr(m, "id", None) for m in (message.mentions or [])])
+        logger.info("rumble:_extract_winner_ids: content=%r", message.content)
+        # build a combined embed text snapshot for inspection
+        try:
+            emb_texts = []
+            for emb in (message.embeds or []):
+                emb_texts.append({"title": emb.title, "description": emb.description,
+                                  "fields": [(f.name, f.value) for f in (emb.fields or [])]})
+            logger.info("rumble:_extract_winner_ids: embeds=%r", emb_texts)
+        except Exception:
+            logger.exception("rumble:_extract_winner_ids: failed to dump embeds for diagnostic")
+
         try:
             async for prev in message.channel.history(limit=8, before=message.created_at, oldest_first=False):
                 if prev.mentions:
