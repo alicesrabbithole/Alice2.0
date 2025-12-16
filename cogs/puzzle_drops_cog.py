@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 FREQUENCY_LEVELS = {
     "slow": {"time": (90 * 60, 120 * 60), "messages": (150, 200)},
     "average": {"time": (60 * 60, 90 * 60), "messages": (100, 150)},
-    "fast": {"time": (30 * 60, 60 * 60), "messages": (50, 100)},
+    "fast": {"time": (15 * 60, 30 * 60), "messages": (30, 60)},
 }
 
 
