@@ -475,6 +475,7 @@ class RumbleListenerCog(commands.Cog):
             except Exception:
                 return
             if ch_id not in self.channel_part_map and 0 not in self.channel_part_map:
+                logger.debug("rumble:ignoring message in channel=%s (not in channel_part_map)", ch_id)
                 return
 
         # strict author-only: require configured rumble_bot_ids
@@ -483,6 +484,8 @@ class RumbleListenerCog(commands.Cog):
         except Exception:
             return
         if self.rumble_bot_ids and author_id not in self.rumble_bot_ids:
+            logger.debug("rumble:ignoring message from author=%r id=%s (not in rumble_bot_ids)",
+                         getattr(message.author, "name", None), author_id)
             return
 
         # debug logging
