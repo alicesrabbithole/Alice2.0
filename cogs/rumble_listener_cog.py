@@ -3,10 +3,11 @@
 RumbleListenerCog
 
 - Detects Rumble Royale WINNER embeds and awards parts via StockingCog.
-- Strictly honors configured rumble_bot_ids when present (only processes messages authored by those IDs).
+- Strictly honors configured rumble_bot_ids when present (only processes messages authored by those IDs),
+  with a lightweight embed/text sniff fallback for alternate bot IDs that still post Rumble content.
+- Only processes messages in channels listed in channel_part_map (or global mapping key "0").
 - Robust extraction from embeds and content; name->member resolution with fetch/fuzzy fallbacks.
 - Debounce recent identical awards to avoid repeated announcements.
-- PART_EMOJI / PART_COLORS are auto-generated from data/buildables.json via utils.snowman_theme.
 """
 from __future__ import annotations
 
@@ -286,9 +287,16 @@ class RumbleListenerCog(commands.Cog):
         return out
 
     async def _match_names_to_member_ids(self, guild: discord.Guild, candidates: List[str]) -> List[int]:
+        """
+        Robust name -> member id matching.
+        - First tries cached members (fast).
+        - If nothing found and the bot has members intent, best-effort does a full fetch (may be slow).
+        - Falls back to difflib fuzzy matching.
+        """
         if not guild or not candidates:
             return []
 
+        # build a mapping from currently cached members first (fast)
         members = list(guild.members or [])
         norm_map: Dict[int, Tuple[str, str]] = {}
         for m in members:
@@ -347,26 +355,29 @@ class RumbleListenerCog(commands.Cog):
                             continue
             return out
 
+        # first try with cached members
         matched_ids = await _try_match(norm_map, candidates)
 
-        # If nothing matched and guild small, try fetching
+        # If nothing matched, attempt to fetch members and try again (best-effort).
+        # This requires the bot to have the GUILD_MEMBERS intent; only proceed if available.
         if not matched_ids:
             try:
-                if guild.member_count and guild.member_count <= 1000:
+                if getattr(self.bot, "intents", None) and getattr(self.bot.intents, "members", False):
                     logger.info(
-                        "rumble_listener: fetching members for guild %s to resolve names (count=%s)",
+                        "rumble_listener: no matches from cache; attempting fetch-members fallback for guild %s (may be slow).",
                         guild.id,
-                        guild.member_count,
                     )
                     fetched = []
                     async for m in guild.fetch_members(limit=None):
                         fetched.append(m)
                     norm_map = {m.id: (_normalize_name(m.name or ""), _normalize_name(m.display_name or "")) for m in fetched}
                     matched_ids = await _try_match(norm_map, candidates)
+                else:
+                    logger.debug("rumble_listener: bot missing members intent; cannot fetch members for better matching.")
             except Exception:
-                logger.exception("rumble_listener: failed to fetch members for name resolution")
+                logger.exception("rumble_listener: fetch-members fallback failed")
 
-        # fuzzy fallback
+        # fuzzy fallback using difflib (if still nothing)
         if not matched_ids:
             try:
                 import difflib
@@ -499,10 +510,48 @@ class RumbleListenerCog(commands.Cog):
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
+        # Only process guild messages
         if message.guild is None:
             return
 
-        # debug summary
+        # If channel mappings exist, only process messages in configured channels (or global key 0).
+        if self.channel_part_map:
+            try:
+                ch_id = int(getattr(message.channel, "id", 0))
+            except Exception:
+                return
+            if ch_id not in self.channel_part_map and 0 not in self.channel_part_map:
+                return
+
+        # Lightweight author/channel/rumble filtering:
+        # - If rumble_bot_ids is configured, only accept messages from those authors,
+        #   unless the embed/text contains "rumble" or "royale" (fallback for alternate bot IDs that post real Rumble content).
+        try:
+            author_id = int(getattr(message.author, "id", 0))
+        except Exception:
+            return
+
+        if self.rumble_bot_ids and author_id not in self.rumble_bot_ids:
+            lowered = ""
+            if message.content:
+                lowered += message.content.lower() + " "
+            for emb in (message.embeds or []):
+                try:
+                    if emb.author and emb.author.name:
+                        lowered += str(emb.author.name).lower() + " "
+                    if emb.title:
+                        lowered += str(emb.title).lower() + " "
+                    if emb.description:
+                        lowered += str(emb.description).lower() + " "
+                    for f in (emb.fields or []):
+                        lowered += (str(f.name or "") + " " + str(f.value or "") + " ").lower()
+                except Exception:
+                    pass
+            if "rumble" not in lowered and "royale" not in lowered:
+                # Not a Rumble message from a verified rumble_bot_id -> ignore
+                return
+
+        # Debug logging (moved after the early filters so logs stay quieter)
         try:
             if logger.isEnabledFor(logging.INFO):
                 logger.info(
@@ -525,23 +574,6 @@ class RumbleListenerCog(commands.Cog):
                         logger.exception("rumble:on_message: failed to inspect embed %d", i)
         except Exception:
             logger.exception("rumble:on_message: debug logging failed")
-
-        # safe author id
-        try:
-            author_id = int(getattr(message.author, "id", 0))
-        except Exception:
-            return
-
-        # Avoid processing messages sent by this bot itself
-        try:
-            if self.bot.user and getattr(message.author, "id", None) == getattr(self.bot.user, "id", None):
-                return
-        except Exception:
-            pass
-
-        # If rumble_bot_ids configured, only accept messages authored by them (strict mode).
-        if self.rumble_bot_ids and author_id not in self.rumble_bot_ids:
-            return
 
         # Detect a winner-style message (broad heuristics)
         found = False
@@ -581,9 +613,16 @@ class RumbleListenerCog(commands.Cog):
         logger.info("rumble:channel_mapping_for_channel=%r", self.channel_part_map.get(message.channel.id))
 
         if not winner_ids:
+            # log more context to help debugging intermittent failures
             try:
                 cands = self._collect_candidate_names(message)
                 logger.info("rumble:candidates_extracted=%r", cands)
+                # dump embed fields for inspection to understand why name matching failed
+                for i, emb in enumerate(message.embeds or []):
+                    try:
+                        logger.info("rumble:embed_dump[%d] title=%r description=%r fields=%r", i, emb.title, emb.description, [(f.name, f.value) for f in (emb.fields or [])])
+                    except Exception:
+                        logger.exception("rumble_listener: failed to dump embed %d for debug", i)
             except Exception:
                 logger.exception("rumble_listener: failed to collect candidate names for debug")
             return
