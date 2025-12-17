@@ -19,13 +19,12 @@ from typing import Dict, List, Optional, Tuple, Any
 import discord
 from discord.ext import commands
 
-from utils.snowman_theme import DEFAULT_COLOR, CANONICAL_EMOJI, CANONICAL_COLORS, generate_part_maps_from_buildables
+from utils.snowman_theme import DEFAULT_COLOR, generate_part_maps_from_buildables
 
 logger = logging.getLogger(__name__)
 
 DATA_DIR = Path("data")
 CONFIG_FILE = DATA_DIR / "rumble_listener_config.json"
-ASSETS_DIR = DATA_DIR / "stocking_assets"
 
 WINNER_TITLE_RE = re.compile(r"\bWINNER\b|WON!?", re.IGNORECASE)
 ADDITIONAL_WIN_RE = re.compile(r"\b(found (?:a|an)|received|was awarded|winner|won)\b", re.IGNORECASE)
@@ -147,16 +146,11 @@ class RumbleListenerCog(commands.Cog):
 
     @staticmethod
     def _extract_ids_from_text(text: str) -> List[int]:
-        ids: List[int] = []
         if not text:
-            return ids
+            return []
         raw_ids = re.findall(r"<@!?(?P<id>\d+)>", text)
-        for r in raw_ids:
-            try:
-                ids.append(int(r))
-            except Exception:
-                pass
-        return ids
+        # preserve order, unique
+        return [int(x) for x in dict.fromkeys(raw_ids)]
 
     def _collect_candidate_names(self, message: discord.Message) -> List[str]:
         def _sanitize_candidate(raw: str) -> str:
@@ -195,10 +189,7 @@ class RumbleListenerCog(commands.Cog):
         try:
             for emb in message.embeds:
                 emb_text = " ".join(
-                    filter(
-                        None,
-                        [emb.title or "", emb.description or ""] + [f.value for f in (emb.fields or [])],
-                    )
+                    filter(None, [emb.title or "", emb.description or ""] + [f.value for f in (emb.fields or [])])
                 )
 
                 for f in (emb.fields or []):
@@ -213,15 +204,14 @@ class RumbleListenerCog(commands.Cog):
                                     candidates.append(c)
                                     break
 
-                if emb.title and WINNER_TITLE_RE.search(emb.title):
-                    if emb.description:
-                        for line in emb.description.splitlines():
-                            line = line.strip()
-                            if line:
-                                c = _sanitize_candidate(line)
-                                if c:
-                                    candidates.append(c)
-                                    break
+                if emb.title and WINNER_TITLE_RE.search(emb.title) and emb.description:
+                    for line in emb.description.splitlines():
+                        line = line.strip()
+                        if line:
+                            c = _sanitize_candidate(line)
+                            if c:
+                                candidates.append(c)
+                                break
 
                 if "participants" in emb_text.lower():
                     part_cands = _extract_participants_block(emb_text)
@@ -248,6 +238,7 @@ class RumbleListenerCog(commands.Cog):
         except Exception:
             pass
 
+        # unique preserve order
         seen = set()
         out: List[str] = []
         for c in candidates:
@@ -363,6 +354,7 @@ class RumbleListenerCog(commands.Cog):
             except Exception:
                 logger.exception("rumble_listener: fuzzy matching failed")
 
+        # unique preserve order
         seen = set()
         out_final = []
         for mid in matched_ids:
@@ -373,6 +365,14 @@ class RumbleListenerCog(commands.Cog):
         return out_final
 
     async def _extract_winner_ids(self, message: discord.Message) -> List[int]:
+        """
+        Try to extract explicit winner IDs in this order:
+        1) mentions on the winner message itself (message.mentions)
+        2) id tokens (<@...>) in message content or in embeds of the winner message
+        3) mentions or id tokens in nearby history (previous message(s) and next message(s))
+        4) name-based extraction (collect candidate names from message/embeds and match members)
+        """
+        # 1) direct mentions on the message
         try:
             if message.mentions:
                 ids = [m.id for m in message.mentions]
@@ -381,6 +381,7 @@ class RumbleListenerCog(commands.Cog):
         except Exception:
             pass
 
+        # 2) explicit id tokens inside message content and embeds
         ids: List[int] = []
         try:
             ids.extend(self._extract_ids_from_text(message.content or ""))
@@ -389,36 +390,39 @@ class RumbleListenerCog(commands.Cog):
                 ids.extend(self._extract_ids_from_text(emb_text))
         except Exception:
             logger.exception("rumble_listener: id extraction failed")
+        # unique preserve order
         ids = [int(x) for x in dict.fromkeys(ids)]
-
         if ids:
             logger.debug("rumble_listener: found explicit id tokens -> %r", ids)
             return ids
 
+        # 3) look in nearby messages: prefer direct mentions or id tokens in the immediate prior message(s),
+        #    because many systems post a ping then a WINNER embed in the following message
         try:
+            # check previous few messages (most recent first)
             async for prev in message.channel.history(limit=8, before=message.created_at, oldest_first=False):
                 if prev.mentions:
                     ids = [m.id for m in prev.mentions]
                     logger.debug("rumble_listener: found mentions in previous message -> %r", ids)
                     return ids
-                mid_tokens = re.findall(r"<@!?(?P<id>\d+)>", prev.content or "")
-                if mid_tokens:
-                    ids = [int(mid_tokens[0])]
-                    logger.debug("rumble_listener: found id token in previous message -> %r", ids)
-                    return ids
+                prev_ids = self._extract_ids_from_text(prev.content or "")
+                if prev_ids:
+                    logger.debug("rumble_listener: found id token in previous message -> %r", prev_ids)
+                    return [int(prev_ids[0])]
+            # check next few messages (in case the ping is after the embed)
             async for after in message.channel.history(limit=6, after=message.created_at, oldest_first=True):
                 if after.mentions:
                     ids = [m.id for m in after.mentions]
                     logger.debug("rumble_listener: found mentions in next message -> %r", ids)
                     return ids
-                mid_tokens = re.findall(r"<@!?(?P<id>\d+)>", after.content or "")
-                if mid_tokens:
-                    ids = [int(mid_tokens[0])]
-                    logger.debug("rumble_listener: found id token in next message -> %r", ids)
-                    return ids
+                after_ids = self._extract_ids_from_text(after.content or "")
+                if after_ids:
+                    logger.debug("rumble_listener: found id token in next message -> %r", after_ids)
+                    return [int(after_ids[0])]
         except Exception:
             logger.exception("rumble_listener: nearby history scan failed")
 
+        # 4) fall back to name-based extraction and fuzzy matching
         winner_candidates: List[str] = []
         try:
             for emb in message.embeds:
@@ -441,6 +445,7 @@ class RumbleListenerCog(commands.Cog):
         if not winner_candidates:
             winner_candidates = self._collect_candidate_names(message)
 
+        # remove empty/duplicates preserving order
         seen = set()
         candidates = []
         for c in winner_candidates:
@@ -466,6 +471,7 @@ class RumbleListenerCog(commands.Cog):
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
+        # ignore DMs
         if message.guild is None:
             return
 
@@ -476,7 +482,6 @@ class RumbleListenerCog(commands.Cog):
             except Exception:
                 return
             if ch_id not in self.channel_part_map and 0 not in self.channel_part_map:
-                logger.debug("rumble:ignoring message in channel=%s (not in channel_part_map)", ch_id)
                 return
 
         # strict author-only: require configured rumble_bot_ids
@@ -485,58 +490,31 @@ class RumbleListenerCog(commands.Cog):
         except Exception:
             return
         if self.rumble_bot_ids and author_id not in self.rumble_bot_ids:
-            logger.debug("rumble:ignoring message from author=%r id=%s (not in rumble_bot_ids)",
-                         getattr(message.author, "name", None), author_id)
             return
 
-        # debug logging
-        try:
-            if logger.isEnabledFor(logging.INFO):
-                logger.info(
-                    "rumble:on_message author=%r author_id=%r channel=%r guild=%r embeds=%d",
-                    getattr(message.author, "name", None),
-                    getattr(message.author, "id", None),
-                    getattr(message.channel, "id", None),
-                    getattr(message.guild, "id", None),
-                    len(message.embeds or []),
-                )
-            if logger.isEnabledFor(logging.DEBUG):
-                logger.debug("rumble:on_message content=%r", message.content)
-                for i, emb in enumerate(message.embeds or []):
-                    try:
-                        logger.debug("rumble:embed[%d] title=%r", i, emb.title)
-                        logger.debug("rumble:embed[%d] description=%r", i, emb.description)
-                        for j, f in enumerate(emb.fields or []):
-                            logger.debug("rumble:embed[%d].field[%d] name=%r value=%r", i, j, f.name, f.value)
-                    except Exception:
-                        logger.exception("rumble:on_message: failed to inspect embed %d", i)
-        except Exception:
-            logger.exception("rumble:on_message: debug logging failed")
-
-        # detect winner-style message
+        # quick detection for winner-style messages (reduce work)
         found = False
-        if message.content and WINNER_TITLE_RE.search(message.content):
+        if message.content and (WINNER_TITLE_RE.search(message.content) or ADDITIONAL_WIN_RE.search(message.content)):
             found = True
-        if not found and message.content and ADDITIONAL_WIN_RE.search(message.content):
-            found = True
-        for emb in message.embeds:
-            if (emb.title and (WINNER_TITLE_RE.search(emb.title) or ADDITIONAL_WIN_RE.search(emb.title))) or (
-                emb.description
-                and (WINNER_TITLE_RE.search(emb.description) or ADDITIONAL_WIN_RE.search(emb.description))
-            ):
-                found = True
-                break
-            for f in (emb.fields or []):
+        else:
+            for emb in message.embeds:
                 if (
-                    WINNER_TITLE_RE.search(f.name or "")
-                    or WINNER_TITLE_RE.search(f.value or "")
-                    or ADDITIONAL_WIN_RE.search(f.name or "")
-                    or ADDITIONAL_WIN_RE.search(f.value or "")
+                    (emb.title and (WINNER_TITLE_RE.search(emb.title) or ADDITIONAL_WIN_RE.search(emb.title)))
+                    or (emb.description and (WINNER_TITLE_RE.search(emb.description) or ADDITIONAL_WIN_RE.search(emb.description)))
                 ):
                     found = True
                     break
-            if found:
-                break
+                for f in (emb.fields or []):
+                    if (
+                        WINNER_TITLE_RE.search(f.name or "")
+                        or WINNER_TITLE_RE.search(f.value or "")
+                        or ADDITIONAL_WIN_RE.search(f.name or "")
+                        or ADDITIONAL_WIN_RE.search(f.value or "")
+                    ):
+                        found = True
+                        break
+                if found:
+                    break
         if not found:
             return
 
@@ -550,6 +528,7 @@ class RumbleListenerCog(commands.Cog):
         logger.info("rumble:channel_mapping_for_channel=%r", self.channel_part_map.get(message.channel.id))
 
         if not winner_ids:
+            # for debugging: log candidate names and embed dumps at INFO level
             try:
                 cands = self._collect_candidate_names(message)
                 logger.info("rumble:candidates_extracted=%r", cands)
@@ -579,8 +558,6 @@ class RumbleListenerCog(commands.Cog):
         async with self._lock:
             candidates = self._collect_candidate_names(message)
             id_map: Dict[int, str] = {}
-            if logger.isEnabledFor(logging.DEBUG):
-                logger.debug("rumble:candidates_extracted=%r", candidates)
 
             try:
                 matched_ids: List[int] = []
