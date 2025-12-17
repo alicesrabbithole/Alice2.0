@@ -19,9 +19,18 @@ from typing import Dict, List, Optional, Tuple, Any
 import discord
 from discord.ext import commands
 
+logger = logging.getLogger(__name__)
+
+import os
+
+QUIET_BY_DEFAULT = os.environ.get("RUMBLE_LISTENER_QUIET", "1").strip().lower() not in ("0", "false", "no")
+if QUIET_BY_DEFAULT:
+    # suppress INFO and DEBUG messages from this module; keep WARNING+ERROR
+    logger.setLevel(logging.WARNING)
+
 from utils.snowman_theme import DEFAULT_COLOR, generate_part_maps_from_buildables
 
-logger = logging.getLogger(__name__)
+
 
 DATA_DIR = Path("data")
 CONFIG_FILE = DATA_DIR / "rumble_listener_config.json"
