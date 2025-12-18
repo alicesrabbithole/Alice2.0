@@ -56,6 +56,26 @@ class RumbleListenerCog(commands.Cog):
         except Exception as e:
             logger.exception(f"Failed to load config file: {str(e)}")
 
+    def _save_config_file(self) -> None:
+        """Persist current runtime config to disk (rumble_bot_ids and channel_part_map)."""
+        try:
+            CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
+            out = {
+                "rumble_bot_ids": self.rumble_bot_ids,
+                "channel_part_map": {str(k): [v[0], v[1]] for k, v in self.channel_part_map.items()},
+            }
+            with CONFIG_FILE.open("w", encoding="utf-8") as fh:
+                json.dump(out, fh, ensure_ascii=False, indent=2)
+        except Exception:
+            logger.exception("rumble_listener: failed to save config file")
+
+    def get_config_snapshot(self) -> Dict[str, Any]:
+        """Return a JSON-serializable snapshot of the current config for admin UI."""
+        return {
+            "rumble_bot_ids": self.rumble_bot_ids,
+            "channel_part_map": {str(k): [v[0], v[1]] for k, v in self.channel_part_map.items()},
+        }
+
     async def _handle_awards(self, winner_ids: List[int], channel_id: int) -> None:
         """Award parts to winners."""
         mapping = self.channel_part_map.get(channel_id)
