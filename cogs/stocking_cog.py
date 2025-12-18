@@ -64,6 +64,7 @@ class StockingCog(commands.Cog):
         except Exception:
             logger.exception("Failed to save stockings data.")
 
+    @commands.hybrid_command(name="mysnowman", description="Show your assembled snowman and assign role if completed.")
     async def mysnowman(self, ctx: commands.Context):
         """Show the user's assembled snowman and assign role if completed."""
         user_id = ctx.author.id
@@ -134,9 +135,11 @@ class StockingCog(commands.Cog):
                 color=discord.Color.green(),
             )
             try:
+                logger.info("stocking_cog: sending award embed to channel=%s for user=%s", getattr(channel, "id", None), user_id)
                 await channel.send(embed=embed)
+                logger.info("stocking_cog: sent award embed to channel=%s for user=%s", getattr(channel, "id", None), user_id)
             except Exception:
-                logger.exception("Failed to send part award message.")
+                logger.exception("Failed to send part award message to channel %s for user %s", getattr(channel, "id", None), user_id)
 
         return True
 
