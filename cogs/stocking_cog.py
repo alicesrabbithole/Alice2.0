@@ -200,10 +200,12 @@ class StockingCog(commands.Cog, name="StockingCog"):
             logger.exception("award_sticker: maybe_award_role failed")
         return True
 
-    async def award_part(self, user_id: int, buildable_key: str, part_key: str, channel: Optional[discord.TextChannel] = None, *, announce: bool = True) -> bool:
+    async def award_part(self, user_id: int, buildable_key: str, part_key: str,
+                         channel: Optional[discord.TextChannel] = None, *, announce: bool = True) -> bool:
         """
         Main award API used by rumble listener and admin commands.
         Returns True on persisted award; False if skipped (unknown buildable/part or user already has it).
+        Announcement is now a simple embed (no images); images remain available in /mysnowman.
         """
         build_def = self._buildables_def.get(buildable_key)
         if not build_def:
@@ -233,52 +235,41 @@ class StockingCog(commands.Cog, name="StockingCog"):
         b["parts"].append(part_key)
         await self._save()
 
-        # attempt to render composite (best-effort)
-        composite_path: Optional[Path] = None
+        # attempt to render composite (best-effort) — keep for mysnowman; not used for announcement
         try:
-            composite_path = await self.render_buildable(user_id, buildable_key)
+            _ = await self.render_buildable(user_id, buildable_key)
         except Exception:
-            composite_path = None
+            pass
 
-        # Announce award to channel (if provided). Provide logging for success/failure.
+        # Announce award to channel (if provided). Use a simple embed without images.
         if announce and channel:
-            mention = f"<@{user_id}>"
             try:
                 member = channel.guild.get_member(user_id) if channel and channel.guild else None
-                if member:
-                    mention = member.mention
+                display = member.display_name if member else None
             except Exception:
-                logger.debug("award_part: could not resolve member mention for %s", user_id)
+                display = None
 
-            color_int = PART_COLORS.get(part_key.lower(), DEFAULT_COLOR)
-            color = discord.Color(color_int)
-            emb = discord.Embed(title=f"Part Awarded — {buildable_key}", description=f"🎉 {mention} received the **{part_key}** for **{buildable_key}**!", color=color)
+            title = f"Congratulations, {display}!" if display else "Congratulations!"
+            # include "the" before the part to be neutral for singular/plural
+            desc = f"You've been awarded the the {part_key} for your {buildable_key}."
+            # small nicety: if we have a mention, include it as the message content so the embed appears below the mention (like your example)
+            mention_content = member.mention if member else f"<@{user_id}>"
 
+            emb = discord.Embed(title=title, description=desc, color=discord.Color.green())
             try:
-                if composite_path and composite_path.exists():
-                    f = discord.File(composite_path, filename=composite_path.name)
-                    emb.set_image(url=f"attachment://%s" % composite_path.name)
-                    await channel.send(embed=emb, file=f)
-                    logger.info("award_part: sent composite announcement for %s to channel %s", part_key, getattr(channel, "id", None))
-                else:
-                    # try to attach the part image as a thumbnail (fallback)
-                    part_file = Path(parts_def.get(part_key, {}).get("file", "")) if parts_def.get(part_key, {}).get("file") else None
-                    if not part_file or not part_file.exists():
-                        part_file = ASSETS_DIR / parts_def.get(part_key, {}).get("file", "")
-                    if not part_file or not part_file.exists():
-                        part_file = ASSETS_DIR / f"stickers/{part_key}.png"
-                    if part_file and part_file.exists():
-                        f = discord.File(part_file, filename=part_file.name)
-                        emb.set_thumbnail(url=f"attachment://%s" % part_file.name)
-                        await channel.send(embed=emb, file=f)
-                        logger.info("award_part: sent part-thumbnail announcement for %s to channel %s", part_key, getattr(channel, "id", None))
-                    else:
-                        await channel.send(embed=emb)
-                        logger.info("award_part: sent text/embed announcement for %s to channel %s", part_key, getattr(channel, "id", None))
+                # send the mention then embed (single send if you prefer content+embed together)
+                await channel.send(content=mention_content, embed=emb)
+                logger.info("award_part: announced %s to channel %s for user %s", part_key,
+                            getattr(channel, "id", None), user_id)
             except Exception:
-                logger.exception("award_part: failed to announce award for %s to channel %s", part_key, getattr(channel, "id", None))
+                try:
+                    # fallback to embed only
+                    await channel.send(embed=emb)
+                except Exception:
+                    logger.exception("award_part: failed to announce award for %s to channel %s", part_key,
+                                     getattr(channel, "id", None))
 
-        # handle completion & role grant
+        # handle completion & role grant (unchanged)
         try:
             capacity_slots = int(build_def.get("capacity_slots", len(parts_def)))
         except Exception:
@@ -308,12 +299,15 @@ class StockingCog(commands.Cog, name="StockingCog"):
                     if role and member and role not in member.roles:
                         bot_member = guild.me
                         if not bot_member or not bot_member.guild_permissions.manage_roles:
-                            logger.warning("award_part: cannot grant role %s in guild %s (missing perms)", role_id, guild.id)
+                            logger.warning("award_part: cannot grant role %s in guild %s (missing perms)", role_id,
+                                           guild.id)
                         elif role.position >= (bot_member.top_role.position if bot_member.top_role else -1):
-                            logger.warning("award_part: cannot grant role %s in guild %s (hierarchy)", role_id, guild.id)
+                            logger.warning("award_part: cannot grant role %s in guild %s (hierarchy)", role_id,
+                                           guild.id)
                         else:
                             await member.add_roles(role, reason=f"{buildable_key} completed")
-                            logger.info("award_part: granted completion role %s to %s in guild %s", role_id, user_id, guild.id)
+                            logger.info("award_part: granted completion role %s to %s in guild %s", role_id, user_id,
+                                        guild.id)
                             # persist that we granted the role
                             try:
                                 rec = self._ensure_user(user_id)
@@ -325,7 +319,9 @@ class StockingCog(commands.Cog, name="StockingCog"):
                             # announce completion if channel present
                             if channel and getattr(channel, "guild", None):
                                 try:
-                                    await channel.send(embed=discord.Embed(title=f"{buildable_key} Completed!", description=f"🎉 {member.mention} completed **{buildable_key}** and was awarded {role.mention}!", color=discord.Color.green()))
+                                    await channel.send(embed=discord.Embed(title=f"{buildable_key} Completed!",
+                                                                           description=f"🎉 {member.mention} completed **{buildable_key}** and was awarded {role.mention}!",
+                                                                           color=discord.Color.green()))
                                 except Exception:
                                     logger.exception("award_part: failed to announce completion")
                 except Exception:
