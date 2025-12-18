@@ -2,7 +2,8 @@
 """
 Updated StockingCog:
 - Role assignment moved to `/mysnowman`.
-- Simplified stocking and buildables management: removed sticker logic.
+- Handles stocking data persistence.
+- Manage parts, buildable progress, and completion roles.
 """
 
 import json
@@ -43,7 +44,7 @@ class StockingCog(commands.Cog):
             else:
                 self._data = {}
         except Exception:
-            self._data = {}
+            logger.exception("Failed to load stockings data.")
 
         try:
             if BUILDABLES_DEF_FILE.exists():
@@ -52,7 +53,7 @@ class StockingCog(commands.Cog):
             else:
                 self._buildables_def = {}
         except Exception:
-            self._buildables_def = {}
+            logger.exception("Failed to load buildables definitions.")
 
     async def _save_data(self):
         """Persist stocking data to disk."""
@@ -61,7 +62,7 @@ class StockingCog(commands.Cog):
             with STOCKINGS_FILE.open("w", encoding="utf-8") as fh:
                 json.dump(self._data, fh, ensure_ascii=False, indent=2)
         except Exception:
-            logger.exception("Failed to save stockings data")
+            logger.exception("Failed to save stockings data.")
 
     async def mysnowman(self, ctx: commands.Context):
         """Show the user's assembled snowman and assign role if completed."""
@@ -71,7 +72,7 @@ class StockingCog(commands.Cog):
         buildable = user.get("buildables", {}).get(buildable_key, {"parts": [], "completed": False})
 
         parts_collected = len(buildable.get("parts", []))
-        required_parts = self._buildables_def.get(buildable_key, {}).get("capacity_slots", 0)
+        required_parts = self._buildables_def.get(buildable_key, {}).get("capacity_slots", 7)
 
         # Check for snowman completion
         if parts_collected >= required_parts and not buildable.get("completed"):
@@ -94,6 +95,68 @@ class StockingCog(commands.Cog):
                 logger.info(f"Granted role {role.name} for {buildable_key} completion to {member.name}")
             except Exception:
                 logger.exception(f"Failed to grant role {role_id} to {member.id}")
+
+    async def award_part(self, user_id: int, buildable_key: str, part_key: str, channel: Optional[discord.TextChannel] = None, *, announce: bool = True) -> bool:
+        """Award a part to a user."""
+        build_def = self._buildables_def.get(buildable_key)
+        if not build_def:
+            logger.warning(f"Buildable {buildable_key} not found.")
+            return False
+
+        parts_def = build_def.get("parts", {})
+        if part_key not in parts_def:
+            logger.warning(f"Part {part_key} not defined for buildable {buildable_key}.")
+            return False
+
+        user = self._data.setdefault(str(user_id), {"buildables": {}})
+        buildable = user["buildables"].setdefault(buildable_key, {"parts": [], "completed": False})
+
+        if part_key in buildable["parts"]:
+            logger.info(f"User {user_id} already has part {part_key} for {buildable_key}.")
+            return False
+
+        buildable["parts"].append(part_key)
+        await self._save_data()
+
+        # Send announcement if applicable
+        if announce and channel:
+            mention = f"<@{user_id}>"
+            try:
+                member = channel.guild.get_member(user_id)
+                if member:
+                    mention = member.mention
+            except Exception:
+                logger.warning("Failed to get member mention.")
+
+            embed = discord.Embed(
+                title=f"Part Awarded — {buildable_key}",
+                description=f"🎉 {mention} received the **{part_key}** for **{buildable_key}**!",
+                color=discord.Color.green(),
+            )
+            try:
+                await channel.send(embed=embed)
+            except Exception:
+                logger.exception("Failed to send part award message.")
+
+        return True
+
+    async def remove_part(self, user_id: int, buildable_key: str, part_key: str) -> bool:
+        """Remove a part from a user's buildable."""
+        user = self._data.get(str(user_id), {"buildables": {}})
+        buildable = user.get("buildables", {}).get(buildable_key)
+        if not buildable:
+            return False
+
+        if part_key not in buildable["parts"]:
+            return False
+
+        buildable["parts"].remove(part_key)
+        await self._save_data()
+        return True
+
+    async def revoke_part(self, user_id: int, buildable_key: str, part_key: str) -> bool:
+        """Alias for remove_part."""
+        return await self.remove_part(user_id, buildable_key, part_key)
 
 
 async def setup(bot: commands.Bot):

@@ -1,20 +1,15 @@
 #!/usr/bin/env python3
 """
-Refactored RumbleListenerCog with mapping persistence and improved winner detection.
-
-Enhancements:
-- Fixed issues with `_save_config_file` to ensure mappings persist to `rumble_listener_config.json`.
-- Expanded regex handling for decorative "WINNER" messages.
-- Improved debugging logs for troubleshooting.
-
-Processes messages authored by bot IDs in `rumble_listener_config.json` and only in channels listed in `channel_part_map`.
+Updated RumbleListenerCog:
+- Improved winner detection with enhanced regex.
+- Verifies StockingCog loading before awarding parts.
+- Expanded logging and debugging for troubleshooting.
 """
 
 import asyncio
 import json
 import logging
 import re
-import unicodedata
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -23,19 +18,14 @@ from discord.ext import commands
 
 logger = logging.getLogger(__name__)
 
-from utils.snowman_theme import DEFAULT_COLOR, generate_part_maps_from_buildables
-
 DATA_DIR = Path("data")
 CONFIG_FILE = DATA_DIR / "rumble_listener_config.json"
 
-# Improved regex for WINNER detection
-WINNER_TITLE_RE = re.compile(r"(?i)\bwin(?:ner|ners)?\b|w(?:o|0)n(?:!+|\s+)?")
-ADDITIONAL_WIN_RE = re.compile(r"\b(found (?:a|an)|received|was awarded|winner|won)\b", re.IGNORECASE)
-
-PART_EMOJI, PART_COLORS = generate_part_maps_from_buildables()
-
+# Enhanced regex for winner detection
+WINNER_TITLE_RE = re.compile(r"(?i)\b(?:win(?:ner|ners)?|:crwn2:|__winner__|won|reward)\b", re.IGNORECASE)
 
 def ensure_data_dir():
+    """Ensure the data directory exists."""
     DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 
@@ -48,13 +38,10 @@ class RumbleListenerCog(commands.Cog):
         if initial_config:
             self._load_config_from_dict(initial_config)
         self._load_config_file()
-        logger.info(
-            "RumbleListener initialized with bot IDs=%r and channel mappings=%r",
-            self.rumble_bot_ids,
-            self.channel_part_map,
-        )
+        logger.info(f"RumbleListener initialized with bot IDs={self.rumble_bot_ids} and channel mappings={self.channel_part_map}")
 
     def _load_config_from_dict(self, data: Dict[str, List]) -> None:
+        """Load configuration from a dictionary."""
         self.rumble_bot_ids = list(map(int, data.get("rumble_bot_ids", [])))
         self.channel_part_map = {
             int(ch_id): tuple(map(str, value))
@@ -62,91 +49,75 @@ class RumbleListenerCog(commands.Cog):
         }
 
     def _load_config_file(self) -> None:
+        """Load configuration from a file."""
         try:
             if CONFIG_FILE.exists():
                 with CONFIG_FILE.open("r", encoding="utf-8") as fh:
                     config_data = json.load(fh)
                     self._load_config_from_dict(config_data)
-        except Exception:
-            logger.exception("Failed to load configuration file.")
-
-    def _save_config_file(self) -> None:
-        try:
-            CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
-            config = {
-                "rumble_bot_ids": self.rumble_bot_ids,
-                "channel_part_map": {str(k): list(v) for k, v in self.channel_part_map.items()},
-            }
-            with CONFIG_FILE.open("w", encoding="utf-8") as fh:
-                json.dump(config, fh, ensure_ascii=False, indent=2)
-            logger.info("Configuration saved to %s", CONFIG_FILE)
-        except Exception:
-            logger.exception("Failed to save configuration file.")
+        except Exception as e:
+            logger.exception(f"Failed to load configuration file: {str(e)}")
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
-        """Listen for messages and process potential winner announcements."""
-        # Ignore DMs
+        """Listen for messages and detect winners."""
         if not message.guild:
             return
 
-        # Check if author is one of the bot IDs
         if int(message.author.id) not in self.rumble_bot_ids:
             return
 
-        # Quick winner detection check
-        if not (
-            WINNER_TITLE_RE.search(message.content) or
-            any(
-                WINNER_TITLE_RE.search(embed.title or "") or WINNER_TITLE_RE.search(embed.description or "")
-                for embed in message.embeds
-            )
-        ):
-            return
+        logger.debug(f"Processing message in channel {message.channel.id}: {message.content}")
 
-        logger.debug("Processing message in channel %s: %s", message.channel.id, message.content)
-
+        # Extract winners and award logic
         try:
-            # Extract winners and perform award logic
             winner_ids = await self._extract_winner_ids(message)
             if winner_ids:
                 await self._handle_awards(winner_ids, message.channel.id)
-        except Exception:
-            logger.exception("Failed to handle awards for message: %s", message.content)
+        except Exception as e:
+            logger.exception(f"Error handling awards: {str(e)}")
 
     async def _extract_winner_ids(self, message: discord.Message) -> List[int]:
-        """Extract winner IDs based on mentions and content."""
-        # Extract from mentions
+        """Extract winner IDs from message or history."""
         winner_ids = [mention.id for mention in message.mentions]
+
+        if not winner_ids:
+            winner_ids = list(map(int, re.findall(r"<@!?(\d+)>", message.content)))
+
         if winner_ids:
             return winner_ids
 
-        # Extract from text
-        winner_ids = list(map(int, re.findall(r"<@!?(\d+)>", message.content)))
-        return winner_ids
+        # Scan previous messages if needed for context
+        async for prev_message in message.channel.history(limit=5, before=message.created_at, oldest_first=False):
+            combined_text = f"{prev_message.content or ''} {' '.join(embed.description or '' for embed in prev_message.embeds)}"
+            if WINNER_TITLE_RE.search(combined_text):
+                winner_ids = list(map(int, re.findall(r"<@!?(\d+)>", combined_text)))
+                if winner_ids:
+                    logger.debug(f"Winner IDs from history: {winner_ids}")
+                    return winner_ids
+
+        logger.debug("No winners detected.")
+        return []
 
     async def _handle_awards(self, winner_ids: List[int], channel_id: int) -> None:
-        """Handle part awards for identified winners."""
+        """Award parts to identified winners."""
         mapping = self.channel_part_map.get(channel_id)
         if not mapping:
-            logger.warning("No mapping found for channel %s", channel_id)
+            logger.warning(f"No mapping found for channel {channel_id}")
+            return
+
+        stocking_cog = self.bot.get_cog("StockingCog")
+        if not stocking_cog or not hasattr(stocking_cog, "award_part"):
+            logger.warning("StockingCog is not loaded or lacks 'award_part' method.")
             return
 
         buildable, part = mapping
-        logger.info("Awarding part '%s' for buildable '%s' to users: %s", part, buildable, winner_ids)
-        stocking_cog = self.bot.get_cog("StockingCog")
-        if not stocking_cog:
-            logger.warning("StockingCog is not loaded.")
-            return
-
         for user_id in winner_ids:
             try:
-                if hasattr(stocking_cog, "award_part"):
-                    await stocking_cog.award_part(user_id, buildable, part, channel=None, announce=True)
-                else:
-                    logger.warning("StockingCog lacks 'award_part' method.")
-            except Exception:
-                logger.exception("Failed to award part '%s' to user %s", part, user_id)
+                await stocking_cog.award_part(user_id, buildable, part, channel=None, announce=True)
+                logger.info(f"Awarded part {part} for buildable {buildable} to user {user_id}")
+            except Exception as e:
+                logger.exception(f"Failed to award part {part} to user {user_id}: {str(e)}")
 
 
 async def setup(bot: commands.Bot):
