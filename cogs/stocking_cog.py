@@ -203,9 +203,8 @@ class StockingCog(commands.Cog, name="StockingCog"):
     async def award_part(self, user_id: int, buildable_key: str, part_key: str,
                          channel: Optional[discord.TextChannel] = None, *, announce: bool = True) -> bool:
         """
-        Main award API used by rumble listener and admin commands.
-        Returns True on persisted award; False if skipped (unknown buildable/part or user already has it).
-        Announcement is now a simple embed (no images); images remain available in /mysnowman.
+        Persist a part award and announce with a short embed (no image).
+        Uses PART_COLORS / PART_EMOJI from the theme for embed color and icon.
         """
         build_def = self._buildables_def.get(buildable_key)
         if not build_def:
@@ -221,7 +220,6 @@ class StockingCog(commands.Cog, name="StockingCog"):
 
         if part_key in b.get("parts", []):
             logger.info("award_part: user %s already has %s for %s", user_id, part_key, buildable_key)
-            # announce if requested
             if announce and channel:
                 try:
                     member = channel.guild.get_member(user_id) if channel and channel.guild else None
@@ -231,39 +229,45 @@ class StockingCog(commands.Cog, name="StockingCog"):
                     logger.exception("award_part: failed to announce already-has")
             return False
 
-        # persist
+        # persist the award
         b["parts"].append(part_key)
         await self._save()
 
-        # attempt to render composite (best-effort) — keep for mysnowman; not used for announcement
+        # keep rendering for /mysnowman (best-effort)
         try:
             _ = await self.render_buildable(user_id, buildable_key)
         except Exception:
             pass
 
-        # Announce award to channel (if provided). Use a simple embed without images.
+        # Announcement: short embed, themed color, optional emoji, mention content to ping
         if announce and channel:
             try:
                 member = channel.guild.get_member(user_id) if channel and channel.guild else None
-                display = member.display_name if member else None
             except Exception:
-                display = None
+                member = None
 
-            title = f"Congratulations, {display}!" if display else "Congratulations!"
-            # include "the" before the part to be neutral for singular/plural
-            desc = f"You've been awarded the the {part_key} for your {buildable_key}."
-            # small nicety: if we have a mention, include it as the message content so the embed appears below the mention (like your example)
+            # display name if available (optional); fallback to generic title
+            display = (member.display_name if member else None)
+            title = f"Congratulations, {display} ☃️!" if display else "Congratulations! ☃️"
+
+            # use theme emoji and color
+            emoji = PART_EMOJI.get(part_key.lower(), "")
+            color_int = PART_COLORS.get(part_key.lower(), DEFAULT_COLOR)
+            color = discord.Color(color_int if isinstance(color_int, int) else DEFAULT_COLOR)
+
+            # ensure single "the"
+            desc = f"You've been awarded the {part_key} for your {buildable_key}."
+            # build embed
+            emb = discord.Embed(title=title, description=desc, color=color)
+
+            # mention content to ping the user (optional)
             mention_content = member.mention if member else f"<@{user_id}>"
-
-            emb = discord.Embed(title=title, description=desc, color=discord.Color.green())
             try:
-                # send the mention then embed (single send if you prefer content+embed together)
                 await channel.send(content=mention_content, embed=emb)
                 logger.info("award_part: announced %s to channel %s for user %s", part_key,
                             getattr(channel, "id", None), user_id)
             except Exception:
                 try:
-                    # fallback to embed only
                     await channel.send(embed=emb)
                 except Exception:
                     logger.exception("award_part: failed to announce award for %s to channel %s", part_key,
@@ -280,10 +284,8 @@ class StockingCog(commands.Cog, name="StockingCog"):
             b["completed"] = True
             await self._save()
             role_id = build_def.get("role_on_complete") or AUTO_ROLE_ID
-            # try to determine guild context
             guild = channel.guild if channel and getattr(channel, "guild", None) else None
             if not guild:
-                # best-effort: find any guild that has the member cached
                 try:
                     for g in self.bot.guilds:
                         if g.get_member(user_id):
@@ -308,7 +310,6 @@ class StockingCog(commands.Cog, name="StockingCog"):
                             await member.add_roles(role, reason=f"{buildable_key} completed")
                             logger.info("award_part: granted completion role %s to %s in guild %s", role_id, user_id,
                                         guild.id)
-                            # persist that we granted the role
                             try:
                                 rec = self._ensure_user(user_id)
                                 brec = rec.setdefault("buildables", {}).setdefault(buildable_key, {})
@@ -316,7 +317,6 @@ class StockingCog(commands.Cog, name="StockingCog"):
                                 await self._save()
                             except Exception:
                                 logger.exception("award_part: failed to persist role_granted flag")
-                            # announce completion if channel present
                             if channel and getattr(channel, "guild", None):
                                 try:
                                     await channel.send(embed=discord.Embed(title=f"{buildable_key} Completed!",
