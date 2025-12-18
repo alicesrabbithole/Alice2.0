@@ -224,7 +224,7 @@ class StockingCog(commands.Cog, name="StockingCog"):
                 try:
                     member = channel.guild.get_member(user_id) if channel and channel.guild else None
                     mention = member.mention if member else f"<@{user_id}>"
-                    await channel.send(f"{mention} already has the **{part_key}** for {buildable_key}.")
+                    await channel.send(f"{mention} already has the **{part_key}** for their {buildable_key}.")
                 except Exception:
                     logger.exception("award_part: failed to announce already-has")
             return False
@@ -327,6 +327,101 @@ class StockingCog(commands.Cog, name="StockingCog"):
                 except Exception:
                     logger.exception("award_part: role grant flow failed")
 
+        return True
+
+    async def award_part(self, user_id: int, buildable_key: str, part_key: str,
+                         channel: Optional[discord.TextChannel] = None, *, announce: bool = True) -> bool:
+        """
+        Persist a part award and announce with a short themed embed (no image).
+        Uses PART_COLORS / PART_EMOJI from the theme for embed color and icon.
+        """
+        build_def = self._buildables_def.get(buildable_key)
+        if not build_def:
+            logger.warning("award_part: unknown buildable %s", buildable_key)
+            return False
+        parts_def = build_def.get("parts", {}) or {}
+        if part_key not in parts_def:
+            logger.warning("award_part: unknown part %s for %s", part_key, buildable_key)
+            return False
+
+        user = self._ensure_user(user_id)
+        b = user.setdefault("buildables", {}).setdefault(buildable_key, {"parts": [], "completed": False})
+
+        if part_key in b.get("parts", []):
+            logger.info("award_part: user %s already has the %s for their %s", user_id, part_key, buildable_key)
+            if announce and channel:
+                try:
+                    member = channel.guild.get_member(user_id) if channel and channel.guild else None
+                    mention = member.mention if member else f"<@{user_id}>"
+                    await channel.send(f"{mention} already has the **{part_key}** for {buildable_key}.")
+                except Exception:
+                    logger.exception("award_part: failed to announce already-has")
+            return False
+
+        # persist the award
+        b["parts"].append(part_key)
+        await self._save()
+
+        # keep rendering for /mysnowman (best-effort)
+        try:
+            _ = await self.render_buildable(user_id, buildable_key)
+        except Exception:
+            pass
+
+        # Announcement: short embed, themed color + emoji, with mention content to ping the user
+        if announce and channel:
+            member = None
+            display = None
+            try:
+                if channel and getattr(channel, "guild", None):
+                    # try cached member first, then fetch
+                    member = channel.guild.get_member(user_id)
+                    if member is None:
+                        try:
+                            member = await channel.guild.fetch_member(user_id)
+                        except Exception:
+                            member = None
+                    if member:
+                        display = getattr(member, "display_name", None) or getattr(member, "name", None)
+                if not display:
+                    # try to fetch global user as fallback
+                    try:
+                        u = await self.bot.fetch_user(user_id)
+                        display = getattr(u, "display_name", None) or getattr(u, "name", None)
+                    except Exception:
+                        display = None
+            except Exception:
+                logger.exception("award_part: error resolving display name / member")
+
+            title = f"☃️ Congratulations, {display}! ☃️" if display else "☃️ Congratulations! ☃️"
+
+            # theme emoji and color
+            emoji = PART_EMOJI.get(part_key.lower(), "")
+            color_int = PART_COLORS.get(part_key.lower(), DEFAULT_COLOR)
+            color = discord.Color(color_int if isinstance(color_int, int) else DEFAULT_COLOR)
+
+            # single 'the' before the part, include emoji after part name
+            desc = f"You've been awarded the {part_key} for your {buildable_key}! {emoji}"
+            emb = discord.Embed(title=title, description=desc, color=color)
+
+            mention_content = None
+            try:
+                mention_content = member.mention if member else f"<@{user_id}>"
+            except Exception:
+                mention_content = f"<@{user_id}>"
+
+            try:
+                # send mention + embed together; if that fails, fall back to embed-only
+                await channel.send(content=mention_content, embed=emb)
+                logger.info("award_part: announced %s to channel %s for user %s", part_key,
+                            getattr(channel, "id", None), user_id)
+            except Exception:
+                logger.exception("award_part: send with mention+embed failed, trying embed-only")
+                try:
+                    await channel.send(embed=emb)
+                except Exception:
+                    logger.exception("award_part: failed to announce award for %s to channel %s", part_key,
+                                     getattr(channel, "id", None))
         return True
 
     # -------------------------
@@ -480,8 +575,8 @@ class StockingCog(commands.Cog, name="StockingCog"):
     # -------------------------
     @commands.hybrid_command(name="mysnowman", description="Show your snowman assembled from collected parts.")
     async def mysnowman(self, ctx: commands.Context):
-        user = getattr(ctx.author, "id", None)
-        if not user:
+        user_id = getattr(ctx.author, "id", None)
+        if not user_id:
             await self._ephemeral_reply(ctx, "Could not determine your user id.")
             return
 
@@ -492,41 +587,45 @@ class StockingCog(commands.Cog, name="StockingCog"):
             return
 
         # ensure record
-        rec = self._ensure_user(user)
+        rec = self._ensure_user(user_id)
         b = rec.get("buildables", {}).get(build_key, {"parts": [], "completed": False})
         user_parts = b.get("parts", [])
         parts_def = build_def.get("parts", {}) or {}
         capacity_slots = int(build_def.get("capacity_slots", len(parts_def)))
 
-        # ensure completion role if eligible
-        try:
-            is_complete = bool(b.get("completed")) or (len(user_parts) >= capacity_slots or len(user_parts) >= len(parts_def))
-            if is_complete:
-                await self._grant_buildable_completion_role(user, build_key, ctx.guild, ctx.channel)
-        except Exception:
-            logger.exception("mysnowman: error ensuring completion role")
+        # If user qualifies as complete, attempt to grant role NOW and announce in this channel
+        is_complete = bool(b.get("completed")) or (
+                    len(user_parts) >= capacity_slots or len(user_parts) >= len(parts_def))
+        if is_complete:
+            try:
+                # Pass ctx.channel so _grant_buildable_completion_role will announce in this channel
+                granted = await self._grant_buildable_completion_role(user_id, build_key, ctx.guild, ctx.channel)
+                # _grant_buildable_completion_role already announces on grant.
+                # If you want to include a completion notice inside the mysnowman reply itself, you can detect `granted` and append text below.
+            except Exception:
+                logger.exception("mysnowman: error while attempting to grant completion role for user %s", user_id)
 
-        # try composite
-        composite = None
+        # Try to render composite and send (existing behavior)
+        composite_path = None
         try:
-            composite = await self.render_buildable(user, build_key)
+            composite_path = await self.render_buildable(user_id, build_key)
         except Exception:
-            composite = None
+            composite_path = None
 
         embed = discord.Embed(title="Your Snowman", color=discord.Color.dark_blue())
         embed.add_field(name="Parts collected", value=f"{len(user_parts)}/{capacity_slots}", inline=False)
         embed.add_field(name="Parts", value=", ".join(user_parts) if user_parts else "(none)", inline=False)
 
-        if composite and composite.exists():
+        if composite_path and composite_path.exists():
             try:
-                f = discord.File(composite, filename=composite.name)
-                embed.set_image(url=f"attachment://%s" % composite.name)
-                await ctx.reply(embed=embed, file=f, mention_author=False)
+                file = discord.File(composite_path, filename=composite_path.name)
+                embed.set_image(url=f"attachment://{composite_path.name}")
+                await ctx.reply(embed=embed, file=file, mention_author=False)
                 return
             except Exception:
-                logger.exception("mysnowman: failed to send composite image")
+                logger.exception("mysnowman: failed to send composite image, falling back")
 
-        # fallback to base or part thumbnails
+        # fallback to base/part thumbnail (existing behavior)
         base_rel = build_def.get("base")
         candidate = None
         if base_rel:
@@ -538,7 +637,6 @@ class StockingCog(commands.Cog, name="StockingCog"):
             if base_path.exists():
                 candidate = base_path
 
-        # if no base or we still want to highlight last part, try last part thumbnail
         if not candidate and user_parts:
             last = user_parts[-1]
             pdef = parts_def.get(last, {}) or {}
@@ -552,7 +650,6 @@ class StockingCog(commands.Cog, name="StockingCog"):
 
         if candidate:
             try:
-                # if candidate equals a path to file, attach it
                 f = discord.File(candidate, filename=candidate.name)
                 embed.set_image(url=f"attachment://%s" % candidate.name)
                 await ctx.reply(embed=embed, file=f, mention_author=False)
@@ -560,8 +657,9 @@ class StockingCog(commands.Cog, name="StockingCog"):
             except Exception:
                 logger.exception("mysnowman: failed to send fallback image %s", candidate)
 
-        # final fallback: simple text reply
-        await self._ephemeral_reply(ctx, f"You have {len(user_parts)} parts: {', '.join(user_parts) if user_parts else '(none)'}.")
+        # final fallback: text
+        await self._ephemeral_reply(ctx,
+                                    f"You have {len(user_parts)} parts: {', '.join(user_parts) if user_parts else '(none)'}.")
 
     # -------------------------
     # Role helpers & events
