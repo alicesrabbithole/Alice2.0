@@ -4,6 +4,7 @@ import re
 import json
 import os
 from config import OWNER_ID
+from typing import Optional
 
 GAMES_SAVE_PATH = "games.json"
 
@@ -125,6 +126,35 @@ class TwentyoneQuestionsCog(commands.Cog):
         self.bot = bot
         self.games = load_games()
 
+    async def _send_private(self, ctx: commands.Context, content: Optional[str] = None, *, embed: Optional[discord.Embed] = None):
+        """
+        Send a message privately to the invoking user:
+         - If the invocation is an interaction and no response has been sent, send an ephemeral interaction response.
+         - Otherwise, attempt to DM the user.
+         - If DM fails, fall back to a short public acknowledgement.
+        """
+        try:
+            interaction = getattr(ctx, "interaction", None)
+            if interaction is not None and getattr(interaction, "response", None) is not None and not interaction.response.is_done():
+                # Use ephemeral response for slash commands
+                await interaction.response.send_message(content=content, embed=embed, ephemeral=True)
+                return
+        except Exception:
+            # ignore and fallback to DM
+            pass
+
+        # Try DM
+        try:
+            await ctx.author.send(content=content, embed=embed)
+            return
+        except Exception:
+            # Couldn't DM (maybe closed DMs). Short public acknowledgement as fallback.
+            try:
+                await ctx.send("Sent you a DM.")
+            except Exception:
+                # last resort: do nothing
+                pass
+
     @commands.hybrid_command(name='start21q', description='Start a game of 21 Questions (host must specify answer word, 5+ letters)')
     async def start21q(self, ctx, word: str):
         channel_id = ctx.channel.id
@@ -138,6 +168,7 @@ class TwentyoneQuestionsCog(commands.Cog):
         game = TwentyoneQuestionsGame(answer, host_id=ctx.author.id)
         self.games[channel_id] = game
         save_games(self.games)
+        # Public announcement (no secret details)
         await ctx.send(
             f"🎮 Started 21 Questions!\n"
             f"Word is host-selected.\n"
@@ -145,30 +176,31 @@ class TwentyoneQuestionsCog(commands.Cog):
             "Type **guess [your guess]** to guess the word.\n"
         )
 
-        # Ephemeral details for the host only
-        await ctx.send(
-            "Type **listq21q** to view all pending questions.\n"
-            "Type **summary21q** to view answered Q&As.\n"
-            "Host (only): Reply with 'A1', 'A2', ... to answer Q1, Q2, ... (optionally include answer text, e.g. 'A1 yes').\n"
-            "Max 21 questions will be counted!",
-            ephemeral=True
+        # Host-only instructions: send privately (ephemeral if slash, otherwise DM)
+        host_instructions = (
+            "Host-only controls:\n"
+            "- Type **listq21q** to view all pending questions.\n"
+            "- Type **sum21** to view answered Q&As.\n"
+            "- Reply with 'A1', 'A2', ... to answer Q1, Q2, ... (optionally include answer text, e.g. 'A1 yes').\n"
+            "- Max 21 questions will be counted!"
         )
+        await self._send_private(ctx, host_instructions)
 
     @commands.hybrid_command(name='end21q', description='End the current 21 Questions game')
     async def end21q(self, ctx):
         channel_id = ctx.channel.id
         game = self.games.get(channel_id)
         if not game or not game.active:
-            await ctx.send("No active 21 Questions game in this channel.", ephemeral=True)
+            await self._send_private(ctx, "No active 21 Questions game in this channel.")
             return
         if ctx.author.id != game.host_id and ctx.author.id != OWNER_ID:
-            await ctx.send("Only the host or owner can end this game.", ephemeral=True)
+            await self._send_private(ctx, "Only the host or owner can end this game.")
             return
         game.active = False
         save_games(self.games)
         await ctx.send("Game ended.")
 
-    @commands.hybrid_command(name='summary21q', description='Show the status summary for the current game')
+    @commands.hybrid_command(name='sum21', aliases=['summary21q'], description='Show the status summary for the current game')
     async def summary21q(self, ctx):
         channel_id = ctx.channel.id
         game = self.games.get(channel_id)
@@ -199,6 +231,7 @@ class TwentyoneQuestionsCog(commands.Cog):
 
     @commands.Cog.listener()
     async def on_message(self, message):
+        # ignore bots and DMs
         if message.author.bot or not message.guild:
             return
 
@@ -272,12 +305,13 @@ class TwentyoneQuestionsCog(commands.Cog):
         channel_id = ctx.channel.id
         game = self.games.get(channel_id)
         if not game or not game.active:
-            await ctx.send("No active 21 Questions game in this channel.", ephemeral=True)
+            await self._send_private(ctx, "No active 21 Questions game in this channel.")
             return
         if ctx.author.id != game.host_id and ctx.author.id != OWNER_ID:
-            await ctx.send("Only the host or owner can reveal the answer.", ephemeral=True)
+            await self._send_private(ctx, "Only the host or owner can reveal the answer.")
             return
-        await ctx.send(f"The word/answer was: **{game.answer}**", ephemeral=True)
+        # Reveal privately to the requester
+        await self._send_private(ctx, f"The word/answer is: **{game.answer}**")
 
 async def setup(bot):
     await bot.add_cog(TwentyoneQuestionsCog(bot))
