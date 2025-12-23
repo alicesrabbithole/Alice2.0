@@ -1,10 +1,3 @@
-# StickyCog with persisted counters
-# - Persists stickies and their counters to disk so repost cadence survives restarts
-# - Stores per-channel: message, interval, last_message_id, counter
-# - Safe concurrency with asyncio.Lock and robust error handling
-# - Hybrid commands: stickplz (set), byesticky (remove),
-# - Tries to reuse user's config.DATA_DIR, Colors, Emojis if available; falls back sensibly
-
 import asyncio
 import json
 from pathlib import Path
@@ -30,11 +23,16 @@ try:
     HAS_THEME = True
 except Exception:
     HAS_THEME = False
+
     class Emojis:
         SUCCESS = "✅"
         FAILURE = "❌"
+
     class Colors:
-        PRIMARY = 0x2F3136  # neutral dark
+        PRIMARY = 0x5865F2  # kept for compatibility if referenced elsewhere
+
+# Use normal Discord "blurple" purple for stickies
+FALLBACK_PURPLE = 0x5865F2
 
 
 def ensure_data_dir() -> None:
@@ -126,17 +124,26 @@ class StickyCog(commands.Cog, name="Sticky Messages"):
             return DEFAULT_INTERVAL
 
     async def _send_sticky(self, channel: discord.TextChannel, content: str) -> Optional[discord.Message]:
+        """
+        Send the sticky as an embed (normal purple). Return the sent message or None.
+        """
         try:
-            # If you prefer embed support, change this to send an Embed
-            return await channel.send(content)
+            color = FALLBACK_PURPLE
+            embed = discord.Embed(description=content or "(empty)", color=color)
+            try:
+                embed.set_footer(text=f"Sticky • {self.bot.user.name}")
+            except Exception:
+                pass
+            # avoid pinging everyone/roles/users in the sticky content
+            return await channel.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
         except discord.Forbidden:
             return None
         except Exception:
             return None
 
     def _get_success_emoji(self) -> str:
+        # Prefer a bot-level override, then utils.theme.Emojis, then fallback
         try:
-            # If user code sets bot.success_emoji
             return getattr(self.bot, "success_emoji", Emojis.SUCCESS)
         except Exception:
             return Emojis.SUCCESS
@@ -180,8 +187,10 @@ class StickyCog(commands.Cog, name="Sticky Messages"):
     # ---------------------
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
-        # Ignore DMs/webhooks and bot messages
-        if message.guild is None or message.author.bot:
+        # Ignore DMs, webhook messages, and messages from this bot itself.
+        # We purposely do NOT ignore other bots so external bots (e.g. your rumble bot)
+        # will advance the sticky counters.
+        if message.guild is None or message.webhook_id is not None or message.author.id == getattr(self.bot, "user").id:
             return
 
         channel = message.channel
@@ -235,21 +244,22 @@ class StickyCog(commands.Cog, name="Sticky Messages"):
     # ---------------------
     # Commands
     # ---------------------
-    async def _ephemeral_reply(self, ctx: commands.Context, content: str) -> None:
+    async def _ephemeral_reply(self, ctx: commands.Context, content: Optional[str] = None, *, embed: Optional[discord.Embed] = None) -> None:
         """
         Send an ephemeral reply if invoked as an interaction (slash), otherwise a normal reply.
+        Accepts either content (str) and/or embed (discord.Embed).
         """
         try:
             if getattr(ctx, "interaction", None) is not None and getattr(ctx.interaction, "response", None) is not None:
                 # If the interaction hasn't had a response yet, send ephemeral
                 if not ctx.interaction.response.is_done():
-                    await ctx.interaction.response.send_message(content, ephemeral=True)
+                    await ctx.interaction.response.send_message(content=content, embed=embed, ephemeral=True)
                     return
             # Fallback to normal reply for prefix commands or already-responded interactions
-            await ctx.reply(content, mention_author=False)
+            await ctx.reply(content, embed=embed, mention_author=False)
         except Exception:
             try:
-                await ctx.reply(content, mention_author=False)
+                await ctx.reply(content, embed=embed, mention_author=False)
             except Exception:
                 pass
 
@@ -263,7 +273,7 @@ class StickyCog(commands.Cog, name="Sticky Messages"):
         interval is optional (defaults to DEFAULT_INTERVAL).
         """
         if not message:
-            await self._ephemeral_reply(ctx, f"{Emojis.FAILURE if HAS_THEME else '❌'} You must provide the sticky message content.")
+            await self._ephemeral_reply(ctx, f"{Emojis.FAILURE} You must provide the sticky message content.")
             return
 
         if interval is None:
@@ -313,7 +323,7 @@ class StickyCog(commands.Cog, name="Sticky Messages"):
         async with self._lock:
             cfg = self.stickies.get(ch_key)
             if not cfg:
-                await self._ephemeral_reply(ctx, f"{Emojis.FAILURE if HAS_THEME else '❌'} There is no sticky configured for this channel.")
+                await self._ephemeral_reply(ctx, f"{Emojis.FAILURE} There is no sticky configured for this channel.")
                 return
             last_id = cfg.get("last_message_id")
             try:
@@ -328,82 +338,79 @@ class StickyCog(commands.Cog, name="Sticky Messages"):
             self._save_stickies()
         await self._ephemeral_reply(ctx, f"{self._get_success_emoji()} Sticky removed for this channel.")
 
-    async def cog_unload(self):
-        # save on unload
+    @commands.hybrid_command(name="stickies",
+                             description="List active stickies (optionally for a specific channel).")
+    @commands.guild_only()
+    @commands.has_permissions(manage_messages=True)
+    async def sticky_list(self, ctx: commands.Context, channel: Optional[discord.TextChannel] = None):
+        """
+        Usage:
+          /stickies                 -> lists all active stickies in the guild (visible in invoking channel)
+          /stickies channel:#test   -> list sticky for #test only
+
+        Output: an embed listing channel, interval, counter and a preview of the sticky message.
+        """
+        async with self._lock:
+            # choose keys to display
+            if channel:
+                ch_key = self._channel_key(channel)
+                entries = {ch_key: self.stickies.get(ch_key)} if ch_key in self.stickies else {}
+            else:
+                # all stickies in memory
+                entries = dict(self.stickies)
+
+        if not entries:
+            await self._ephemeral_reply(ctx,
+                                        "No active stickies found." if not channel else f"No active sticky configured for {channel.mention}.")
+            return
+
+        # Build an embed
+        embed = discord.Embed(title="Active Stickies", color=FALLBACK_PURPLE)
+
+        # Limit preview length
+        def _preview(text: str, length: int = 200) -> str:
+            if not text:
+                return "(empty)"
+            t = text.strip().replace("\n", " ")
+            return t if len(t) <= length else t[: length - 1].rstrip() + "…"
+
+        added = 0
+        for ch_key, cfg in entries.items():
+            if not isinstance(cfg, dict):
+                continue
+            try:
+                ch_id = int(ch_key)
+            except Exception:
+                ch_id = None
+            if ch_id:
+                ch_obj = self.bot.get_channel(ch_id)
+                ch_repr = ch_obj.mention if isinstance(ch_obj, discord.TextChannel) else f"`{ch_key}`"
+            else:
+                ch_repr = f"`{ch_key}`"
+
+            interval = self._get_interval(cfg)
+            counter = int(cfg.get("counter", 0))
+            last_id = cfg.get("last_message_id")
+            preview = _preview(cfg.get("message", ""))
+            field_value = f"Interval: {interval} msg(s)\nCounter: {counter}\nLast message id: `{last_id}`\nPreview: {preview}"
+            embed.add_field(name=ch_repr, value=field_value, inline=False)
+            added += 1
+            if added >= 20:
+                break
+
+        total = len(entries)
+        if total > added:
+            embed.set_footer(text=f"Showing {added} of {total} stickies")
+
+        await self._ephemeral_reply(ctx, embed=embed)
+
+    def cog_unload(self):
+        # save on unload (sync method is fine here)
         try:
             self._save_stickies()
         except Exception:
             pass
 
-        @commands.hybrid_command(name="stickies",
-                                 description="List active stickies (optionally for a specific channel).")
-        @commands.guild_only()
-        @commands.has_permissions(manage_messages=True)
-        async def sticky_list(self, ctx: commands.Context, channel: Optional[discord.TextChannel] = None):
-            """
-            Usage:
-              /stickies                 -> lists all active stickies in the guild (visible in invoking channel)
-              /stickies channel:#test   -> list sticky for #test only
-
-            Output: a short embed or text listing channel, interval, counter and a preview of the sticky message.
-            """
-            async with self._lock:
-                # choose keys to display
-                if channel:
-                    ch_key = self._channel_key(channel)
-                    entries = {ch_key: self.stickies.get(ch_key)} if ch_key in self.stickies else {}
-                else:
-                    # all stickies in memory
-                    entries = dict(self.stickies)
-
-            if not entries:
-                await self._ephemeral_reply(ctx,
-                                            "No active stickies found." if not channel else f"No active sticky configured for {channel.mention}.")
-                return
-
-            # Build an embed if few entries, otherwise use paginated text.
-            embed = discord.Embed(title="Active Stickies", color=Colors.PRIMARY if HAS_THEME else 0x2F3136)
-
-            # Limit preview length
-            def _preview(text: str, length: int = 200) -> str:
-                if not text:
-                    return "(empty)"
-                t = text.strip().replace("\n", " ")
-                return t if len(t) <= length else t[: length - 1].rstrip() + "…"
-
-            added = 0
-            for ch_key, cfg in entries.items():
-                if not isinstance(cfg, dict):
-                    continue
-                try:
-                    ch_id = int(ch_key)
-                except Exception:
-                    ch_id = None
-                if ch_id:
-                    ch_obj = self.bot.get_channel(ch_id)
-                    ch_repr = ch_obj.mention if isinstance(ch_obj, discord.TextChannel) else f"`{ch_key}`"
-                else:
-                    ch_repr = f"`{ch_key}`"
-
-                interval = self._get_interval(cfg)
-                counter = int(cfg.get("counter", 0))
-                last_id = cfg.get("last_message_id")
-                preview = _preview(cfg.get("message", ""))
-                field_value = f"Interval: {interval} msg(s)\nCounter: {counter}\nLast message id: `{last_id}`\nPreview: {preview}"
-                # Discord field value limit ~1024 chars; our preview is capped so safe.
-                embed.add_field(name=ch_repr, value=field_value, inline=False)
-                added += 1
-                # safety: avoid huge embeds
-                if added >= 20:
-                    break
-
-            # If there are more entries than we added, include a line
-            total = len(entries)
-            if total > added:
-                embed.set_footer(text=f"Showing {added} of {total} stickies")
-
-            await self._ephemeral_reply(ctx, embed=embed if hasattr(ctx, "reply") else None)
-            # If ctx.interaction.response was used above, _ephemeral_reply handles it.
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(StickyCog(bot))
