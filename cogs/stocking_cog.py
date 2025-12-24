@@ -189,6 +189,8 @@ class StockingCog(commands.Cog, name="StockingCog"):
             try:
                 member = channel.guild.get_member(user_id) if channel and channel.guild else None
                 mention = member.mention if member else f"<@{user_id}>"
+                # small delay so other bots (e.g. Brumblebee) post first
+                await asyncio.sleep(0.4)
                 await channel.send(f"🎉 {mention} earned a **{sticker_key}** sticker! Use `/mysnowman` to view your snowman.")
                 logger.info("award_sticker: announced %s in channel %s", sticker_key, getattr(channel, "id", None))
             except Exception:
@@ -224,6 +226,8 @@ class StockingCog(commands.Cog, name="StockingCog"):
                 try:
                     member = channel.guild.get_member(user_id) if channel and channel.guild else None
                     mention = member.mention if member else f"<@{user_id}>"
+                    # small delay so other bots (e.g. Brumblebee) post first
+                    await asyncio.sleep(0.4)
                     await channel.send(f"{mention} already has the **{part_key}** for their {buildable_key}.")
                 except Exception:
                     logger.exception("award_part: failed to announce already-has")
@@ -319,6 +323,8 @@ class StockingCog(commands.Cog, name="StockingCog"):
                                 logger.exception("award_part: failed to persist role_granted flag")
                             if channel and getattr(channel, "guild", None):
                                 try:
+                                    # Allow gallery to pop up first
+                                    await asyncio.sleep(0.4)
                                     await channel.send(embed=discord.Embed(title=f"{buildable_key} Completed!",
                                                                            description=f"🎉 {member.mention} completed **{buildable_key}** and was awarded {role.mention}!",
                                                                            color=discord.Color.green()))
@@ -353,6 +359,8 @@ class StockingCog(commands.Cog, name="StockingCog"):
                 try:
                     member = channel.guild.get_member(user_id) if channel and channel.guild else None
                     mention = member.mention if member else f"<@{user_id}>"
+                    # small delay so other bots (e.g. Brumblebee) post first
+                    await asyncio.sleep(0.4)
                     await channel.send(f"{mention} already has the **{part_key}** for {buildable_key}.")
                 except Exception:
                     logger.exception("award_part: failed to announce already-has")
