@@ -745,7 +745,7 @@ class StockingCog(commands.Cog, name="StockingCog"):
     # -------------------------
     @commands.hybrid_command(
         name="rumble_builds_leaderboard",
-        aliases=["sled", "stocking_leaderboard", "stockingboard", "leaderboard"],
+        aliases=["sled", "stocking_leaderboard", "stockingboard", "buildables_leaderboard"],
         description="Show stocking leaderboard for this guild (default: snowman)."
     )
     @commands.guild_only()
