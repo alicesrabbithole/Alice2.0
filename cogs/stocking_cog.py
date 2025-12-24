@@ -726,21 +726,15 @@ class StockingCog(commands.Cog, name="StockingCog"):
         description="Show stocking leaderboard for this guild (default: snowman)."
     )
     @commands.guild_only()
-    async def rumble_builds_leaderboard(self, ctx: commands.Context, buildable: Optional[str] = "snowman",
-                                        top: int = 10):
+    @app_commands.describe(
+        buildable="Which buildable to inspect (defaults to 'snowman')",
+    )
+    async def rumble_builds_leaderboard(self, ctx: commands.Context, buildable: Optional[str] = "snowman"):
         """
         Show a leaderboard of who collected the most stickers/parts in this guild.
-
-        Usage:
-          /rumble_builds_leaderboard [buildable] [top]
-        - buildable: which buildable to inspect (defaults to 'snowman')
-        - top: how many entries to show (default 10, max 25)
+        Pages show up to 25 entries each; use the buttons to navigate.
         """
-        try:
-            top = int(top)
-        except Exception:
-            top = 10
-        top = max(1, min(25, top))
+        PAGE_SIZE = 25
 
         guild = ctx.guild
         if not guild:
@@ -768,7 +762,8 @@ class StockingCog(commands.Cog, name="StockingCog"):
             brec = buildables.get(buildable, {}) or {}
             parts = brec.get("parts", []) or []
             completed = bool(brec.get("completed"))
-            score = len(stickers) + len(parts)  # simple score
+            # score is optional; we primarily show parts_count for ranking
+            score = len(parts)  # sort by parts first
             entries.append({
                 "user_id": uid,
                 "member": member,
@@ -783,51 +778,112 @@ class StockingCog(commands.Cog, name="StockingCog"):
             await ctx.send("No stocking data found for members in this server.")
             return
 
-        # sort by score desc, then parts desc, then stickers desc
-        entries.sort(key=lambda e: (e["score"], e["parts_count"], e["stickers_count"]), reverse=True)
-        selected = entries[:top]
+        # sort by parts desc, then stickers desc, then user id
+        entries.sort(key=lambda e: (e["parts_count"], e["stickers_count"], -e["user_id"]), reverse=True)
 
-        # Tidy embed header to match puzzle leaderboard style
-        title = f"Leaderboard — {buildable.replace('_', ' ').title()}"
-        embed_color = DEFAULT_COLOR if isinstance(DEFAULT_COLOR, int) else (DEFAULT_COLOR or 0x2F3136)
-        embed = discord.Embed(title=title, color=discord.Color(embed_color))
-        embed.set_footer(text=f"Top {len(selected)} of {len(entries)} tracked members — buildable: {buildable}")
+        # Helper to build embed for a page
+        def build_embed_for_page(page_idx: int):
+            start = page_idx * PAGE_SIZE
+            end = start + PAGE_SIZE
+            page_entries = entries[start:end]
 
-        # If only one (or very few) entries, show a compact detail block for the top entry(s)
-        if len(selected) == 1:
-            ent = selected[0]
-            m = ent["member"]
-            name = getattr(m, "display_name", None) or str(m)
-            parts_preview = ", ".join(
-                (PART_EMOJI.get(p.lower(), p) if isinstance(PART_EMOJI, dict) else p) for p in ent["parts"]
-            ) or "(none)"
-            embed.add_field(name=f"#{1} — {name}", value=(
-                f"Stickers: {ent['stickers_count']}\n"
-                f"Parts: {ent['parts_count']}/{capacity_slots if capacity_slots is not None else 'N'}\n"
-                f"Completed: {'Yes' if ent['completed'] else 'No'}\n"
-                f"Parts list: {parts_preview}"
-            ), inline=False)
-            await ctx.reply(embed=embed, mention_author=False)
+            title = f"Leaderboard — {buildable.replace('_', ' ').title()}"
+            embed_color = DEFAULT_COLOR if isinstance(DEFAULT_COLOR, int) else (DEFAULT_COLOR or 0x2F3136)
+            embed = discord.Embed(title=title, color=discord.Color(embed_color))
+
+            lines = []
+            for idx, ent in enumerate(page_entries, start=start + 1):
+                m = ent["member"]
+                # show parts_count; you can change to show stickers too if desired
+                lines.append(f"{idx}. {m.mention} — {ent['parts_count']} parts")
+
+            embed.add_field(name=f"Top collectors (Page {page_idx + 1} of {((len(entries) - 1) // PAGE_SIZE) + 1})",
+                            value="\n".join(lines), inline=False)
+
+            # If single-page and single-entry we might include details, but keep the view consistent:
+            if len(page_entries) == 1:
+                ent = page_entries[0]
+                m = ent["member"]
+                parts_preview = ", ".join(
+                    (PART_EMOJI.get(p.lower(), p) if isinstance(PART_EMOJI, dict) else p) for p in ent["parts"]
+                ) or "(none)"
+                embed.add_field(name="Details",
+                                value=(f"Stickers: {ent['stickers_count']}\n"
+                                       f"Parts: {ent['parts_count']}/{capacity_slots if capacity_slots is not None else 'N'}\n"
+                                       f"Completed: {'Yes' if ent['completed'] else 'No'}\n"
+                                       f"Parts list: {parts_preview}"),
+                                inline=False)
+
+            embed.set_footer(
+                text=f"Showing {min(len(entries), start + 1)}–{min(len(entries), end)} of {len(entries)} tracked members — buildable: {buildable}")
+            return embed
+
+        # If only one page, just send it without pagination view
+        total_pages = (len(entries) - 1) // PAGE_SIZE + 1
+        page0_embed = build_embed_for_page(0)
+
+        if total_pages <= 1:
+            await ctx.reply(embed=page0_embed, mention_author=False)
             return
 
-        # Otherwise render a compact numbered list similar to your puzzle leaderboard
-        lines = []
-        for idx, ent in enumerate(selected, start=1):
-            m = ent["member"]
-            display = getattr(m, "display_name", None) or getattr(m, "name", None) or str(m)
-            lines.append(f"{idx}. {m.mention} — {ent['parts_count']} parts")
+        # Simple paginator view with Prev / Next
+        class LeaderboardPaginator(discord.ui.View):
+            def __init__(self, *, timeout: Optional[float] = 120.0):
+                super().__init__(timeout=timeout)
+                self.page = 0
 
-        # add as single field so it looks like the puzzle leaderboard list
-        embed.add_field(name=f"Top collectors", value="\n".join(lines), inline=False)
+            async def update_message(self, interaction: discord.Interaction):
+                embed = build_embed_for_page(self.page)
+                try:
+                    await interaction.response.edit_message(embed=embed, view=self)
+                except Exception:
+                    # fallback: try to edit original message via message object if available
+                    try:
+                        await interaction.message.edit(embed=embed, view=self)
+                    except Exception:
+                        pass
 
-        # Optionally include a tiny "first finisher" if you track it elsewhere; omitted here.
-        try:
-            await ctx.reply(embed=embed, mention_author=False)
-        except Exception:
-            try:
-                await ctx.send(embed=embed)
-            except Exception:
-                await self._ephemeral_reply(ctx, "Failed to post leaderboard (permissions?).")
+            @discord.ui.button(emoji="⏮️", style=discord.ButtonStyle.secondary)
+            async def first(self, button: discord.ui.Button, interaction: discord.Interaction):
+                self.page = 0
+                await self.update_message(interaction)
+
+            @discord.ui.button(emoji="◀️", style=discord.ButtonStyle.secondary)
+            async def previous(self, button: discord.ui.Button, interaction: discord.Interaction):
+                if self.page > 0:
+                    self.page -= 1
+                    await self.update_message(interaction)
+                else:
+                    await interaction.response.defer()
+
+            @discord.ui.button(emoji="▶️", style=discord.ButtonStyle.primary)
+            async def next(self, button: discord.ui.Button, interaction: discord.Interaction):
+                if self.page < total_pages - 1:
+                    self.page += 1
+                    await self.update_message(interaction)
+                else:
+                    await interaction.response.defer()
+
+            @discord.ui.button(emoji="⏭️", style=discord.ButtonStyle.secondary)
+            async def last(self, button: discord.ui.Button, interaction: discord.Interaction):
+                self.page = total_pages - 1
+                await self.update_message(interaction)
+
+            async def on_timeout(self):
+                # disable buttons when timed out
+                for item in self.children:
+                    item.disabled = True
+                try:
+                    # attempt to edit the original message to disable buttons
+                    # note: view.message may not be set in all contexts; ignore failures
+                    await msg.edit(view=self)
+                except Exception:
+                    pass
+
+        view = LeaderboardPaginator()
+        msg = await ctx.reply(embed=page0_embed, view=view, mention_author=False)
+        # bind message to view for timeout edit in on_timeout
+        view.message = msg
 
     # -------------------------
     # Role helpers & events
