@@ -583,7 +583,8 @@ class StockingCog(commands.Cog, name="StockingCog"):
     # -------------------------
     @commands.hybrid_command(name="mysnowman", description="Show your snowman assembled from collected parts.")
     async def mysnowman(self, ctx: commands.Context):
-        user_id = getattr(ctx.author, "id", None)
+        user = ctx.author
+        user_id = getattr(user, "id", None)
         if not user_id:
             await self._ephemeral_reply(ctx, "Could not determine your user id.")
             return
@@ -597,33 +598,101 @@ class StockingCog(commands.Cog, name="StockingCog"):
         # ensure record
         rec = self._ensure_user(user_id)
         b = rec.get("buildables", {}).get(build_key, {"parts": [], "completed": False})
-        user_parts = b.get("parts", [])
+        user_parts = list(dict.fromkeys(b.get("parts", []) or []))  # keep order, dedupe
         parts_def = build_def.get("parts", {}) or {}
-        capacity_slots = int(build_def.get("capacity_slots", len(parts_def)))
+        all_parts = list(parts_def.keys())
+        capacity_slots = int(build_def.get("capacity_slots", len(all_parts)))
 
-        # If user qualifies as complete, attempt to grant role NOW and announce in this channel
+        # completion check (persisted flag or computed)
         is_complete = bool(b.get("completed")) or (
-                    len(user_parts) >= capacity_slots or len(user_parts) >= len(parts_def))
+                    len(user_parts) >= capacity_slots or len(user_parts) >= len(all_parts))
         if is_complete:
             try:
-                # Pass ctx.channel so _grant_buildable_completion_role will announce in this channel
-                granted = await self._grant_buildable_completion_role(user_id, build_key, ctx.guild, ctx.channel)
-                # _grant_buildable_completion_role already announces on grant.
-                # If you want to include a completion notice inside the mysnowman reply itself, you can detect `granted` and append text below.
+                await self._grant_buildable_completion_role(user_id, build_key, ctx.guild, ctx.channel)
             except Exception:
                 logger.exception("mysnowman: error while attempting to grant completion role for user %s", user_id)
 
-        # Try to render composite and send (existing behavior)
+        # Try to render composite (best-effort)
         composite_path = None
         try:
             composite_path = await self.render_buildable(user_id, build_key)
         except Exception:
             composite_path = None
 
-        embed = discord.Embed(title="Your Snowman", color=discord.Color.dark_blue())
-        embed.add_field(name="Parts collected", value=f"{len(user_parts)}/{capacity_slots}", inline=False)
-        embed.add_field(name="Parts", value=", ".join(user_parts) if user_parts else "(none)", inline=False)
+        # Embed color from theme if available
+        try:
+            embed_color = discord.Color(DEFAULT_COLOR) if isinstance(DEFAULT_COLOR, int) else (
+                        DEFAULT_COLOR or discord.Color.dark_blue())
+        except Exception:
+            embed_color = discord.Color.dark_blue()
 
+        # Friendly display name
+        try:
+            display = None
+            if ctx.guild:
+                member = ctx.guild.get_member(user_id)
+                display = getattr(member, "display_name", None) or getattr(user, "display_name", None) or getattr(user,
+                                                                                                                  "name",
+                                                                                                                  None) or str(
+                    user)
+            else:
+                display = getattr(user, "display_name", None) or getattr(user, "name", None) or str(user)
+        except Exception:
+            display = getattr(user, "name", None) or str(user)
+
+        title = f"☃️ {display}'s Snowman"
+
+        embed = discord.Embed(title=title, color=embed_color, timestamp=discord.utils.utcnow())
+        # author/thumbnail
+        try:
+            avatar_url = getattr(user.display_avatar, "url", None)
+            embed.set_author(name=display, icon_url=avatar_url)
+            if avatar_url:
+                embed.set_thumbnail(url=avatar_url)
+        except Exception:
+            pass
+
+        # Progress bar helper
+        def _progress_bar(collected: int, total: int, length: int = 8) -> str:
+            if total <= 0:
+                return ""
+            frac = min(1.0, max(0.0, float(collected) / float(total)))
+            filled = int(round(frac * length))
+            filled = min(length, max(0, filled))
+            empty = length - filled
+            return "▰" * filled + "▱" * empty
+
+        # Progress line
+        progress_line = f"Progress: **{len(user_parts)} / {capacity_slots}**  {_progress_bar(len(user_parts), capacity_slots, 8)}"
+        if is_complete:
+            progress_line += "  ✅ Completed"
+        embed.add_field(name="\u200b", value=progress_line, inline=False)  # blank name for a compact top-line look
+
+        # Parts list with small emoji where available
+        parts_display_items = []
+        used = set()
+        for p in all_parts:
+            if p in user_parts and p not in used:
+                emoji = PART_EMOJI.get(p.lower(), "") if isinstance(PART_EMOJI, dict) else ""
+                parts_display_items.append(f"{emoji} {p}" if emoji else p)
+                used.add(p)
+        missing = [p for p in all_parts if p not in used]
+        if missing:
+            # show missing parts tersely in parentheses to hint at what's left
+            # keep displayed parts first, then a short missing note
+            parts_line = ", ".join(parts_display_items) if parts_display_items else "(none)"
+            missing_preview = ", ".join(missing[:6])
+            if len(missing) > 6:
+                missing_preview += "…"
+            parts_line = parts_line + ("\n" if parts_display_items else "") + f"*Missing:* {missing_preview}"
+        else:
+            parts_line = ", ".join(parts_display_items) if parts_display_items else "(none)"
+
+        # Add parts field (compact)
+        embed.add_field(name="Parts", value=parts_line, inline=False)
+
+        # Attach the composite image if available, else a fallback base/last-part image
+        candidate = None
         if composite_path and composite_path.exists():
             try:
                 file = discord.File(composite_path, filename=composite_path.name)
@@ -633,9 +702,8 @@ class StockingCog(commands.Cog, name="StockingCog"):
             except Exception:
                 logger.exception("mysnowman: failed to send composite image, falling back")
 
-        # fallback to base/part thumbnail (existing behavior)
+        # Fallback image candidate (base or last part)
         base_rel = build_def.get("base")
-        candidate = None
         if base_rel:
             base_path = Path(base_rel)
             if not base_path.exists():
@@ -665,9 +733,12 @@ class StockingCog(commands.Cog, name="StockingCog"):
             except Exception:
                 logger.exception("mysnowman: failed to send fallback image %s", candidate)
 
-        # final fallback: text
-        await self._ephemeral_reply(ctx,
-                                    f"You have {len(user_parts)} parts: {', '.join(user_parts) if user_parts else '(none)'}.")
+        # final fallback: embed text-only
+        try:
+            await ctx.reply(embed=embed, mention_author=False)
+        except Exception:
+            await self._ephemeral_reply(ctx,
+                                        f"You have {len(user_parts)} parts: {', '.join(user_parts) if user_parts else '(none)'}.")
 
     # -------------------------
     # Leaderboard command (renamed to rumble_builds_leaderboard)
