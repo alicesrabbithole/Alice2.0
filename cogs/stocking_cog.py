@@ -722,11 +722,12 @@ class StockingCog(commands.Cog, name="StockingCog"):
     # -------------------------
     @commands.hybrid_command(
         name="rumble_builds_leaderboard",
-        aliases=["sled", "stocking_leaderboard", "stockingboard", "buildables_leaderboard"],
+        aliases=["sled", "stocking_leaderboard", "stockingboard"],
         description="Show stocking leaderboard for this guild (default: snowman)."
     )
     @commands.guild_only()
-    async def rumble_builds_leaderboard(self, ctx: commands.Context, buildable: Optional[str] = "snowman", top: int = 10):
+    async def rumble_builds_leaderboard(self, ctx: commands.Context, buildable: Optional[str] = "snowman",
+                                        top: int = 10):
         """
         Show a leaderboard of who collected the most stickers/parts in this guild.
 
@@ -734,7 +735,6 @@ class StockingCog(commands.Cog, name="StockingCog"):
           /rumble_builds_leaderboard [buildable] [top]
         - buildable: which buildable to inspect (defaults to 'snowman')
         - top: how many entries to show (default 10, max 25)
-        Aliases still include: /sled, /stocking_leaderboard, /stockingboard, /leaderboard
         """
         try:
             top = int(top)
@@ -787,35 +787,40 @@ class StockingCog(commands.Cog, name="StockingCog"):
         entries.sort(key=lambda e: (e["score"], e["parts_count"], e["stickers_count"]), reverse=True)
         selected = entries[:top]
 
-        embed = discord.Embed(title=f"Rumble Builds Leaderboard — {guild.name}", color=DEFAULT_COLOR)
+        # Tidy embed header to match puzzle leaderboard style
+        title = f"Leaderboard — {buildable.replace('_', ' ').title()}"
+        embed_color = DEFAULT_COLOR if isinstance(DEFAULT_COLOR, int) else (DEFAULT_COLOR or 0x2F3136)
+        embed = discord.Embed(title=title, color=discord.Color(embed_color))
         embed.set_footer(text=f"Top {len(selected)} of {len(entries)} tracked members — buildable: {buildable}")
 
-        def _shorten_parts_list(parts_list: List[str], limit: int = 60) -> str:
-            s = ", ".join(parts_list)
-            if len(s) <= limit:
-                return s or "(none)"
-            # truncate gracefully
-            truncated = s[: limit - 1].rsplit(",", 1)[0].strip()
-            return f"{truncated}…"
-
-        for idx, ent in enumerate(selected, start=1):
-            member = ent["member"]
-            name = member.display_name if getattr(member, "display_name", None) else str(member)
-            stickers_count = ent["stickers_count"]
-            parts_count = ent["parts_count"]
-            completed = ent["completed"]
-            parts_preview = _shorten_parts_list(ent["parts"], limit=100)
-            lines = [
-                f"Rank: #{idx}",
-                f"Stickers: {stickers_count}",
-                f"Parts: {parts_count}" + (f"/{capacity_slots}" if capacity_slots is not None else ""),
-                f"Completed: {'Yes' if completed else 'No'}",
+        # If only one (or very few) entries, show a compact detail block for the top entry(s)
+        if len(selected) == 1:
+            ent = selected[0]
+            m = ent["member"]
+            name = getattr(m, "display_name", None) or str(m)
+            parts_preview = ", ".join(
+                (PART_EMOJI.get(p.lower(), p) if isinstance(PART_EMOJI, dict) else p) for p in ent["parts"]
+            ) or "(none)"
+            embed.add_field(name=f"#{1} — {name}", value=(
+                f"Stickers: {ent['stickers_count']}\n"
+                f"Parts: {ent['parts_count']}/{capacity_slots if capacity_slots is not None else 'N'}\n"
+                f"Completed: {'Yes' if ent['completed'] else 'No'}\n"
                 f"Parts list: {parts_preview}"
-            ]
-            field_value = "\n".join(lines)
-            # name mention in field name to keep it compact
-            embed.add_field(name=f"{member.mention} — {name}", value=field_value, inline=False)
+            ), inline=False)
+            await ctx.reply(embed=embed, mention_author=False)
+            return
 
+        # Otherwise render a compact numbered list similar to your puzzle leaderboard
+        lines = []
+        for idx, ent in enumerate(selected, start=1):
+            m = ent["member"]
+            display = getattr(m, "display_name", None) or getattr(m, "name", None) or str(m)
+            lines.append(f"{idx}. {m.mention} — {ent['parts_count']} parts")
+
+        # add as single field so it looks like the puzzle leaderboard list
+        embed.add_field(name=f"Top collectors", value="\n".join(lines), inline=False)
+
+        # Optionally include a tiny "first finisher" if you track it elsewhere; omitted here.
         try:
             await ctx.reply(embed=embed, mention_author=False)
         except Exception:
