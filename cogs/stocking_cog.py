@@ -598,7 +598,7 @@ class StockingCog(commands.Cog, name="StockingCog"):
         # ensure record
         rec = self._ensure_user(user_id)
         b = rec.get("buildables", {}).get(build_key, {"parts": [], "completed": False})
-        user_parts = list(dict.fromkeys(b.get("parts", []) or []))  # keep order, dedupe
+        user_parts = list(dict.fromkeys(b.get("parts", []) or []))  # order + dedupe
         parts_def = build_def.get("parts", {}) or {}
         all_parts = list(parts_def.keys())
         capacity_slots = int(build_def.get("capacity_slots", len(all_parts)))
@@ -628,7 +628,6 @@ class StockingCog(commands.Cog, name="StockingCog"):
 
         # Friendly display name
         try:
-            display = None
             if ctx.guild:
                 member = ctx.guild.get_member(user_id)
                 display = getattr(member, "display_name", None) or getattr(user, "display_name", None) or getattr(user,
@@ -640,59 +639,36 @@ class StockingCog(commands.Cog, name="StockingCog"):
         except Exception:
             display = getattr(user, "name", None) or str(user)
 
-        title = f"☃️ {display}'s Snowman"
-
+        title = f"☃️ Snowman ☃️"
         embed = discord.Embed(title=title, color=embed_color, timestamp=discord.utils.utcnow())
-        # author/thumbnail
+
+        # Author small cue (keeps left-side avatar if you want it) — we DO NOT set a thumbnail on the right.
         try:
             avatar_url = getattr(user.display_avatar, "url", None)
             embed.set_author(name=display, icon_url=avatar_url)
-            if avatar_url:
-                embed.set_thumbnail(url=avatar_url)
         except Exception:
             pass
 
-        # Progress bar helper
-        def _progress_bar(collected: int, total: int, length: int = 8) -> str:
-            if total <= 0:
-                return ""
-            frac = min(1.0, max(0.0, float(collected) / float(total)))
-            filled = int(round(frac * length))
-            filled = min(length, max(0, filled))
-            empty = length - filled
-            return "▰" * filled + "▱" * empty
+        # Build collected / missing lines using PART_EMOJI when available
+        def _emoji_or_name(p: str) -> str:
+            try:
+                e = PART_EMOJI.get(p.lower()) if isinstance(PART_EMOJI, dict) else None
+                return e if e else p
+            except Exception:
+                return p
 
-        # Progress line
-        progress_line = f"Progress: **{len(user_parts)} / {capacity_slots}**  {_progress_bar(len(user_parts), capacity_slots, 8)}"
-        if is_complete:
-            progress_line += "  ✅ Completed"
-        embed.add_field(name="\u200b", value=progress_line, inline=False)  # blank name for a compact top-line look
+        collected_items = [_emoji_or_name(p) for p in user_parts]
+        missing_parts = [p for p in all_parts if p not in user_parts]
+        missing_items = [_emoji_or_name(p) for p in missing_parts]
 
-        # Parts list with small emoji where available
-        parts_display_items = []
-        used = set()
-        for p in all_parts:
-            if p in user_parts and p not in used:
-                emoji = PART_EMOJI.get(p.lower(), "") if isinstance(PART_EMOJI, dict) else ""
-                parts_display_items.append(f"{emoji} {p}" if emoji else p)
-                used.add(p)
-        missing = [p for p in all_parts if p not in used]
-        if missing:
-            # show missing parts tersely in parentheses to hint at what's left
-            # keep displayed parts first, then a short missing note
-            parts_line = ", ".join(parts_display_items) if parts_display_items else "(none)"
-            missing_preview = ", ".join(missing[:6])
-            if len(missing) > 6:
-                missing_preview += "…"
-            parts_line = parts_line + ("\n" if parts_display_items else "") + f"*Missing:* {missing_preview}"
-        else:
-            parts_line = ", ".join(parts_display_items) if parts_display_items else "(none)"
+        collected_line = " ".join(collected_items) if collected_items else "(none)"
+        missing_line = " ".join(missing_items) if missing_items else "(none)"
 
-        # Add parts field (compact)
-        embed.add_field(name="Parts", value=parts_line, inline=False)
+        # Compact fields: Collected / Missing
+        embed.add_field(name="Collected", value=collected_line, inline=False)
+        embed.add_field(name="Missing", value=missing_line, inline=False)
 
-        # Attach the composite image if available, else a fallback base/last-part image
-        candidate = None
+        # If we have a composite image, attach it and set as the embed image
         if composite_path and composite_path.exists():
             try:
                 file = discord.File(composite_path, filename=composite_path.name)
@@ -702,7 +678,8 @@ class StockingCog(commands.Cog, name="StockingCog"):
             except Exception:
                 logger.exception("mysnowman: failed to send composite image, falling back")
 
-        # Fallback image candidate (base or last part)
+        # Fallback: base or last part image
+        candidate = None
         base_rel = build_def.get("base")
         if base_rel:
             base_path = Path(base_rel)
