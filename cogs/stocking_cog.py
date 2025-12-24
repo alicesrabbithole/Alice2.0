@@ -662,6 +662,113 @@ class StockingCog(commands.Cog, name="StockingCog"):
                                     f"You have {len(user_parts)} parts: {', '.join(user_parts) if user_parts else '(none)'}.")
 
     # -------------------------
+    # Leaderboard command (renamed to rumble_builds_leaderboard)
+    # -------------------------
+    @commands.hybrid_command(
+        name="rumble_builds_leaderboard",
+        aliases=["sled", "stocking_leaderboard", "stockingboard", "leaderboard"],
+        description="Show stocking leaderboard for this guild (default: snowman)."
+    )
+    @commands.guild_only()
+    async def rumble_builds_leaderboard(self, ctx: commands.Context, buildable: Optional[str] = "snowman", top: int = 10):
+        """
+        Show a leaderboard of who collected the most stickers/parts in this guild.
+
+        Usage:
+          /rumble_builds_leaderboard [buildable] [top]
+        - buildable: which buildable to inspect (defaults to 'snowman')
+        - top: how many entries to show (default 10, max 25)
+        Aliases still include: /sled, /stocking_leaderboard, /stockingboard, /leaderboard
+        """
+        try:
+            top = int(top)
+        except Exception:
+            top = 10
+        top = max(1, min(25, top))
+
+        guild = ctx.guild
+        if not guild:
+            await self._ephemeral_reply(ctx, "This command must be used in a guild.")
+            return
+
+        buildable = (buildable or "snowman").strip()
+        build_def = self._buildables_def.get(buildable, {})
+        parts_def = build_def.get("parts", {}) or {}
+        capacity_slots = int(build_def.get("capacity_slots", len(parts_def))) if build_def else None
+
+        # collect stats for members present in this guild
+        entries = []
+        for uid_str, rec in (self._data or {}).items():
+            try:
+                uid = int(uid_str)
+            except Exception:
+                continue
+            member = guild.get_member(uid)
+            # Only show members who are in this guild
+            if member is None:
+                continue
+            stickers = rec.get("stickers", []) or []
+            buildables = rec.get("buildables", {}) or {}
+            brec = buildables.get(buildable, {}) or {}
+            parts = brec.get("parts", []) or []
+            completed = bool(brec.get("completed"))
+            score = len(stickers) + len(parts)  # simple score
+            entries.append({
+                "user_id": uid,
+                "member": member,
+                "stickers_count": len(stickers),
+                "parts_count": len(parts),
+                "parts": list(parts),
+                "completed": completed,
+                "score": score
+            })
+
+        if not entries:
+            await ctx.send("No stocking data found for members in this server.")
+            return
+
+        # sort by score desc, then parts desc, then stickers desc
+        entries.sort(key=lambda e: (e["score"], e["parts_count"], e["stickers_count"]), reverse=True)
+        selected = entries[:top]
+
+        embed = discord.Embed(title=f"Rumble Builds Leaderboard — {guild.name}", color=DEFAULT_COLOR)
+        embed.set_footer(text=f"Top {len(selected)} of {len(entries)} tracked members — buildable: {buildable}")
+
+        def _shorten_parts_list(parts_list: List[str], limit: int = 60) -> str:
+            s = ", ".join(parts_list)
+            if len(s) <= limit:
+                return s or "(none)"
+            # truncate gracefully
+            truncated = s[: limit - 1].rsplit(",", 1)[0].strip()
+            return f"{truncated}…"
+
+        for idx, ent in enumerate(selected, start=1):
+            member = ent["member"]
+            name = member.display_name if getattr(member, "display_name", None) else str(member)
+            stickers_count = ent["stickers_count"]
+            parts_count = ent["parts_count"]
+            completed = ent["completed"]
+            parts_preview = _shorten_parts_list(ent["parts"], limit=100)
+            lines = [
+                f"Rank: #{idx}",
+                f"Stickers: {stickers_count}",
+                f"Parts: {parts_count}" + (f"/{capacity_slots}" if capacity_slots is not None else ""),
+                f"Completed: {'Yes' if completed else 'No'}",
+                f"Parts list: {parts_preview}"
+            ]
+            field_value = "\n".join(lines)
+            # name mention in field name to keep it compact
+            embed.add_field(name=f"{member.mention} — {name}", value=field_value, inline=False)
+
+        try:
+            await ctx.reply(embed=embed, mention_author=False)
+        except Exception:
+            try:
+                await ctx.send(embed=embed)
+            except Exception:
+                await self._ephemeral_reply(ctx, "Failed to post leaderboard (permissions?).")
+
+    # -------------------------
     # Role helpers & events
     # -------------------------
     async def _maybe_award_role(self, user_id: int, guild: Optional[discord.Guild]) -> None:
