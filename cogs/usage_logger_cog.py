@@ -63,6 +63,10 @@ else:
 SKIP_ALL_PREFIX = getattr(config, "USAGE_IGNORE_ALL_PREFIX_INVOCATIONS", False)
 SKIP_COMMANDS = set(getattr(config, "USAGE_IGNORED_PREFIX_COMMANDS", ["wordle", "21questions"]))
 
+# New: commands for which we only want a minimal acknowledgement in logs (no args, no embed contents).
+# Example defaults include leaderboard/gallery/mysnowman/summary variants.
+QUIET_COMMANDS = set(n.lower() for n in getattr(config, "USAGE_QUIET_COMMANDS",
+                                                  ["leaderboard", "gallery", "mysnowman", "summary21q", "sum21", "sled", "rumble_builds_leaderboard"]))
 
 class UsageLoggerCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
@@ -124,6 +128,19 @@ class UsageLoggerCog(commands.Cog):
         except Exception:
             logger.exception("before_invoke failure in UsageLoggerCog")
 
+    def _is_quiet_command(self, cmdname: str) -> bool:
+        """
+        Determine whether the given command should be quieted in logs.
+        Accepts either qualified command names or simple invoked names.
+        """
+        try:
+            if not cmdname:
+                return False
+            root = str(cmdname).split()[0].lower()
+            return root in QUIET_COMMANDS
+        except Exception:
+            return False
+
     async def _after_any_command(self, ctx: commands.Context):
         try:
             if getattr(ctx, "_usage_skip", False):
@@ -134,6 +151,18 @@ class UsageLoggerCog(commands.Cog):
             user = ctx.author
             channel = getattr(ctx, "channel", None)
             cmdname = ctx.command.qualified_name if getattr(ctx, "command", None) else getattr(ctx, "invoked_with", "unknown")
+
+            # If this command is in the quiet list, only post a minimal acknowledgement.
+            if self._is_quiet_command(cmdname):
+                chan_repr = f"#{channel.name}" if isinstance(channel, discord.TextChannel) else (f"DM with {user}" if channel is None else str(channel))
+                cmd_display = f"/{cmdname}" if getattr(ctx, "interaction", None) else f"{cmdname}"
+                log_text = f"<@{user.id}> used {cmd_display} in {chan_repr}"
+                try:
+                    await _send_log(self.bot, log_text)
+                except Exception:
+                    logger.exception("Failed to send usage log to discord; falling back to logger")
+                    logger.info(log_text)
+                return
 
             bot_reply_text = None
             try:
@@ -176,6 +205,18 @@ class UsageLoggerCog(commands.Cog):
             user = interaction.user
             data = interaction.data or {}
             name = data.get("name", "unknown")
+
+            # If this slash command is quiet, only send a minimal acknowledgement
+            if self._is_quiet_command(name):
+                chan = interaction.channel
+                chan_repr = f"#{chan.name}" if isinstance(chan, discord.TextChannel) else str(chan)
+                log_text = f"<@{user.id}> used /{name} in {chan_repr}"
+                try:
+                    await _send_log(self.bot, log_text)
+                except Exception:
+                    logger.exception("Failed to send interaction usage log")
+                return
+
             args_display = ""
             try:
                 opts = data.get("options") or []
