@@ -130,11 +130,7 @@ class StickyCog(commands.Cog, name="Sticky Messages"):
         try:
             color = FALLBACK_PURPLE
             embed = discord.Embed(description=content or "(empty)", color=color)
-            try:
-                embed.set_footer(text=f"Sticky • {self.bot.user.name}")
-            except Exception:
-                pass
-            # avoid pinging everyone/roles/users in the sticky content
+            ## Removed the footer line and except after here
             return await channel.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
         except discord.Forbidden:
             return None
