@@ -796,41 +796,15 @@ class StockingCog(commands.Cog, name="StockingCog"):
 
         entries.sort(key=_sort_key)
 
-        def _format_collected_list(parts: List[str], max_len: int = 750) -> str:
-            """
-            Return a compact collected representation:
-            - If all part keys look numeric, show them as numbers (e.g. "1, 2, 24")
-            - Otherwise prefer PART_EMOJI mapping if available, falling back to the raw key.
-            - Truncate the resulting string to max_len characters with an ellipsis if needed.
-            """
-            if not parts:
-                return "(none)"
-
-            # Sort numerically when possible, otherwise lexicographically
-            try:
-                parts_sorted = sorted(parts, key=lambda x: int(x) if str(x).isdigit() else x)
-            except Exception:
-                parts_sorted = list(parts)
-
-            # If all keys are numeric, show numeric ids
-            if all(str(p).isdigit() for p in parts_sorted):
-                s = ", ".join(str(int(p)) for p in parts_sorted)
-            else:
-                out = []
-                for p in parts_sorted:
-                    try:
-                        em = PART_EMOJI.get(p.lower()) if isinstance(PART_EMOJI, dict) else None
-                    except Exception:
-                        em = None
-                    out.append(em if em else str(p))
-                s = ", ".join(out)
-
-            if len(s) > max_len:
-                s = s[: max_len - 2].rstrip() + " …"
-            return s
 
         # Helper to build embed for a page
         def build_embed_for_page(page_idx: int):
+            """
+            Puzzle-style minimal leaderboard:
+              1. @User — 25 pieces
+              2. @Other — 22 pieces
+            No details / progress bars / collected lists.
+            """
             start = page_idx * PAGE_SIZE
             end = start + PAGE_SIZE
             page_entries = entries[start:end]
@@ -839,52 +813,32 @@ class StockingCog(commands.Cog, name="StockingCog"):
             embed_color = DEFAULT_COLOR if isinstance(DEFAULT_COLOR, int) else (DEFAULT_COLOR or 0x2F3136)
             embed = discord.Embed(title=title, color=discord.Color(embed_color))
 
-            # Top collectors concise (simple status: "Completed" or "X/Y Pieces")
-            top_lines = []
-            for idx, ent in enumerate(page_entries, start=start + 1):
-                m = ent["member"]
-                name = getattr(m, "display_name", None) or getattr(m, "name", None) or str(m)
-                if ent.get("completed"):
-                    status = "Completed"
-                else:
-                    parts_count = ent.get("parts_count", 0)
-                    capacity = capacity_slots if capacity_slots is not None else len(parts_def)
-                    status = f"{parts_count}/{capacity} Pieces"
-                top_lines.append(f"{idx}. {name} — {status}")
+            lines = []
+            if not page_entries:
+                lines.append("No tracked members have collected pieces for this buildable yet.")
+            else:
+                # Numbered list like the puzzle leaderboard, using mentions for clickable names
+                for idx, ent in enumerate(page_entries, start=start + 1):
+                    user_member = ent.get("member")
+                    # prefer mention so the line looks like the puzzle leaderboard
+                    who = user_member.mention if user_member is not None else f"<@{ent.get('user_id')}>"
+                    count = ent.get("parts_count", 0)
+                    lines.append(f"{idx}. {who} — {count} pieces")
 
+            # Put the lines into a single field so formatting stays compact
             embed.add_field(
                 name=f"Top collectors (Page {page_idx + 1} of {((len(entries) - 1) // PAGE_SIZE) + 1})",
-                value="\n".join(top_lines),
+                value="\n".join(lines),
                 inline=False,
             )
 
-            # If single entry on page, show compact collected/missing details using numeric IDs when possible
-            if len(page_entries) == 1:
-                ent = page_entries[0]
-                m = ent["member"]
-                collected_display = _format_collected_list(ent.get("parts", []))
-                # compute missing from parts_def keys
-                defined_keys = list(parts_def.keys())
-                missing_keys = [k for k in defined_keys if k not in ent.get("parts", [])]
-                missing_display = _format_collected_list(missing_keys)
-                # Provide a short details field
-                details = (
-                    f"Stickers: {ent['stickers_count']}\n"
-                    f"Parts: {ent['parts_count']}/{capacity_slots if capacity_slots is not None else len(parts_def)}\n"
-                    f"Completed: {'Yes' if ent['completed'] else 'No'}\n"
-                    f"collected: {collected_display}\n"
-                    f"missing: {missing_display}"
-                )
-                embed.add_field(name="Details", value=details, inline=False)
-
-            # No progress bar or extra visual — keep the embed minimal
-
-            # Footer
+            # Footer keeps page info
             total_tracked = len(entries)
             showing_from = start + 1
             showing_to = min(len(entries), end)
-            footer_text = f"Showing {showing_from}–{showing_to} of {total_tracked} tracked members — buildable: {buildable}"
-            embed.set_footer(text=footer_text)
+            embed.set_footer(
+                text=f"Showing {showing_from}–{showing_to} of {total_tracked} tracked members — buildable: {buildable}")
+
             return embed
 
         # If only one page, just send it without pagination view
