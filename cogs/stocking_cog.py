@@ -27,6 +27,7 @@ from typing import Dict, Any, Optional, List, Tuple
 import discord
 from discord import app_commands
 from discord.ext import commands
+from discord.utils import utcnow  # added for completion timestamps
 
 # optional theme helpers in repo (falls back to safe defaults)
 try:
@@ -286,6 +287,12 @@ class StockingCog(commands.Cog, name="StockingCog"):
 
         if total >= capacity_slots or total >= len(parts_def):
             b["completed"] = True
+            # persist completion time so we can order finishers
+            try:
+                b["completed_at"] = utcnow().isoformat()
+            except Exception:
+                from datetime import datetime
+                b["completed_at"] = datetime.utcnow().isoformat()
             await self._save()
             role_id = build_def.get("role_on_complete") or AUTO_ROLE_ID
             guild = channel.guild if channel and getattr(channel, "guild", None) else None
@@ -430,6 +437,24 @@ class StockingCog(commands.Cog, name="StockingCog"):
                 except Exception:
                     logger.exception("award_part: failed to announce award for %s to channel %s", part_key,
                                      getattr(channel, "id", None))
+        # handle completion & role grant (unchanged)
+        try:
+            capacity_slots = int(build_def.get("capacity_slots", len(parts_def)))
+        except Exception:
+            capacity_slots = len(parts_def)
+        total = len(b.get("parts", []))
+
+        if total >= capacity_slots or total >= len(parts_def):
+            b["completed"] = True
+            # persist completion time so we can order finishers
+            try:
+                b["completed_at"] = utcnow().isoformat()
+            except Exception:
+                from datetime import datetime
+                b["completed_at"] = datetime.utcnow().isoformat()
+            await self._save()
+            return True
+
         return True
 
     # -------------------------
@@ -580,7 +605,6 @@ class StockingCog(commands.Cog, name="StockingCog"):
 
     # -------------------------
     # /mysnowman command
-    # -------------------------
     @commands.hybrid_command(name="mysnowman", description="Show your snowman assembled from collected parts.")
     async def mysnowman(self, ctx: commands.Context):
         user = ctx.author
@@ -626,28 +650,8 @@ class StockingCog(commands.Cog, name="StockingCog"):
         except Exception:
             embed_color = discord.Color.dark_blue()
 
-        # Friendly display name
-        try:
-            if ctx.guild:
-                member = ctx.guild.get_member(user_id)
-                display = getattr(member, "display_name", None) or getattr(user, "display_name", None) or getattr(user,
-                                                                                                                  "name",
-                                                                                                                  None) or str(
-                    user)
-            else:
-                display = getattr(user, "display_name", None) or getattr(user, "name", None) or str(user)
-        except Exception:
-            display = getattr(user, "name", None) or str(user)
-
-        title = f"☃️ Snowman ☃️"
+        title = "☃️ Snowman ☃️"
         embed = discord.Embed(title=title, color=embed_color, timestamp=discord.utils.utcnow())
-
-        # Author small cue (keeps left-side avatar if you want it) — we DO NOT set a thumbnail on the right.
-        try:
-            avatar_url = getattr(user.display_avatar, "url", None)
-            embed.set_author(name=display, icon_url=avatar_url)
-        except Exception:
-            pass
 
         # Build collected / missing lines using PART_EMOJI when available
         def _emoji_or_name(p: str) -> str:
@@ -720,6 +724,8 @@ class StockingCog(commands.Cog, name="StockingCog"):
     # -------------------------
     # Leaderboard command (renamed to rumble_builds_leaderboard)
     # -------------------------
+
+
     @commands.hybrid_command(
         name="rumble_builds_leaderboard",
         aliases=["sled", "stocking_leaderboard", "stockingboard"],
@@ -762,8 +768,7 @@ class StockingCog(commands.Cog, name="StockingCog"):
             brec = buildables.get(buildable, {}) or {}
             parts = brec.get("parts", []) or []
             completed = bool(brec.get("completed"))
-            # score is optional; we primarily show parts_count for ranking
-            score = len(parts)  # sort by parts first
+            completed_at = brec.get("completed_at")  # ISO timestamp or None
             entries.append({
                 "user_id": uid,
                 "member": member,
@@ -771,15 +776,25 @@ class StockingCog(commands.Cog, name="StockingCog"):
                 "parts_count": len(parts),
                 "parts": list(parts),
                 "completed": completed,
-                "score": score
+                "completed_at": completed_at,
             })
 
         if not entries:
             await ctx.send("No stocking data found for members in this server.")
             return
 
-        # sort by parts desc, then stickers desc, then user id
-        entries.sort(key=lambda e: (e["parts_count"], e["stickers_count"], -e["user_id"]), reverse=True)
+        # Sort so that:
+        #  - finishers come first, ordered by completed_at ascending (earliest finisher at top)
+        #  - then non-finishers ordered by parts_count desc, then stickers_count desc
+        def _sort_key(e):
+            # completed_priority: 0 for finished (we want finished first), 1 for not finished
+            completed_priority = 0 if e.get("completed") else 1
+            # completed_at: use empty string for missing (it will sort after any real ISO timestamps)
+            completed_at = e.get("completed_at") or ""
+            # For non-finishers, we want higher parts_count/stickers_count first (thus negative)
+            return (completed_priority, completed_at, -e.get("parts_count", 0), -e.get("stickers_count", 0), e.get("user_id", 0))
+
+        entries.sort(key=_sort_key)
 
         # Helper to build embed for a page
         def build_embed_for_page(page_idx: int):
@@ -887,7 +902,6 @@ class StockingCog(commands.Cog, name="StockingCog"):
 
     # -------------------------
     # Role helpers & events
-    # -------------------------
     async def _maybe_award_role(self, user_id: int, guild: Optional[discord.Guild]) -> None:
         if AUTO_ROLE_ID is None or guild is None:
             return
