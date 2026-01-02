@@ -698,14 +698,43 @@ async def open_leaderboard_view(bot, interaction: Interaction, puzzle_key: str):
     except Exception:
         logger.debug("open_leaderboard_view: could not defer or already responded", exc_info=True)
 
-    # Build leaderboard data: list of (user_id:int, count:int)
-    all_user_pieces = bot.data.get("user_pieces", {})
-    leaderboard_data = [
-        (int(user_id), len(user_puzzles.get(puzzle_key, [])))
-        for user_id, user_puzzles in all_user_pieces.items()
-        if puzzle_key in user_puzzles and len(user_puzzles[puzzle_key]) > 0
-    ]
-    leaderboard_data.sort(key=lambda x: (-x[1], x[0]))
+    # Build leaderboard data with recorded finish order honored.
+    # 1) Finishers (from puzzle_finishers) appear first in the recorded order.
+    # 2) Remaining users are sorted by pieces_count desc, then user id asc.
+    all_user_pieces = bot.data.get("user_pieces", {}) or {}
+
+    # Map finishers -> their recorded position (1-based). Works for dict or raw-id entries.
+    fin_list = bot.data.get("puzzle_finishers", {}).get(puzzle_key, []) or []
+    fin_order: Dict[int, int] = {}
+    for pos, fin in enumerate(fin_list, start=1):
+        try:
+            uid = int(fin.get("user_id")) if isinstance(fin, dict) else int(fin)
+        except Exception:
+            continue
+        if uid not in fin_order:
+            fin_order[uid] = pos
+
+    # user_counts: users who have at least one piece for the puzzle
+    user_counts: Dict[int, int] = {}
+    for user_id_str, user_puzzles in all_user_pieces.items():
+        try:
+            uid = int(user_id_str)
+        except Exception:
+            continue
+        pieces = user_puzzles.get(puzzle_key, []) or []
+        if pieces:
+            user_counts[uid] = len(pieces)
+
+    # Build finished entries in the recorded finisher order (include defensively even if count missing)
+    finished_entries: List[Tuple[int, int]] = []
+    for uid, pos in sorted(fin_order.items(), key=lambda kv: kv[1]):
+        finished_entries.append((uid, user_counts.get(uid, 0)))
+
+    # Remaining users, excluding finishers
+    remaining = [(uid, cnt) for uid, cnt in user_counts.items() if uid not in fin_order]
+    remaining.sort(key=lambda x: (-x[1], x[0]))  # pieces desc, uid asc
+
+    leaderboard_data = finished_entries + remaining
 
     view = LeaderboardView(bot, interaction.guild, puzzle_key, leaderboard_data, page=0,
                            opener_id=(interaction.user.id if interaction and interaction.user else None))
