@@ -796,6 +796,39 @@ class StockingCog(commands.Cog, name="StockingCog"):
 
         entries.sort(key=_sort_key)
 
+        def _format_collected_list(parts: List[str], max_len: int = 750) -> str:
+            """
+            Return a compact collected representation:
+            - If all part keys look numeric, show them as numbers (e.g. "1, 2, 24")
+            - Otherwise prefer PART_EMOJI mapping if available, falling back to the raw key.
+            - Truncate the resulting string to max_len characters with an ellipsis if needed.
+            """
+            if not parts:
+                return "(none)"
+
+            # Sort numerically when possible, otherwise lexicographically
+            try:
+                parts_sorted = sorted(parts, key=lambda x: int(x) if str(x).isdigit() else x)
+            except Exception:
+                parts_sorted = list(parts)
+
+            # If all keys are numeric, show numeric ids
+            if all(str(p).isdigit() for p in parts_sorted):
+                s = ", ".join(str(int(p)) for p in parts_sorted)
+            else:
+                out = []
+                for p in parts_sorted:
+                    try:
+                        em = PART_EMOJI.get(p.lower()) if isinstance(PART_EMOJI, dict) else None
+                    except Exception:
+                        em = None
+                    out.append(em if em else str(p))
+                s = ", ".join(out)
+
+            if len(s) > max_len:
+                s = s[: max_len - 2].rstrip() + " …"
+            return s
+
         # Helper to build embed for a page
         def build_embed_for_page(page_idx: int):
             start = page_idx * PAGE_SIZE
@@ -843,16 +876,8 @@ class StockingCog(commands.Cog, name="StockingCog"):
                     f"missing: {missing_display}"
                 )
                 embed.add_field(name="Details", value=details, inline=False)
-            else:
-                # Show a small progress bar for the top entry on this page (visual)
-                top_ent = page_entries[0]
-                pb = _progress_bar(
-                    top_ent.get("parts_count", 0),
-                    capacity_slots if capacity_slots is not None else len(parts_def),
-                    width=12,
-                )
-                top_name = getattr(top_ent["member"], "display_name", None) or getattr(top_ent["member"], "name", None)
-                embed.add_field(name="Top progress", value=f"{top_name} — {pb}", inline=False)
+
+            # No progress bar or extra visual — keep the embed minimal
 
             # Footer
             total_tracked = len(entries)
