@@ -806,31 +806,60 @@ class StockingCog(commands.Cog, name="StockingCog"):
             embed_color = DEFAULT_COLOR if isinstance(DEFAULT_COLOR, int) else (DEFAULT_COLOR or 0x2F3136)
             embed = discord.Embed(title=title, color=discord.Color(embed_color))
 
-            lines = []
+            # Top collectors concise (simple status: "Completed" or "X/Y Pieces")
+            top_lines = []
             for idx, ent in enumerate(page_entries, start=start + 1):
                 m = ent["member"]
-                # show parts_count; you can change to show stickers too if desired
-                lines.append(f"{idx}. {m.mention} — {ent['parts_count']} parts")
+                name = getattr(m, "display_name", None) or getattr(m, "name", None) or str(m)
+                if ent.get("completed"):
+                    status = "Completed"
+                else:
+                    parts_count = ent.get("parts_count", 0)
+                    capacity = capacity_slots if capacity_slots is not None else len(parts_def)
+                    status = f"{parts_count}/{capacity} Pieces"
+                top_lines.append(f"{idx}. {name} — {status}")
 
-            embed.add_field(name=f"Top collectors (Page {page_idx + 1} of {((len(entries) - 1) // PAGE_SIZE) + 1})",
-                            value="\n".join(lines), inline=False)
+            embed.add_field(
+                name=f"Top collectors (Page {page_idx + 1} of {((len(entries) - 1) // PAGE_SIZE) + 1})",
+                value="\n".join(top_lines),
+                inline=False,
+            )
 
-            # If single-page and single-entry we might include details, but keep the view consistent:
+            # If single entry on page, show compact collected/missing details using numeric IDs when possible
             if len(page_entries) == 1:
                 ent = page_entries[0]
                 m = ent["member"]
-                parts_preview = ", ".join(
-                    (PART_EMOJI.get(p.lower(), p) if isinstance(PART_EMOJI, dict) else p) for p in ent["parts"]
-                ) or "(none)"
-                embed.add_field(name="Details",
-                                value=(f"Stickers: {ent['stickers_count']}\n"
-                                       f"Parts: {ent['parts_count']}/{capacity_slots if capacity_slots is not None else 'N'}\n"
-                                       f"Completed: {'Yes' if ent['completed'] else 'No'}\n"
-                                       f"Parts list: {parts_preview}"),
-                                inline=False)
+                collected_display = _format_collected_list(ent.get("parts", []))
+                # compute missing from parts_def keys
+                defined_keys = list(parts_def.keys())
+                missing_keys = [k for k in defined_keys if k not in ent.get("parts", [])]
+                missing_display = _format_collected_list(missing_keys)
+                # Provide a short details field
+                details = (
+                    f"Stickers: {ent['stickers_count']}\n"
+                    f"Parts: {ent['parts_count']}/{capacity_slots if capacity_slots is not None else len(parts_def)}\n"
+                    f"Completed: {'Yes' if ent['completed'] else 'No'}\n"
+                    f"collected: {collected_display}\n"
+                    f"missing: {missing_display}"
+                )
+                embed.add_field(name="Details", value=details, inline=False)
+            else:
+                # Show a small progress bar for the top entry on this page (visual)
+                top_ent = page_entries[0]
+                pb = _progress_bar(
+                    top_ent.get("parts_count", 0),
+                    capacity_slots if capacity_slots is not None else len(parts_def),
+                    width=12,
+                )
+                top_name = getattr(top_ent["member"], "display_name", None) or getattr(top_ent["member"], "name", None)
+                embed.add_field(name="Top progress", value=f"{top_name} — {pb}", inline=False)
 
-            embed.set_footer(
-                text=f"Showing {min(len(entries), start + 1)}–{min(len(entries), end)} of {len(entries)} tracked members — buildable: {buildable}")
+            # Footer
+            total_tracked = len(entries)
+            showing_from = start + 1
+            showing_to = min(len(entries), end)
+            footer_text = f"Showing {showing_from}–{showing_to} of {total_tracked} tracked members — buildable: {buildable}"
+            embed.set_footer(text=footer_text)
             return embed
 
         # If only one page, just send it without pagination view

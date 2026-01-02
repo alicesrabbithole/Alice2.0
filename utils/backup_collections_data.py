@@ -75,6 +75,26 @@ except Exception as e:
     log_marker(f"BACKUP_FAIL: could not copy {src} -> {hourly_backup}: {e}")
     sys.exit(1)
 
+import subprocess
+from pathlib import Path
+
+try:
+    report_name = f"ww_report_{datetime.utcnow().strftime('%Y%m%d-%H%M%S')}.txt"
+    report_path = Path(BACKUP_DIR) / report_name
+    # Use the venv python so it runs with the same environment as cron did
+    subprocess.run([
+        "/home/alice/Alice2.0/.venv/bin/python3",
+        "/home/alice/Alice2.0/utils/ww_pieces_report.py",
+        "--puzzle", "winter_wonderland",
+        "--out", str(report_path)
+    ], check=False)
+except Exception as e:
+    # non-fatal; log to backup-run.log if available
+    try:
+        LOG_PATH.write_text(f"{datetime.utcnow().isoformat()} REPORT_FAIL: {e}\n", encoding="utf-8", append=False)
+    except Exception:
+        pass
+
 # Rotation logic (preserve one per day + interval snapshots)
 def parse_dt(fn: str):
     try:

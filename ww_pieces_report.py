@@ -2,26 +2,11 @@
 """
 ww_pieces_report.py
 
-Produce a report of which piece IDs (and filenames) each user has for a given puzzle,
-show missing pieces, and list finishers. Optionally resolve user IDs to display names.
+Report which piece IDs each user has for a given puzzle, show missing pieces, and list finishers.
+Resolves user IDs to display names optionally (map file / Discord API).
 
-Usage examples:
-  # Basic: write report to backups
-  python3 ww_pieces_report.py --puzzle winter_wonderland --out ~/Alice2.0/data/backups/ww_report.txt
-
-  # Use a local mapping file (JSON: {"123": "Alice#1234", ...} or CSV: id,name)
-  python3 ww_pieces_report.py --puzzle winter_wonderland --map-file ~/user_map.json
-
-  # Resolve names via Discord (bot must be in the guild). Provide bot token and guild id:
-  python3 ww_pieces_report.py --puzzle winter_wonderland --discord-token "Bot_Token" --guild-id 98765432101234567
-
-  # Use both map-file and Discord fallback, and cache results:
-  python3 ww_pieces_report.py --puzzle winter_wonderland --map-file ~/user_map.json --discord-token "Bot_Token" --guild-id 98765432101234567 --cache ~/Alice2.0/data/backups/user_cache.json
-
-Notes:
-- When using Discord lookup, the script will call GET /guilds/{guild_id}/members/{user_id}
-  and requires a bot token (Authorization: Bot <token>) and that the bot is in the guild.
-- The script will cache lookups to speed repeated runs.
+Change from previous version:
+- Does NOT list filenames anymore. It shows collected piece IDs only (e.g. "collected: 1, 2, 24").
 """
 from __future__ import annotations
 import argparse
@@ -50,10 +35,8 @@ def load_map_file(path: Path) -> Dict[str, str]:
     text = path.read_text(encoding="utf-8")
     try:
         j = json.loads(text)
-        # Expecting mapping of id->display
         return {str(k): str(v) for k, v in j.items()}
     except Exception:
-        # Try CSV id,name
         out = {}
         with path.open("r", encoding="utf-8") as fh:
             reader = csv.reader(fh)
@@ -65,7 +48,6 @@ def load_map_file(path: Path) -> Dict[str, str]:
         return out
 
 def discord_get_member(display_cache: Dict[str, str], token: str, guild_id: str, user_id: str, use_requests: bool) -> Optional[str]:
-    # Returns a display string like "Nick (username#discrim)" or "username#discrim"
     if user_id in display_cache:
         return display_cache[user_id]
     url = f"https://discord.com/api/v10/guilds/{guild_id}/members/{user_id}"
@@ -97,7 +79,6 @@ def discord_get_member(display_cache: Dict[str, str], token: str, guild_id: str,
 
 def resolve_display_names(user_ids: Set[str], map_file: Optional[Path], token: Optional[str], guild_id: Optional[str], cache_file: Optional[Path]) -> Dict[str, str]:
     result: Dict[str, str] = {}
-    # 1. Load cache if provided
     cache: Dict[str, str] = {}
     if cache_file:
         try:
@@ -105,29 +86,23 @@ def resolve_display_names(user_ids: Set[str], map_file: Optional[Path], token: O
                 cache = json.loads(cache_file.read_text(encoding="utf-8"))
         except Exception:
             cache = {}
-    # 2. Load provided map file first (takes precedence)
     if map_file:
         try:
             mf = load_map_file(map_file)
             result.update(mf)
         except Exception as e:
             print(f"[warn] Unable to read map file {map_file}: {e}", file=sys.stderr)
-    # 3. Seed from cache (only fill missing keys)
     for uid, name in cache.items():
         if uid not in result:
             result[uid] = name
-    # 4. For remaining ids, try Discord lookup if token+guild provided
     remaining = [uid for uid in user_ids if uid not in result]
     if token and guild_id and remaining:
         use_requests = HAS_REQUESTS
-        # try sequential lookups; cache them into 'cache' dict and result
         for uid in remaining:
             name = discord_get_member(cache, token, guild_id, uid, use_requests)
             if name:
                 result[uid] = name
-            # Be courteous to rate limits
             time.sleep(0.25)
-    # 5. Save updated cache if requested
     if cache_file:
         try:
             merged = dict(cache)
@@ -139,7 +114,7 @@ def resolve_display_names(user_ids: Set[str], map_file: Optional[Path], token: O
     return result
 
 def main():
-    parser = argparse.ArgumentParser(description="Produce winter_wonderland pieces report with optional user id -> display name resolution")
+    parser = argparse.ArgumentParser(description="Produce puzzle pieces report with optional user id -> display name resolution")
     parser.add_argument("--data", "-d", default=str(Path.home() / "Alice2.0" / "data" / "collected_pieces.json"))
     parser.add_argument("--puzzle", "-p", default="winter_wonderland")
     parser.add_argument("--out", "-o", help="Optional output file path")
@@ -176,12 +151,10 @@ def main():
         except Exception:
             continue
 
-    # Prepare user id set for resolution
     user_ids: Set[str] = set(users.keys()) | set(finishers)
     map_file = Path(args.map_file).expanduser().resolve() if args.map_file else None
     cache_file = Path(args.cache).expanduser().resolve() if args.cache else Path.home() / "Alice2.0" / "data" / "backups" / "user_lookup_cache.json"
 
-    # Resolve names (map-file and discord token/guild optional)
     name_map = resolve_display_names(user_ids, map_file, args.discord_token, args.guild_id, cache_file)
 
     def pretty(uid: str) -> str:
@@ -206,10 +179,10 @@ def main():
         uid = uid_str
         pieces_sorted = sorted([str(x) for x in pieces], key=lambda x: int(x) if x.isdigit() else x)
         missing = [pid for pid in all_piece_ids if pid not in pieces_sorted]
-        filenames = [pieces_map.get(pid, f"(no-file-for-{pid})") for pid in pieces_sorted]
+        # Show collected piece IDs only (no filenames)
+        collected_display = ", ".join(pieces_sorted)
         out_lines.append(f"User {pretty(uid)}: count={len(pieces_sorted)}")
-        out_lines.append(f"  pieces: {', '.join(pieces_sorted)}")
-        out_lines.append(f"  files: {', '.join(filenames)}")
+        out_lines.append(f"  collected: {collected_display}")
         if missing:
             out_lines.append(f"  missing ({len(missing)}): {', '.join(missing)}")
         else:
