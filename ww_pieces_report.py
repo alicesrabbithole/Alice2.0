@@ -3,28 +3,151 @@
 ww_pieces_report.py
 
 Produce a report of which piece IDs (and filenames) each user has for a given puzzle,
-show missing pieces, and list finishers.
+show missing pieces, and list finishers. Optionally resolve user IDs to display names.
 
-Usage:
+Usage examples:
+  # Basic: write report to backups
   python3 ww_pieces_report.py --puzzle winter_wonderland --out ~/Alice2.0/data/backups/ww_report.txt
 
-By default prints to stdout if --out is not supplied.
+  # Use a local mapping file (JSON: {"123": "Alice#1234", ...} or CSV: id,name)
+  python3 ww_pieces_report.py --puzzle winter_wonderland --map-file ~/user_map.json
+
+  # Resolve names via Discord (bot must be in the guild). Provide bot token and guild id:
+  python3 ww_pieces_report.py --puzzle winter_wonderland --discord-token "Bot_Token" --guild-id 98765432101234567
+
+  # Use both map-file and Discord fallback, and cache results:
+  python3 ww_pieces_report.py --puzzle winter_wonderland --map-file ~/user_map.json --discord-token "Bot_Token" --guild-id 98765432101234567 --cache ~/Alice2.0/data/backups/user_cache.json
+
+Notes:
+- When using Discord lookup, the script will call GET /guilds/{guild_id}/members/{user_id}
+  and requires a bot token (Authorization: Bot <token>) and that the bot is in the guild.
+- The script will cache lookups to speed repeated runs.
 """
 from __future__ import annotations
-import json
-from pathlib import Path
 import argparse
-from typing import Dict, List
+import csv
+import json
+import sys
+import time
+from pathlib import Path
+from typing import Dict, List, Optional, Set
+
+# Try to use requests if available; otherwise fall back to urllib
+try:
+    import requests  # type: ignore
+    HAS_REQUESTS = True
+except Exception:
+    import urllib.request as _urllib_request  # type: ignore
+    HAS_REQUESTS = False
 
 def load_data(path: Path) -> Dict:
     return json.loads(path.read_text(encoding="utf-8"))
 
+def load_map_file(path: Path) -> Dict[str, str]:
+    path = path.expanduser().resolve()
+    if not path.exists():
+        raise FileNotFoundError(str(path))
+    text = path.read_text(encoding="utf-8")
+    try:
+        j = json.loads(text)
+        # Expecting mapping of id->display
+        return {str(k): str(v) for k, v in j.items()}
+    except Exception:
+        # Try CSV id,name
+        out = {}
+        with path.open("r", encoding="utf-8") as fh:
+            reader = csv.reader(fh)
+            for row in reader:
+                if not row:
+                    continue
+                if len(row) >= 2:
+                    out[str(row[0]).strip()] = row[1].strip()
+        return out
+
+def discord_get_member(display_cache: Dict[str, str], token: str, guild_id: str, user_id: str, use_requests: bool) -> Optional[str]:
+    # Returns a display string like "Nick (username#discrim)" or "username#discrim"
+    if user_id in display_cache:
+        return display_cache[user_id]
+    url = f"https://discord.com/api/v10/guilds/{guild_id}/members/{user_id}"
+    headers = {"Authorization": f"Bot {token}", "User-Agent": "ww-pieces-report/1.0"}
+    try:
+        if use_requests:
+            r = requests.get(url, headers=headers, timeout=10)
+            if r.status_code == 200:
+                m = r.json()
+            else:
+                return None
+        else:
+            req = _urllib_request.Request(url, headers=headers)
+            with _urllib_request.urlopen(req, timeout=10) as resp:
+                raw = resp.read().decode("utf-8")
+                m = json.loads(raw)
+        user = m.get("user", {})
+        nick = m.get("nick")
+        username = user.get("username") or user.get("id")
+        discrim = user.get("discriminator")
+        if nick:
+            disp = f"{nick} ({username}#{discrim})" if discrim else f"{nick} ({username})"
+        else:
+            disp = f"{username}#{discrim}" if discrim else f"{username}"
+        display_cache[user_id] = disp
+        return disp
+    except Exception:
+        return None
+
+def resolve_display_names(user_ids: Set[str], map_file: Optional[Path], token: Optional[str], guild_id: Optional[str], cache_file: Optional[Path]) -> Dict[str, str]:
+    result: Dict[str, str] = {}
+    # 1. Load cache if provided
+    cache: Dict[str, str] = {}
+    if cache_file:
+        try:
+            if cache_file.exists():
+                cache = json.loads(cache_file.read_text(encoding="utf-8"))
+        except Exception:
+            cache = {}
+    # 2. Load provided map file first (takes precedence)
+    if map_file:
+        try:
+            mf = load_map_file(map_file)
+            result.update(mf)
+        except Exception as e:
+            print(f"[warn] Unable to read map file {map_file}: {e}", file=sys.stderr)
+    # 3. Seed from cache (only fill missing keys)
+    for uid, name in cache.items():
+        if uid not in result:
+            result[uid] = name
+    # 4. For remaining ids, try Discord lookup if token+guild provided
+    remaining = [uid for uid in user_ids if uid not in result]
+    if token and guild_id and remaining:
+        use_requests = HAS_REQUESTS
+        # try sequential lookups; cache them into 'cache' dict and result
+        for uid in remaining:
+            name = discord_get_member(cache, token, guild_id, uid, use_requests)
+            if name:
+                result[uid] = name
+            # Be courteous to rate limits
+            time.sleep(0.25)
+    # 5. Save updated cache if requested
+    if cache_file:
+        try:
+            merged = dict(cache)
+            merged.update({k: v for k, v in result.items() if k not in merged})
+            cache_file.parent.mkdir(parents=True, exist_ok=True)
+            cache_file.write_text(json.dumps(merged, indent=2), encoding="utf-8")
+        except Exception:
+            pass
+    return result
+
 def main():
-    p = argparse.ArgumentParser()
-    p.add_argument("--data", "-d", default=str(Path.home() / "Alice2.0" / "data" / "collected_pieces.json"))
-    p.add_argument("--puzzle", "-p", default="winter_wonderland")
-    p.add_argument("--out", "-o", help="Optional output file path")
-    args = p.parse_args()
+    parser = argparse.ArgumentParser(description="Produce winter_wonderland pieces report with optional user id -> display name resolution")
+    parser.add_argument("--data", "-d", default=str(Path.home() / "Alice2.0" / "data" / "collected_pieces.json"))
+    parser.add_argument("--puzzle", "-p", default="winter_wonderland")
+    parser.add_argument("--out", "-o", help="Optional output file path")
+    parser.add_argument("--map-file", "-m", help="Optional local map file (JSON or CSV) mapping user_id -> display name")
+    parser.add_argument("--discord-token", "-t", help="Optional Bot token to resolve member names via Discord API (requires --guild-id)")
+    parser.add_argument("--guild-id", "-g", help="Guild ID for Discord member lookups")
+    parser.add_argument("--cache", "-c", help="Cache file path for Discord lookups (JSON). Default: data/backups/user_lookup_cache.json")
+    args = parser.parse_args()
 
     data_path = Path(args.data)
     if not data_path.exists():
@@ -34,30 +157,36 @@ def main():
     pkey = args.puzzle
 
     pieces_map = data.get("pieces", {}).get(pkey, {}) or {}
-    # Normalize piece ids as strings, but report sorted numerically when possible
     all_piece_ids = sorted([str(k) for k in pieces_map.keys()], key=lambda x: int(x) if x.isdigit() else x)
     total_pieces = len(all_piece_ids)
 
     user_pieces = data.get("user_pieces", {}) or {}
-    # Build user -> list-of-piece-ids for this puzzle
     users: Dict[str, List[str]] = {}
     for uid_str, puzzles in user_pieces.items():
-        # puzzles may be dict of puzzle_key -> list
         pieces = puzzles.get(pkey, []) if isinstance(puzzles, dict) else []
         if pieces:
             users[uid_str] = [str(x) for x in pieces]
 
-    # Finishers recorded (preserves order)
     finishers_raw = data.get("puzzle_finishers", {}).get(pkey, []) or []
-    finishers: List[int] = []
+    finishers: List[str] = []
     for f in finishers_raw:
         try:
-            uid = int(f.get("user_id")) if isinstance(f, dict) else int(f)
+            uid = str(f.get("user_id")) if isinstance(f, dict) else str(f)
             finishers.append(uid)
         except Exception:
             continue
 
-    # Prepare lines
+    # Prepare user id set for resolution
+    user_ids: Set[str] = set(users.keys()) | set(finishers)
+    map_file = Path(args.map_file).expanduser().resolve() if args.map_file else None
+    cache_file = Path(args.cache).expanduser().resolve() if args.cache else Path.home() / "Alice2.0" / "data" / "backups" / "user_lookup_cache.json"
+
+    # Resolve names (map-file and discord token/guild optional)
+    name_map = resolve_display_names(user_ids, map_file, args.discord_token, args.guild_id, cache_file)
+
+    def pretty(uid: str) -> str:
+        return f"{name_map.get(uid, '')} <{uid}>" if uid in name_map else f"{uid}"
+
     out_lines: List[str] = []
     out_lines.append(f"Puzzle: {pkey}")
     out_lines.append(f"Total pieces expected: {total_pieces}")
@@ -65,22 +194,20 @@ def main():
     out_lines.append("Finishers (recorded order):")
     if finishers:
         for pos, uid in enumerate(finishers, start=1):
-            cnt = len(users.get(str(uid), []))
-            out_lines.append(f"  {pos}. {uid} — recorded pieces: {cnt}")
+            cnt = len(users.get(uid, []))
+            out_lines.append(f"  {pos}. {pretty(uid)} — recorded pieces: {cnt}")
     else:
         out_lines.append("  (none)")
 
     out_lines.append("")
     out_lines.append("All users with any pieces (sorted by count desc):")
-    # sort users by piece count desc, then uid asc
     sorted_users = sorted(users.items(), key=lambda kv: (-len(kv[1]), int(kv[0]) if kv[0].isdigit() else kv[0]))
     for uid_str, pieces in sorted_users:
-        uid = int(uid_str) if uid_str.isdigit() else uid_str
+        uid = uid_str
         pieces_sorted = sorted([str(x) for x in pieces], key=lambda x: int(x) if x.isdigit() else x)
         missing = [pid for pid in all_piece_ids if pid not in pieces_sorted]
-        # Map piece ids to filenames where available
         filenames = [pieces_map.get(pid, f"(no-file-for-{pid})") for pid in pieces_sorted]
-        out_lines.append(f"User {uid}: count={len(pieces_sorted)}")
+        out_lines.append(f"User {pretty(uid)}: count={len(pieces_sorted)}")
         out_lines.append(f"  pieces: {', '.join(pieces_sorted)}")
         out_lines.append(f"  files: {', '.join(filenames)}")
         if missing:
@@ -89,20 +216,18 @@ def main():
             out_lines.append("  missing (0): (complete)")
         out_lines.append("")
 
-    # Also list users who are finishers but have 0 recorded pieces (if any)
     out_lines.append("Finishers with zero recorded pieces (if any):")
-    zero_finishers = [uid for uid in finishers if len(users.get(str(uid), [])) == 0]
+    zero_finishers = [uid for uid in finishers if len(users.get(uid, [])) == 0]
     if zero_finishers:
         for uid in zero_finishers:
-            out_lines.append(f"  {uid}")
+            out_lines.append(f"  {pretty(uid)}")
     else:
         out_lines.append("  (none)")
 
-    # Output
     if args.out:
         outp = Path(args.out).expanduser().resolve()
         outp.parent.mkdir(parents=True, exist_ok=True)
-        outp.write_text("\n".join(out_lines))
+        outp.write_text("\n".join(out_lines), encoding="utf-8")
         print(f"Wrote report to {outp}")
     else:
         print("\n".join(out_lines))
