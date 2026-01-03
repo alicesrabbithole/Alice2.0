@@ -597,166 +597,288 @@ class StockingCog(commands.Cog, name="StockingCog"):
     @commands.guild_only()
     @app_commands.describe(buildable="Which buildable to inspect (defaults to 'snowman')")
     async def rumble_builds_leaderboard(self, ctx: commands.Context, buildable: Optional[str] = "snowman"):
-        PAGE_SIZE = 25
+        PAGE_SIZE = 12
         guild = ctx.guild
         if not guild:
             await self._ephemeral_reply(ctx, "This command must be used in a guild.")
             return
 
         buildable = (buildable or "snowman").strip()
-        build_def = self._buildables_def.get(buildable, {})
+        build_def = (self._buildables_def or {}).get(buildable, {}) or {}
         parts_def = build_def.get("parts", {}) or {}
-        capacity_slots = int(build_def.get("capacity_slots", len(parts_def))) if build_def else None
+        defined_part_keys = list(parts_def.keys())
 
-        # Build entries from self._data (stockings.json)
-        entries = []
+        # default emoji fallback for common parts
+        _default_part_emojis = {
+            "carrot": "🥕",
+            "hat": "🎩",
+            "scarf": "🧣",
+            "eyes": "👀",
+            "mouth": "👄",
+            "buttons": "⚪",
+            "arms": "🦴",
+        }
+
+        def _map_part_to_emoji(p: str) -> Optional[str]:
+            try:
+                if isinstance(PART_EMOJI, dict):
+                    em = PART_EMOJI.get(p.lower())
+                    if em:
+                        return em
+            except Exception:
+                pass
+            return _default_part_emojis.get(p.lower())
+
+        # -------------------------
+        # Build entries preserving finisher recorded order
+        # -------------------------
+        entries: List[Dict[str, Any]] = []
+
+        # Prefer runtime recorded finishers (preserves recorded order)
+        runtime_finishers = (getattr(self.bot, "data", {}) or {}).get("puzzle_finishers", {}).get(buildable, []) or []
+        fin_order: Dict[int, int] = {}
+        for pos, fin in enumerate(runtime_finishers, start=1):
+            try:
+                uid = int(fin.get("user_id")) if isinstance(fin, dict) else int(fin)
+            except Exception:
+                continue
+            if uid not in fin_order:
+                fin_order[uid] = pos
+
+        # If no runtime_finishers, fall back to completed_at timestamps in self._data
+        if not fin_order:
+            completed_ts_map: Dict[int, str] = {}
+            for uid_str, rec in (self._data or {}).items():
+                try:
+                    uid = int(uid_str)
+                except Exception:
+                    continue
+                brec = ((rec.get("buildables") or {}).get(buildable) or {})
+                if brec and brec.get("completed"):
+                    ts = brec.get("completed_at")
+                    if ts:
+                        completed_ts_map[uid] = ts
+            if completed_ts_map:
+                for pos, uid in enumerate(sorted(completed_ts_map.keys(), key=lambda u: completed_ts_map[u]), start=1):
+                    fin_order[uid] = pos
+
+        # Helper to get parts for a uid (prefer self._data, fallback to bot.data.user_pieces)
+        def _get_parts_for_uid(uid: int) -> List[str]:
+            try:
+                rec = (self._data or {}).get(str(uid)) or {}
+                brec = ((rec.get("buildables") or {}).get(buildable) or {})
+                parts = brec.get("parts", []) or []
+                if parts:
+                    return list(parts)
+            except Exception:
+                pass
+            try:
+                ud = getattr(self.bot, "data", {}) or {}
+                up = ud.get("user_pieces", {}) or {}
+                puz = up.get(str(uid), {}) or {}
+                pparts = puz.get(buildable, []) or []
+                if pparts:
+                    return list(pparts)
+            except Exception:
+                pass
+            return []
+
+        # Append finishers first in recorded order
+        for uid in sorted(fin_order.keys(), key=lambda u: fin_order[u]):
+            member = guild.get_member(uid)
+            if not member:
+                continue
+            parts = _get_parts_for_uid(uid)
+            try:
+                rec = (self._data or {}).get(str(uid)) or {}
+                stickers_cnt = len((rec.get("stickers") or []))
+            except Exception:
+                stickers_cnt = 0
+            entries.append({
+                "user_id": uid,
+                "member": member,
+                "stickers_count": stickers_cnt,
+                "parts_count": len(parts),
+                "parts": list(parts),
+                "completed": True,
+                "completed_at": None,
+            })
+
+        # Then add remaining users from self._data (exclude finishers)
         for uid_str, rec in (self._data or {}).items():
             try:
                 uid = int(uid_str)
             except Exception:
                 continue
+            if uid in fin_order:
+                continue
             member = guild.get_member(uid)
             if member is None:
                 continue
-            stickers = (rec.get("stickers") or [])[:]
-            buildables = rec.get("buildables", {}) or {}
-            brec = buildables.get(buildable, {}) or {}
+            brec = ((rec.get("buildables") or {}).get(buildable) or {})
             parts = brec.get("parts", []) or []
             completed = bool(brec.get("completed"))
             completed_at = brec.get("completed_at")
             entries.append({
                 "user_id": uid,
                 "member": member,
-                "stickers_count": len(stickers),
+                "stickers_count": len((rec.get("stickers") or [])),
                 "parts_count": len(parts),
                 "parts": list(parts),
                 "completed": completed,
                 "completed_at": completed_at,
             })
 
+        # Sort only the non-finisher tail; finishers (if any) stay at the top in recorded order
+        finished_count = len(fin_order)
+        if finished_count:
+            tail = entries[finished_count:]
+            tail.sort(key=lambda e: (-e.get("parts_count", 0), -e.get("stickers_count", 0), e.get("user_id", 0)))
+            entries = entries[:finished_count] + tail
+        else:
+            entries.sort(key=lambda e: (-e.get("parts_count", 0), -e.get("stickers_count", 0), e.get("user_id", 0)))
+
         if not entries:
-            await ctx.send("No stocking data found for members in this server.")
+            await ctx.reply("No stocking data found for members in this server.", mention_author=False)
             return
 
-        # Sort: finishers first by completed_at (if set), then by parts_count desc, stickers desc
-        def _sort_key(e):
-            completed_priority = 0 if e.get("completed") else 1
-            completed_at = e.get("completed_at") or ""
-            return (completed_priority, completed_at, -e.get("parts_count", 0), -e.get("stickers_count", 0), e.get("user_id", 0))
+        # First finisher mention (take the first uid in fin_order that is present)
+        first_finisher_mention = None
+        for uid in sorted(fin_order.keys(), key=lambda u: fin_order[u]):
+            member = guild.get_member(uid)
+            if member:
+                first_finisher_mention = member.mention
+                break
 
-        entries.sort(key=_sort_key)
+        # -------------------------
+        # Build normal-style embed pages
+        # -------------------------
+        display_name = build_def.get("display_name") or buildable.replace("_", " ").title()
+        title_emoji = build_def.get("emoji") or "🏆"
+        # determine embed color (prefer build_def color if provided)
+        try:
+            color_val = build_def.get("color")
+            if color_val:
+                embed_color = discord.Color(int(color_val))
+            else:
+                embed_color = discord.Color(DEFAULT_COLOR if isinstance(DEFAULT_COLOR, int) else DEFAULT_COLOR)
+        except Exception:
+            embed_color = discord.Color(DEFAULT_COLOR if isinstance(DEFAULT_COLOR, int) else DEFAULT_COLOR)
 
-        # embed builder: minimal puzzle-style listing
-        def build_embed_for_page(page_idx: int):
+        def build_embed_for_page(page_idx: int) -> discord.Embed:
             start = page_idx * PAGE_SIZE
             end = start + PAGE_SIZE
             page_entries = entries[start:end]
 
-            title = f"Leaderboard — {buildable.replace('_', ' ').title()}"
-            embed_color = DEFAULT_COLOR if isinstance(DEFAULT_COLOR, int) else (DEFAULT_COLOR or 0x2F3136)
-            embed = discord.Embed(title=title, color=discord.Color(embed_color))
-
-            lines = []
-            if not page_entries:
-                lines.append("No tracked members have collected pieces for this buildable yet.")
+            embed = discord.Embed(title=f"{title_emoji} Leaderboard — {display_name}", color=embed_color)
+            if guild and getattr(guild, "icon", None):
+                try:
+                    embed.set_author(name=display_name, icon_url=guild.icon.url)
+                except Exception:
+                    embed.set_author(name=display_name)
             else:
-                for idx, ent in enumerate(page_entries, start=start + 1):
-                    member = ent.get("member")
-                    who = member.mention if member is not None else f"<@{ent.get('user_id')}>"
-                    if ent.get("completed"):
+                embed.set_author(name=display_name)
+
+            lines: List[str] = []
+            for idx, ent in enumerate(page_entries, start=start + 1):
+                member = ent["member"]
+                who = member.mention
+                if ent.get("completed"):
+                    status = "Completed"
+                else:
+                    user_parts = set(ent.get("parts", []) or [])
+                    missing = [p for p in defined_part_keys if p not in user_parts]
+                    if not missing:
                         status = "Completed"
                     else:
-                        parts_count = ent.get("parts_count", 0)
-                        cap = capacity_slots if capacity_slots is not None else len(parts_def)
-                        status = f"{parts_count}/{cap} Pieces"
-                    lines.append(f"{idx}. {who} — {status}")
+                        emojis: List[str] = []
+                        for p in missing:
+                            em = _map_part_to_emoji(p)
+                            if em:
+                                emojis.append(em)
+                        if emojis:
+                            max_show = 6
+                            if len(emojis) > max_show:
+                                status = "".join(emojis[:max_show]) + f" +{len(emojis) - max_show}"
+                            else:
+                                status = "".join(emojis)
+                        else:
+                            status = f"{len(missing)} missing"
+                lines.append(f"{idx}. {who} — {status}")
 
-            embed.add_field(
-                name=f"Top collectors (Page {page_idx + 1} of {((len(entries) - 1) // PAGE_SIZE) + 1})",
-                value="\n".join(lines),
-                inline=False,
-            )
+            embed.add_field(name=f"Top collectors (Page {page_idx + 1} of {((len(entries) - 1) // PAGE_SIZE) + 1})",
+                            value="\n".join(lines), inline=False)
 
-            # Single-entry details (unchanged behavior)
-            if len(page_entries) == 1:
-                ent = page_entries[0]
-                collected_display = self._format_collected_list(ent.get("parts", []))
-                defined_keys = list(parts_def.keys())
-                missing_keys = [k for k in defined_keys if k not in ent.get("parts", [])]
-                missing_display = self._format_collected_list(missing_keys)
-                details = (
-                    f"Stickers: {ent['stickers_count']}\n"
-                    f"Parts: {ent['parts_count']}/{capacity_slots if capacity_slots is not None else len(parts_def)}\n"
-                    f"Completed: {'Yes' if ent['completed'] else 'No'}\n"
-                    f"collected: {collected_display}\n"
-                    f"missing: {missing_display}"
-                )
-                embed.add_field(name="Details", value=details, inline=False)
+            if first_finisher_mention:
+                embed.add_field(name="First Finisher", value=first_finisher_mention, inline=False)
 
-            total_tracked = len(entries)
-            showing_from = start + 1
-            showing_to = min(len(entries), end)
-            footer_text = f"Showing {showing_from}–{showing_to} of {total_tracked} tracked members — buildable: {buildable}"
-            embed.set_footer(text=footer_text)
+            embed.set_footer(text=f"Page {page_idx + 1} of {((len(entries) - 1) // PAGE_SIZE) + 1}")
             return embed
 
-        total_pages = (len(entries) - 1) // PAGE_SIZE + 1
-        page0_embed = build_embed_for_page(0)
+        total_pages = ((len(entries) - 1) // PAGE_SIZE) + 1
+        initial = build_embed_for_page(0)
         if total_pages <= 1:
-            await ctx.reply(embed=page0_embed, mention_author=False)
+            await ctx.reply(embed=initial, mention_author=False)
             return
 
-        class LeaderboardPaginator(discord.ui.View):
-            def __init__(self, *, timeout: Optional[float] = 120.0):
+        # -------------------------
+        # Paginator view (gets the embed-builder and total_pages injected to avoid linter issues)
+        # -------------------------
+        class _Paginator(discord.ui.View):
+            def __init__(self, build_embed_callable, total_pages: int, *, timeout: Optional[float] = 120.0):
                 super().__init__(timeout=timeout)
                 self.page = 0
+                self.message: Optional[discord.Message] = None
+                self._build_embed = build_embed_callable
+                self.total_pages = total_pages
 
-            async def update_message(self, interaction: discord.Interaction):
-                embed = build_embed_for_page(self.page)
+            async def _update(self, interaction: discord.Interaction):
                 try:
-                    await interaction.response.edit_message(embed=embed, view=self)
+                    await interaction.response.edit_message(embed=self._build_embed(self.page), view=self)
                 except Exception:
                     try:
-                        await interaction.message.edit(embed=embed, view=self)
+                        if interaction.message:
+                            await interaction.message.edit(embed=self._build_embed(self.page), view=self)
                     except Exception:
                         pass
 
-            @discord.ui.button(emoji="⏮️", style=discord.ButtonStyle.secondary)
+            @discord.ui.button(label="<<", style=discord.ButtonStyle.gray)
             async def first(self, button: discord.ui.Button, interaction: discord.Interaction):
                 self.page = 0
-                await self.update_message(interaction)
+                await self._update(interaction)
 
-            @discord.ui.button(emoji="◀️", style=discord.ButtonStyle.secondary)
-            async def previous(self, button: discord.ui.Button, interaction: discord.Interaction):
+            @discord.ui.button(label="<", style=discord.ButtonStyle.blurple)
+            async def prev(self, button: discord.ui.Button, interaction: discord.Interaction):
                 if self.page > 0:
                     self.page -= 1
-                    await self.update_message(interaction)
+                    await self._update(interaction)
                 else:
                     await interaction.response.defer()
 
-            @discord.ui.button(emoji="▶️", style=discord.ButtonStyle.primary)
+            @discord.ui.button(label=">", style=discord.ButtonStyle.blurple)
             async def next(self, button: discord.ui.Button, interaction: discord.Interaction):
-                if self.page < total_pages - 1:
+                if self.page < self.total_pages - 1:
                     self.page += 1
-                    await self.update_message(interaction)
+                    await self._update(interaction)
                 else:
                     await interaction.response.defer()
 
-            @discord.ui.button(emoji="⏭️", style=discord.ButtonStyle.secondary)
+            @discord.ui.button(label=">>", style=discord.ButtonStyle.gray)
             async def last(self, button: discord.ui.Button, interaction: discord.Interaction):
-                self.page = total_pages - 1
-                await self.update_message(interaction)
+                self.page = self.total_pages - 1
+                await self._update(interaction)
 
             async def on_timeout(self):
-                for item in self.children:
-                    item.disabled = True
+                for child in self.children:
+                    child.disabled = True
                 try:
-                    await msg.edit(view=self)
+                    if self.message:
+                        await self.message.edit(view=self)
                 except Exception:
                     pass
 
-        view = LeaderboardPaginator()
-        msg = await ctx.reply(embed=page0_embed, view=view, mention_author=False)
+        view = _Paginator(build_embed_for_page, total_pages)
+        msg = await ctx.reply(embed=initial, view=view, mention_author=False)
         view.message = msg
 
     # -------------------------
