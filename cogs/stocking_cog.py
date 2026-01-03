@@ -752,32 +752,87 @@ class StockingCog(commands.Cog, name="StockingCog"):
         parts_def = build_def.get("parts", {}) or {}
         capacity_slots = int(build_def.get("capacity_slots", len(parts_def))) if build_def else None
 
-        # collect stats for members present in this guild
+        # Build entries from the shared puzzle storage (bot.data user_pieces + puzzle_finishers).
+        # Fallback to data/collected_pieces.json on disk if bot.data is not populated.
         entries = []
-        for uid_str, rec in (self._data or {}).items():
+
+        # try runtime bot.data first
+        all_user_pieces = getattr(self.bot, "data", {}).get("user_pieces", {}) or {}
+        fin_list = getattr(self.bot, "data", {}).get("puzzle_finishers", {}).get(buildable, []) or []
+
+        # fallback: if bot.data empty, try to read collected_pieces.json from disk
+        if not all_user_pieces:
             try:
-                uid = int(uid_str)
+                import json
+                cp_path = DATA_DIR / "collected_pieces.json"
+                if cp_path.exists():
+                    cj = json.load(open(cp_path, "r", encoding="utf-8")) or {}
+                    all_user_pieces = cj.get("user_pieces", {}) or {}
+                    fin_list = cj.get("puzzle_finishers", {}).get(buildable, []) or fin_list
+            except Exception:
+                # if fallback fails, keep all_user_pieces empty
+                all_user_pieces = all_user_pieces or {}
+
+        # build finisher order (preserves recorded order)
+        fin_order: Dict[int, int] = {}
+        for pos, fin in enumerate(fin_list, start=1):
+            try:
+                uid = int(fin.get("user_id")) if isinstance(fin, dict) else int(fin)
             except Exception:
                 continue
+            if uid not in fin_order:
+                fin_order[uid] = pos
+
+        # Add finishers first (in recorded order) if they are in this guild
+        for uid in sorted(fin_order.keys(), key=lambda u: fin_order[u]):
+            uid_str = str(uid)
+            parts = (all_user_pieces.get(uid_str, {}) or {}).get(buildable, []) or []
             member = guild.get_member(uid)
-            # Only show members who are in this guild
             if member is None:
+                # keep prior behavior: only show members present in this guild
                 continue
-            stickers = rec.get("stickers", []) or []
-            buildables = rec.get("buildables", {}) or {}
-            brec = buildables.get(buildable, {}) or {}
-            parts = brec.get("parts", []) or []
-            completed = bool(brec.get("completed"))
-            completed_at = brec.get("completed_at")  # ISO timestamp or None
             entries.append({
                 "user_id": uid,
                 "member": member,
-                "stickers_count": len(stickers),
+                "stickers_count": 0,
                 "parts_count": len(parts),
                 "parts": list(parts),
-                "completed": completed,
-                "completed_at": completed_at,
+                "completed": True,
+                "completed_at": None,
             })
+
+        # Then add remaining users who have any pieces for this puzzle (exclude finishers)
+        for user_id_str, puzzles in (all_user_pieces or {}).items():
+            try:
+                uid = int(user_id_str)
+            except Exception:
+                continue
+            if uid in fin_order:
+                continue
+            parts = puzzles.get(buildable, []) or []
+            if not parts:
+                continue
+            member = guild.get_member(uid)
+            if member is None:
+                continue
+            entries.append({
+                "user_id": uid,
+                "member": member,
+                "stickers_count": 0,
+                "parts_count": len(parts),
+                "parts": list(parts),
+                "completed": False,
+                "completed_at": None,
+            })
+
+        # Sort the non-finisher tail by parts_count desc, uid asc (finishers stay at top in recorded order)
+        finished_count = len(fin_order)
+        if finished_count:
+            rest = entries[finished_count:]
+            rest.sort(key=lambda e: (-e.get("parts_count", 0), e.get("user_id", 0)))
+            entries = entries[:finished_count] + rest
+        else:
+            entries.sort(key=lambda e: (-e.get("parts_count", 0), e.get("user_id", 0)))
 
         if not entries:
             await ctx.send("No stocking data found for members in this server.")
