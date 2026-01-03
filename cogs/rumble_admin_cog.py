@@ -505,6 +505,241 @@ class RumbleAdminCog(commands.Cog):
         else:
             await self._ephemeral_reply(ctx, f"Could not remove `{part}` from {member.mention} (maybe they don't have it).")
 
+    class _ClearConfirmView(discord.ui.View):
+        def __init__(self, author_id: int, timeout: float = 30.0):
+            super().__init__(timeout=timeout)
+            self.author_id = author_id
+            self.confirmed = False
+            self.cancelled = False
+
+        async def interaction_check(self, interaction: discord.Interaction) -> bool:
+            if interaction.user and interaction.user.id == self.author_id:
+                return True
+            try:
+                await interaction.response.send_message("Only the command invoker can confirm this action.",
+                                                        ephemeral=True)
+            except Exception:
+                pass
+            return False
+
+        @discord.ui.button(label="Confirm", style=discord.ButtonStyle.danger)
+        async def confirm(self, button: discord.ui.Button, interaction: discord.Interaction):
+            self.confirmed = True
+            try:
+                await interaction.response.edit_message(content="Confirmed — executing...", view=None)
+            except Exception:
+                try:
+                    await interaction.response.send_message("Confirmed — executing...", ephemeral=True)
+                except Exception:
+                    pass
+            self.stop()
+
+        @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary)
+        async def cancel(self, button: discord.ui.Button, interaction: discord.Interaction):
+            self.cancelled = True
+            try:
+                await interaction.response.edit_message(content="Cancelled — no changes made.", view=None)
+            except Exception:
+                try:
+                    await interaction.response.send_message("Cancelled — no changes made.", ephemeral=True)
+                except Exception:
+                    pass
+            self.stop()
+
+    @commands.hybrid_command(
+        name="rumble_buildable_clear",
+        description="Clear a buildable for a member or for all members in the guild (requires Manage Guild)."
+    )
+    @commands.guild_only()
+    @app_commands.describe(buildable="Buildable to clear (default: snowman)",
+                           member="Member to clear (omit to use clear_all)",
+                           clear_all="Clear this buildable for all users in the guild")
+    @commands.has_guild_permissions(manage_guild=True)
+    async def rumble_buildable_clear(self, ctx: commands.Context, buildable: Optional[str] = "snowman",
+                                     member: Optional[discord.Member] = None, clear_all: Optional[bool] = False):
+        """
+        Clear a buildable for a user or all users. Prompts for confirmation.
+        When clearing, attempts to remove the configured completion role from affected members.
+        """
+        # Validate args
+        if member and clear_all:
+            await self._ephemeral_reply(ctx, "Specify either a member OR set clear_all=True, not both.")
+            return
+
+        guild = ctx.guild
+        if not guild:
+            await self._ephemeral_reply(ctx, "This command must be run in a guild.")
+            return
+
+        buildable = (buildable or "snowman").strip()
+        buildables = _load_buildables()
+        build_def = buildables.get(buildable, {}) or {}
+        role_id = build_def.get("role_on_complete")  # may be None
+
+        stocking = self.bot.get_cog("StockingCog")
+        if stocking is None:
+            await self._ephemeral_reply(ctx, "StockingCog is not loaded; cannot modify stockings.json.")
+            return
+
+        # Build confirmation text
+        if clear_all:
+            desc = f"This will clear the `{buildable}` buildable from every user record in stockings.json for this guild. " \
+                   f"If any users have the configured completion role, I will attempt to remove it."
+        elif member:
+            desc = f"This will clear the `{buildable}` buildable for {member.mention} (ID: {member.id}). " \
+                   f"If they have the configured completion role, I will attempt to remove it."
+        else:
+            await self._ephemeral_reply(ctx, "You must specify a member or set clear_all=True to clear for everyone.")
+            return
+
+        # Send confirmation view
+        view = self._ClearConfirmView(author_id=ctx.author.id)
+        try:
+            await ctx.reply(content=desc + "\n\nClick Confirm to proceed or Cancel to abort.", view=view,
+                            mention_author=False)
+        except Exception:
+            try:
+                await ctx.interaction.response.send_message(desc + "\n\nClick Confirm to proceed or Cancel to abort.",
+                                                            view=view, ephemeral=True)
+            except Exception:
+                await self._ephemeral_reply(ctx, "Could not show confirmation UI — aborting.")
+                return
+
+        await view.wait()
+        if not view.confirmed:
+            if view.cancelled:
+                return
+            else:
+                try:
+                    await ctx.reply("Timed out — no changes made.", mention_author=False)
+                except Exception:
+                    pass
+                return
+
+        # Action: clear entries and remove roles (best-effort)
+        changed = 0
+        roles_removed = 0
+        errors: List[str] = []
+
+        async def _maybe_remove_role_from_member_obj(member_obj: discord.Member, r_id: Optional[int]) -> bool:
+            nonlocal roles_removed
+            if not r_id:
+                return False
+            try:
+                rid = int(r_id)
+            except Exception:
+                return False
+            role = guild.get_role(rid)
+            if not role:
+                return False
+            try:
+                # refresh member object
+                mem = guild.get_member(member_obj.id) or await guild.fetch_member(member_obj.id)
+                if not mem:
+                    return False
+                if role in mem.roles:
+                    bot_member = guild.me
+                    if not bot_member or not bot_member.guild_permissions.manage_roles:
+                        errors.append(f"Missing Manage Roles permission to remove role {role.id} from {mem.id}")
+                        return False
+                    try:
+                        if role.position >= (bot_member.top_role.position if bot_member.top_role else -1):
+                            errors.append(f"Cannot remove role {role.id} from {mem.id} due to role hierarchy")
+                            return False
+                    except Exception:
+                        pass
+                    try:
+                        await mem.remove_roles(role, reason=f"{buildable} cleared by {ctx.author}")
+                        roles_removed += 1
+                        return True
+                    except Exception as e:
+                        errors.append(f"Failed to remove role {role.id} from {mem.id}: {e}")
+                        return False
+            except Exception as e:
+                errors.append(f"Error while removing role from member {member_obj.id}: {e}")
+            return False
+
+        # Perform change
+        if member:
+            uid = str(member.id)
+            rec = stocking._data.get(uid)
+            if not rec:
+                await ctx.reply(f"No stockings record for {member.mention}. Nothing to do.", mention_author=False)
+                return
+            brecs = rec.get("buildables", {}) or {}
+            if buildable not in brecs:
+                await ctx.reply(f"{member.mention} has no `{buildable}` record. Nothing to do.", mention_author=False)
+                return
+            # Try remove role first (best-effort)
+            try:
+                await _maybe_remove_role_from_member_obj(member, role_id)
+            except Exception:
+                pass
+            # Remove the buildable entry
+            try:
+                brecs.pop(buildable, None)
+                # tidy up empty records
+                if not brecs:
+                    rec.pop("buildables", None)
+                if not rec.get("buildables") and not rec.get("stickers"):
+                    stocking._data.pop(uid, None)
+                else:
+                    stocking._data[uid] = rec
+                changed += 1
+                await stocking._save()
+            except Exception as e:
+                errors.append(f"Failed to clear {buildable} for {uid}: {e}")
+        else:
+            # clear for all users
+            for uid_str, rec in list((stocking._data or {}).items()):
+                try:
+                    brecs = rec.get("buildables", {}) or {}
+                    if buildable in brecs:
+                        # try remove role if that member exists in this guild
+                        try:
+                            mobj = guild.get_member(int(uid_str))
+                            if mobj:
+                                await _maybe_remove_role_from_member_obj(mobj, role_id)
+                        except Exception:
+                            pass
+                        # remove buildable
+                        try:
+                            brecs.pop(buildable, None)
+                            if brecs:
+                                rec["buildables"] = brecs
+                                stocking._data[uid_str] = rec
+                            else:
+                                # remove entire user record if empty
+                                if rec.get("stickers"):
+                                    rec.pop("buildables", None)
+                                    stocking._data[uid_str] = rec
+                                else:
+                                    stocking._data.pop(uid_str, None)
+                            changed += 1
+                        except Exception as e:
+                            errors.append(f"Failed to clear for user {uid_str}: {e}")
+                except Exception as e:
+                    errors.append(f"Error processing user {uid_str}: {e}")
+            try:
+                await stocking._save()
+            except Exception as e:
+                errors.append(f"Failed to save stockings.json after clearing: {e}")
+
+        # Build result message
+        parts: List[str] = [f"Cleared `{buildable}` for {changed} user(s)."]
+        if roles_removed:
+            parts.append(f"Removed completion role from {roles_removed} member(s).")
+        if errors:
+            parts.append("Some errors occurred:")
+            parts.extend(errors[:10])
+        try:
+            await ctx.reply("\n".join(parts), mention_author=False)
+        except Exception:
+            try:
+                await ctx.interaction.followup.send("\n".join(parts), ephemeral=True)
+            except Exception:
+                logger.exception("rumble_buildable_clear: failed to deliver result")
+
     @commands.command(name="sync_guild_commands")
     @commands.is_owner()
     async def sync_guild_commands(self, ctx: commands.Context):

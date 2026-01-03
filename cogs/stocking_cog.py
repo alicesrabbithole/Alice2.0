@@ -779,21 +779,51 @@ class StockingCog(commands.Cog, name="StockingCog"):
             else:
                 embed.set_author(name=display_name)
 
+            # Ensure capacity_slots available near the top of your command:
+            capacity_slots = int(build_def.get("capacity_slots", len(parts_def))) if build_def else len(parts_def)
+
+            # Replace the lines construction with this robust block:
             lines: List[str] = []
-            for idx, ent in enumerate(page_entries, start=start + 1):
-                member = ent["member"]
-                who = member.mention
-                if ent.get("completed"):
-                    status = "Completed"
-                else:
-                    user_parts = set(ent.get("parts", []) or [])
-                    missing = [p for p in defined_part_keys if p not in user_parts]
-                    if not missing:
+            if not page_entries:
+                lines.append("No tracked members have collected pieces for this buildable yet.")
+            else:
+                for idx, ent in enumerate(page_entries, start=start + 1):
+                    member = ent.get("member")
+                    who = member.mention if member is not None else f"<@{ent.get('user_id')}>"
+
+                    # Normalize parts (case-insensitive)
+                    user_parts_raw = ent.get("parts", []) or []
+                    user_parts_lower = {str(p).lower() for p in user_parts_raw}
+
+                    # Normalize definition keys
+                    defined_keys = defined_part_keys  # from earlier in command
+                    defined_keys_lower_map = [(k, str(k).lower()) for k in defined_keys]
+
+                    # Compute missing parts (case-insensitive compare)
+                    missing = [orig for orig, lower in defined_keys_lower_map if lower not in user_parts_lower]
+
+                    # Recompute completed if persisted flag is absent/incorrect
+                    persisted_completed = bool(ent.get("completed"))
+                    computed_completed = persisted_completed or (len(user_parts_raw) >= capacity_slots) or (
+                                len(user_parts_raw) >= len(defined_keys))
+                    # treat as complete if computed or there are no missing parts
+                    is_complete = computed_completed or (len(missing) == 0)
+
+                    if is_complete:
                         status = "Completed"
                     else:
+                        # Map missing part names to emojis (prefer PART_EMOJI, fallback to defaults)
                         emojis: List[str] = []
                         for p in missing:
-                            em = _map_part_to_emoji(p)
+                            em = None
+                            try:
+                                if isinstance(PART_EMOJI, dict):
+                                    em = PART_EMOJI.get(p.lower())
+                            except Exception:
+                                em = None
+                            if not em:
+                                # use your defaults map
+                                em = _default_part_emojis.get(p.lower())
                             if em:
                                 emojis.append(em)
                         if emojis:
@@ -804,7 +834,8 @@ class StockingCog(commands.Cog, name="StockingCog"):
                                 status = "".join(emojis)
                         else:
                             status = f"{len(missing)} missing"
-                lines.append(f"{idx}. {who} — {status}")
+
+                    lines.append(f"{idx}. {who} — {status}")
 
             embed.add_field(name=f"Top collectors (Page {page_idx + 1} of {((len(entries) - 1) // PAGE_SIZE) + 1})",
                             value="\n".join(lines), inline=False)
