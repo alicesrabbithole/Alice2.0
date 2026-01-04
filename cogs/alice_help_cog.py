@@ -76,6 +76,15 @@ class AliceHelpCog(commands.Cog, name="Help"):
 
         await ctx.send(embed=embed, ephemeral=True)
 
+        @commands.command()
+        @commands.is_owner()
+        async def list_appcmds(self, ctx: commands.Context):
+            names = []
+            for c in self.bot.tree.walk_commands():
+                # show qualified name and whether it looks global or has a guild-specific binding
+                names.append(f"{c.qualified_name}  (id={getattr(c, 'id', None)})")
+            await ctx.reply("App commands:\n" + ("\n".join(names) if names else "(none)"), mention_author=False)
+
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(AliceHelpCog(bot))
