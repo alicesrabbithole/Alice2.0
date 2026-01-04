@@ -654,25 +654,31 @@ class StockingCog(commands.Cog, name="StockingCog"):
                 for pos, uid in enumerate(sorted(completed_ts_map.keys(), key=lambda u: completed_ts_map[u]), start=1):
                     fin_order[uid] = pos
 
-        def _get_parts_for_uid(uid: int) -> List[str]:
-            try:
-                rec = (self._data or {}).get(str(uid)) or {}
-                brec = ((rec.get("buildables") or {}).get(buildable) or {})
-                parts = brec.get("parts", []) or []
-                if parts:
-                    return list(parts)
-            except Exception:
-                pass
-            try:
-                ud = getattr(self.bot, "data", {}) or {}
-                up = ud.get("user_pieces", {}) or {}
-                puz = up.get(str(uid), {}) or {}
-                parts2 = puz.get(buildable, []) or []
-                if parts2:
-                    return list(parts2)
-            except Exception:
-                pass
-            return []
+                    # helper to get parts list for uid (EXCLUSIVELY prefer stockings.json in this cog)
+                    def _get_parts_for_uid(uid: int) -> List[str]:
+                        try:
+                            # canonical source: this cog's self._data (stockings.json)
+                            rec = (self._data or {}).get(str(uid)) or {}
+                            brec = ((rec.get("buildables") or {}).get(buildable) or {})
+                            parts = brec.get("parts", []) or []
+                            if parts:
+                                return list(parts)
+                        except Exception:
+                            pass
+
+                        # fallback: (only for safety) check runtime self.bot.data.user_pieces
+                        try:
+                            ud = getattr(self.bot, "data", {}) or {}
+                            up = ud.get("user_pieces", {}) or {}
+                            puz = up.get(str(uid), {}) or {}
+                            pparts = puz.get(buildable, []) or []
+                            if pparts:
+                                logger.debug("Leaderboard: found parts for %s in bot.data.user_pieces (fallback)", uid)
+                                return list(pparts)
+                        except Exception:
+                            pass
+
+                        return []
 
         # finishers first (in recorded order)
         for uid in sorted(fin_order.keys(), key=lambda u: fin_order[u]):
@@ -804,6 +810,43 @@ class StockingCog(commands.Cog, name="StockingCog"):
         if total_pages <= 1:
             await ctx.reply(embed=initial, mention_author=False)
             return
+
+        @commands.command(name="dbg_show_parts")
+        @commands.has_guild_permissions(manage_guild=True)
+        async def dbg_show_parts(self, ctx: commands.Context, user_id: str, buildable: Optional[str] = "snowman"):
+            """
+            Debug helper: show parts for user_id from stockings.json (self._data)
+            and from runtime self.bot.data.user_pieces so you can compare sources.
+            Usage: !dbg_show_parts 625759569578164244 snowman
+            """
+            try:
+                uid_str = str(user_id)
+                # from stockings.json (self._data)
+                stock_rec = (self._data or {}).get(uid_str) or {}
+                stock_brec = ((stock_rec.get("buildables") or {}).get(buildable) or {})
+                stock_parts = stock_brec.get("parts", []) or []
+
+                # from runtime self.bot.data.user_pieces (if present)
+                botdata = getattr(self.bot, "data", {}) or {}
+                up = botdata.get("user_pieces", {}) or {}
+                bot_parts = (up.get(uid_str, {}) or {}).get(buildable, []) or []
+
+                # also show completed flag and completed_at from stockings.json
+                stock_completed = bool(stock_brec.get("completed"))
+                stock_completed_at = stock_brec.get("completed_at")
+
+                text = (
+                    f"stockings.json (self._data) for {uid_str} / {buildable}:\n"
+                    f"  parts: {stock_parts}\n"
+                    f"  completed: {stock_completed}\n"
+                    f"  completed_at: {stock_completed_at}\n\n"
+                    f"runtime self.bot.data.user_pieces for {uid_str} / {buildable}:\n"
+                    f"  parts: {bot_parts}\n"
+                )
+                await ctx.reply(f"```\n{text}\n```", mention_author=False)
+            except Exception as e:
+                logger.exception("dbg_show_parts failed")
+                await ctx.reply(f"Debug failed: {e}", mention_author=False)
 
         class _Paginator(discord.ui.View):
             def __init__(self, build_embed_callable, total_pages: int, *, timeout: Optional[float] = 120.0):
