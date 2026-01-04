@@ -6,22 +6,6 @@ import config
 from utils.checks import is_staff
 from utils.theme import Emojis, Colors
 
-from config import OWNER_ID
-
-def _to_int(x):
-    try:
-        return int(x)
-    except Exception:
-        return None
-
-owner_id = _to_int(OWNER_ID) if 'OWNER_ID' in globals() else None
-
-bot = commands.Bot(
-    command_prefix="!",  # your prefix
-    intents=...,        # your intents
-    owner_id=owner_id,  # single owner
-)
-
 class ModerationCog(commands.Cog, name="Moderation"):
     """Commands for server moderation."""
 
