@@ -461,6 +461,76 @@ class StockingCog(commands.Cog, name="StockingCog"):
             logger.exception("render_buildable: failed to save composite to %s", out_path)
             return None
 
+    @commands.command(name="dbg_show_parts")
+    @commands.has_guild_permissions(manage_guild=True)
+    async def dbg_show_parts(self, ctx: commands.Context, member_or_id: Optional[str] = None,
+                             buildable: Optional[str] = "snowman"):
+        """
+        Debug helper: show parts from stockings.json (self._data) and from runtime self.bot.data.user_pieces.
+        Usage:
+          !dbg_show_parts                  -> shows for invoking user
+          !dbg_show_parts @Member          -> shows for mentioned member
+          !dbg_show_parts 625759569578164244 -> show for explicit id
+          Optionally add a buildable name as second arg (defaults to snowman).
+        """
+        import re
+
+        try:
+            guild = ctx.guild
+            # Resolve target uid
+            if member_or_id is None:
+                uid = getattr(ctx.author, "id", None)
+            else:
+                # try to extract a snowflake from a mention or raw id
+                m = re.search(r"(\d{16,22})", member_or_id)
+                if m:
+                    uid = int(m.group(1))
+                else:
+                    # try to resolve by mention/name in guild
+                    uid = None
+                    if guild:
+                        # try mention/name/display_name lookup
+                        member = None
+                        try:
+                            # attempt Member converter-like behavior
+                            member = await commands.MemberConverter().convert(ctx, member_or_id)
+                        except Exception:
+                            # fallback to manual search (name or display_name)
+                            member = discord.utils.find(
+                                lambda mm: (mm.name == member_or_id) or (mm.display_name == member_or_id),
+                                guild.members)
+                        if member:
+                            uid = member.id
+            if not uid:
+                await self._ephemeral_reply(ctx,
+                                            "Could not resolve the target user. Provide a mention or numeric ID, or omit to use yourself.")
+                return
+
+            uid_str = str(uid)
+            # stockings.json (self._data)
+            stock_rec = (self._data or {}).get(uid_str) or {}
+            stock_brec = ((stock_rec.get("buildables") or {}).get(buildable) or {})
+            stock_parts = stock_brec.get("parts", []) or []
+            stock_completed = bool(stock_brec.get("completed"))
+            stock_completed_at = stock_brec.get("completed_at")
+
+            # runtime self.bot.data.user_pieces (if present)
+            botdata = getattr(self.bot, "data", {}) or {}
+            up = botdata.get("user_pieces", {}) or {}
+            bot_parts = (up.get(uid_str, {}) or {}).get(buildable, []) or []
+
+            text = (
+                f"stockings.json (self._data) for {uid_str} / {buildable}:\n"
+                f"  parts: {stock_parts}\n"
+                f"  completed: {stock_completed}\n"
+                f"  completed_at: {stock_completed_at}\n\n"
+                f"runtime self.bot.data.user_pieces for {uid_str} / {buildable}:\n"
+                f"  parts: {bot_parts}\n"
+            )
+            await ctx.reply(f"```\n{text}\n```", mention_author=False)
+        except Exception:
+            logger.exception("dbg_show_parts failed")
+            await self._ephemeral_reply(ctx, "Debug failed; see logs.")
     # -------------------------
     # /mysnowman command
     @commands.hybrid_command(name="mysnowman", description="Show your snowman assembled from collected parts.")
@@ -605,28 +675,32 @@ class StockingCog(commands.Cog, name="StockingCog"):
                 pass
             return _default_part_emojis.get(p.lower())
 
-        # helper to get parts list for uid (EXCLUSIVELY prefer stockings.json in this cog)
+            # helper to get parts list for uid (EXCLUSIVELY prefer stockings.json in this cog)
         def _get_parts_for_uid(uid: int) -> List[str]:
-            try:
-                rec = (self._data or {}).get(str(uid)) or {}
-                brec = ((rec.get("buildables") or {}).get(buildable) or {})
-                parts = brec.get("parts", []) or []
-                if parts:
-                    return list(parts)
-            except Exception:
-                pass
-            # fallback: runtime storage (rare)
-            try:
-                ud = getattr(self.bot, "data", {}) or {}
-                up = ud.get("user_pieces", {}) or {}
-                puz = up.get(str(uid), {}) or {}
-                pparts = puz.get(buildable, []) or []
-                if pparts:
-                    logger.debug("Leaderboard fallback: found parts for %s in bot.data.user_pieces", uid)
-                    return list(pparts)
-            except Exception:
-                pass
-            return []
+                try:
+                    rec = (self._data or {}).get(str(uid)) or {}
+                    brec = ((rec.get("buildables") or {}).get(buildable) or {})
+                    parts = brec.get("parts", []) or []
+                    if parts:
+                        logger.debug("LB: uid=%s parts from self._data: %r", uid, parts)
+                        return list(parts)
+                except Exception:
+                    logger.exception("LB: error reading self._data for uid=%s", uid)
+
+                # fallback: runtime storage (rare)
+                try:
+                    ud = getattr(self.bot, "data", {}) or {}
+                    up = ud.get("user_pieces", {}) or {}
+                    puz = up.get(str(uid), {}) or {}
+                    pparts = puz.get(buildable, []) or []
+                    if pparts:
+                        logger.debug("LB: uid=%s parts from bot.data.user_pieces (FALLBACK): %r", uid, pparts)
+                        return list(pparts)
+                except Exception:
+                    logger.exception("LB: error reading bot.data for uid=%s", uid)
+
+                logger.debug("LB: uid=%s has no parts for buildable=%s", uid, buildable)
+                return []
 
         # -------------------------
         # Build entries preserving finisher recorded order
@@ -846,54 +920,6 @@ class StockingCog(commands.Cog, name="StockingCog"):
         view = _Paginator(build_embed_for_page, total_pages)
         msg = await ctx.reply(embed=initial, view=view, mention_author=False)
         view.message = msg
-
-    # -------------------------
-    # Debug helpers (prefix commands)
-    @commands.command(name="dbg_list_cog_cmds")
-    @commands.has_guild_permissions(manage_guild=True)
-    async def dbg_list_cog_cmds(self, ctx: commands.Context):
-        """
-        List commands defined on this Cog (prefix commands). Run in guild as an admin.
-        """
-        try:
-            cog_cmds = [c.name for c in self.get_commands()] if hasattr(self, "get_commands") else []
-            await ctx.reply(f"registered commands on cog: {', '.join(cog_cmds) if cog_cmds else '(none)'}", mention_author=False)
-        except Exception:
-            logger.exception("dbg_list_cog_cmds failed")
-            await self._ephemeral_reply(ctx, "Failed to list commands on cog.")
-
-    @commands.command(name="dbg_show_parts")
-    @commands.has_guild_permissions(manage_guild=True)
-    async def dbg_show_parts(self, ctx: commands.Context, user_id: str, buildable: Optional[str] = "snowman"):
-        """
-        Debug helper: show parts for user_id from stockings.json (self._data)
-        and from runtime self.bot.data.user_pieces so you can compare sources.
-        Usage: !dbg_show_parts 625759569578164244 snowman
-        """
-        try:
-            uid_str = str(user_id)
-            stock_rec = (self._data or {}).get(uid_str) or {}
-            stock_brec = ((stock_rec.get("buildables") or {}).get(buildable) or {})
-            stock_parts = stock_brec.get("parts", []) or []
-            stock_completed = bool(stock_brec.get("completed"))
-            stock_completed_at = stock_brec.get("completed_at")
-
-            botdata = getattr(self.bot, "data", {}) or {}
-            up = botdata.get("user_pieces", {}) or {}
-            bot_parts = (up.get(uid_str, {}) or {}).get(buildable, []) or []
-
-            text = (
-                f"stockings.json (self._data) for {uid_str} / {buildable}:\n"
-                f"  parts: {stock_parts}\n"
-                f"  completed: {stock_completed}\n"
-                f"  completed_at: {stock_completed_at}\n\n"
-                f"runtime self.bot.data.user_pieces for {uid_str} / {buildable}:\n"
-                f"  parts: {bot_parts}\n"
-            )
-            await ctx.reply(f"```\n{text}\n```", mention_author=False)
-        except Exception:
-            logger.exception("dbg_show_parts failed")
-            await self._ephemeral_reply(ctx, "Debug failed; see logs.")
 
     # -------------------------
     # Role helpers & events
