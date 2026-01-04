@@ -2,12 +2,12 @@
 """
 StockingCog - refactored full cog
 
-This version:
-- Uses data/stockings.json (self._data) as the canonical source for the stocking/parts leaderboard.
-- Produces a minimal, puzzle-style leaderboard: numbered mention lines with "N pieces" or "Completed".
-- Keeps /mysnowman rendering and safe fallbacks.
-- Consolidates award_part logic so role grants set `role_granted`, `completed`, and `completed_at`.
-- Includes a helper to format collected lists used in single-entry Details.
+Copy-paste this file to cogs/stocking_cog.py (replace your existing cog).
+Restart/reload the bot after saving. This cog:
+ - Uses data/stockings.json (self._data) as the canonical source for parts/leaderboard.
+ - Provides /mysnowman and rumble_builds_leaderboard (hybrid), plus two debug prefix commands.
+ - Keeps awarding, role-granting, rendering helper hooks from your previous code,
+   but simplified to avoid nested/incorrect indentation issues that prevented commands from registering.
 """
 from __future__ import annotations
 
@@ -104,16 +104,16 @@ class StockingCog(commands.Cog, name="StockingCog"):
                     "snowman": {
                         "base": "buildables/snowman/base.png",
                         "parts": {
-                            "carrot": {"file": "buildables/snowman/parts/carrot.png", "offset": [350, 170], "z": 10},
-                            "hat": {"file": "buildables/snowman/parts/hat.png", "offset": [210, 60], "z": 30},
-                            "scarf": {"file": "buildables/snowman/parts/scarf.png", "offset": [170, 240], "z": 20},
-                            "eyes": {"file": "buildables/snowman/parts/eyes.png", "offset": [320, 80], "z": 35},
-                            "mouth": {"file": "buildables/snowman/parts/mouth.png", "offset": [330,120], "z": 30},
-                            "buttons": {"file": "buildables/snowman/parts/buttons.png", "offset": [340,200], "z": 20},
-                            "arms": {"file": "buildables/snowman/parts/arms.png", "offset": [120,160], "z": 10}
+                            "carrot": {"file": "buildables/snowman/parts/carrot.png"},
+                            "hat": {"file": "buildables/snowman/parts/hat.png"},
+                            "scarf": {"file": "buildables/snowman/parts/scarf.png"},
+                            "eyes": {"file": "buildables/snowman/parts/eyes.png"},
+                            "mouth": {"file": "buildables/snowman/parts/mouth.png"},
+                            "buttons": {"file": "buildables/snowman/parts/buttons.png"},
+                            "arms": {"file": "buildables/snowman/parts/arms.png"},
                         },
                         "capacity_slots": 7,
-                        "role_on_complete": None
+                        "role_on_complete": None,
                     }
                 }
                 try:
@@ -186,7 +186,6 @@ class StockingCog(commands.Cog, name="StockingCog"):
                 mention = member.mention if member else f"<@{user_id}>"
                 await asyncio.sleep(0.4)
                 await channel.send(f"🎉 {mention} earned a **{sticker_key}** sticker! Use `/mysnowman` to view your snowman.")
-                logger.info("award_sticker: announced %s in channel %s", sticker_key, getattr(channel, "id", None))
             except Exception:
                 logger.exception("award_sticker: failed to announce sticker award")
         try:
@@ -211,7 +210,6 @@ class StockingCog(commands.Cog, name="StockingCog"):
         brec = user.setdefault("buildables", {}).setdefault(buildable_key, {"parts": [], "completed": False})
 
         if part_key in brec.get("parts", []):
-            logger.info("award_part: user %s already has %s for %s", user_id, part_key, buildable_key)
             if announce and channel:
                 try:
                     member = channel.guild.get_member(user_id) if channel and channel.guild else None
@@ -234,26 +232,11 @@ class StockingCog(commands.Cog, name="StockingCog"):
 
         # announce award (short embed)
         if announce and channel:
-            member = None
-            display = None
             try:
-                if channel and getattr(channel, "guild", None):
-                    member = channel.guild.get_member(user_id)
-                    if member is None:
-                        try:
-                            member = await channel.guild.fetch_member(user_id)
-                        except Exception:
-                            member = None
-                    if member:
-                        display = getattr(member, "display_name", None) or getattr(member, "name", None)
-                if not display:
-                    try:
-                        u = await self.bot.fetch_user(user_id)
-                        display = getattr(u, "display_name", None) or getattr(u, "name", None)
-                    except Exception:
-                        display = None
+                member = channel.guild.get_member(user_id) if channel and channel.guild else None
+                display = (member.display_name if member else None) or (await self.bot.fetch_user(user_id)).name
             except Exception:
-                logger.exception("award_part: error resolving display name / member")
+                display = None
 
             title = f"☃️ Congratulations, {display}! ☃️" if display else "☃️ Congratulations! ☃️"
             emoji = PART_EMOJI.get(part_key.lower(), "")
@@ -267,7 +250,6 @@ class StockingCog(commands.Cog, name="StockingCog"):
                 mention_content = f"<@{user_id}>"
             try:
                 await channel.send(content=mention_content, embed=emb)
-                logger.info("award_part: announced %s to channel %s for user %s", part_key, getattr(channel, "id", None), user_id)
             except Exception:
                 logger.exception("award_part: failed to announce award")
 
@@ -588,7 +570,7 @@ class StockingCog(commands.Cog, name="StockingCog"):
             await self._ephemeral_reply(ctx, f"You have {len(user_parts)} parts: {', '.join(user_parts) if user_parts else '(none)'}.")
 
     # -------------------------
-    # Leaderboard command
+    # Leaderboard command (reads only from self._data, fallback to self.bot.data only if absent)
     @commands.hybrid_command(
         name="rumble_builds_leaderboard",
         aliases=["sled", "stocking_leaderboard", "stockingboard"],
@@ -623,10 +605,34 @@ class StockingCog(commands.Cog, name="StockingCog"):
                 pass
             return _default_part_emojis.get(p.lower())
 
-        # build entries from self._data (stockings.json)
+        # helper to get parts list for uid (EXCLUSIVELY prefer stockings.json in this cog)
+        def _get_parts_for_uid(uid: int) -> List[str]:
+            try:
+                rec = (self._data or {}).get(str(uid)) or {}
+                brec = ((rec.get("buildables") or {}).get(buildable) or {})
+                parts = brec.get("parts", []) or []
+                if parts:
+                    return list(parts)
+            except Exception:
+                pass
+            # fallback: runtime storage (rare)
+            try:
+                ud = getattr(self.bot, "data", {}) or {}
+                up = ud.get("user_pieces", {}) or {}
+                puz = up.get(str(uid), {}) or {}
+                pparts = puz.get(buildable, []) or []
+                if pparts:
+                    logger.debug("Leaderboard fallback: found parts for %s in bot.data.user_pieces", uid)
+                    return list(pparts)
+            except Exception:
+                pass
+            return []
+
+        # -------------------------
+        # Build entries preserving finisher recorded order
+        # -------------------------
         entries: List[Dict[str, Any]] = []
 
-        # Use runtime puzzle_finishers to preserve finish order if available
         runtime_finishers = (getattr(self.bot, "data", {}) or {}).get("puzzle_finishers", {}).get(buildable, []) or []
         fin_order: Dict[int, int] = {}
         for pos, fin in enumerate(runtime_finishers, start=1):
@@ -637,7 +643,6 @@ class StockingCog(commands.Cog, name="StockingCog"):
             if uid not in fin_order:
                 fin_order[uid] = pos
 
-        # fallback: completed_at timestamps from self._data
         if not fin_order:
             completed_ts_map: Dict[int, str] = {}
             for uid_str, rec in (self._data or {}).items():
@@ -654,33 +659,7 @@ class StockingCog(commands.Cog, name="StockingCog"):
                 for pos, uid in enumerate(sorted(completed_ts_map.keys(), key=lambda u: completed_ts_map[u]), start=1):
                     fin_order[uid] = pos
 
-                    # helper to get parts list for uid (EXCLUSIVELY prefer stockings.json in this cog)
-                    def _get_parts_for_uid(uid: int) -> List[str]:
-                        try:
-                            # canonical source: this cog's self._data (stockings.json)
-                            rec = (self._data or {}).get(str(uid)) or {}
-                            brec = ((rec.get("buildables") or {}).get(buildable) or {})
-                            parts = brec.get("parts", []) or []
-                            if parts:
-                                return list(parts)
-                        except Exception:
-                            pass
-
-                        # fallback: (only for safety) check runtime self.bot.data.user_pieces
-                        try:
-                            ud = getattr(self.bot, "data", {}) or {}
-                            up = ud.get("user_pieces", {}) or {}
-                            puz = up.get(str(uid), {}) or {}
-                            pparts = puz.get(buildable, []) or []
-                            if pparts:
-                                logger.debug("Leaderboard: found parts for %s in bot.data.user_pieces (fallback)", uid)
-                                return list(pparts)
-                        except Exception:
-                            pass
-
-                        return []
-
-        # finishers first (in recorded order)
+        # finishers first
         for uid in sorted(fin_order.keys(), key=lambda u: fin_order[u]):
             member = guild.get_member(uid)
             if not member:
@@ -698,7 +677,7 @@ class StockingCog(commands.Cog, name="StockingCog"):
                 "completed_at": None,
             })
 
-        # then add remaining users from self._data
+        # remaining users from self._data
         for uid_str, rec in (self._data or {}).items():
             try:
                 uid = int(uid_str)
@@ -761,18 +740,18 @@ class StockingCog(commands.Cog, name="StockingCog"):
             page_entries = entries[start:end]
 
             embed = discord.Embed(title=f"{title_emoji} Leaderboard — {display_name}", color=embed_color)
-            try:
-                if guild and getattr(guild, "icon", None):
+            if guild and getattr(guild, "icon", None):
+                try:
                     embed.set_author(name=display_name, icon_url=guild.icon.url)
-                else:
+                except Exception:
                     embed.set_author(name=display_name)
-            except Exception:
+            else:
                 embed.set_author(name=display_name)
 
             lines: List[str] = []
             for idx, ent in enumerate(page_entries, start=start + 1):
-                m = ent["member"]
-                who = m.mention
+                member = ent["member"]
+                who = member.mention
                 if ent.get("completed"):
                     status = "Completed"
                 else:
@@ -796,13 +775,13 @@ class StockingCog(commands.Cog, name="StockingCog"):
                             status = f"{len(missing)} missing"
                 lines.append(f"{idx}. {who} — {status}")
 
-            embed.add_field(name=f"Top collectors (Page {page_idx + 1} of {((len(entries) - 1) // PAGE_SIZE) + 1})",
+            embed.add_field(name=f"Top collectors (Page {page_idx + 1} of {((len(entries)-1)//PAGE_SIZE)+1})",
                             value="\n".join(lines), inline=False)
 
             if first_finisher_mention:
                 embed.add_field(name="First Finisher", value=first_finisher_mention, inline=False)
 
-            embed.set_footer(text=f"Page {page_idx + 1} of {((len(entries) - 1) // PAGE_SIZE) + 1}")
+            embed.set_footer(text=f"Page {page_idx + 1} of {((len(entries)-1)//PAGE_SIZE)+1}")
             return embed
 
         total_pages = ((len(entries) - 1) // PAGE_SIZE) + 1
@@ -810,43 +789,6 @@ class StockingCog(commands.Cog, name="StockingCog"):
         if total_pages <= 1:
             await ctx.reply(embed=initial, mention_author=False)
             return
-
-        @commands.command(name="dbg_show_parts")
-        @commands.has_guild_permissions(manage_guild=True)
-        async def dbg_show_parts(self, ctx: commands.Context, user_id: str, buildable: Optional[str] = "snowman"):
-            """
-            Debug helper: show parts for user_id from stockings.json (self._data)
-            and from runtime self.bot.data.user_pieces so you can compare sources.
-            Usage: !dbg_show_parts 625759569578164244 snowman
-            """
-            try:
-                uid_str = str(user_id)
-                # from stockings.json (self._data)
-                stock_rec = (self._data or {}).get(uid_str) or {}
-                stock_brec = ((stock_rec.get("buildables") or {}).get(buildable) or {})
-                stock_parts = stock_brec.get("parts", []) or []
-
-                # from runtime self.bot.data.user_pieces (if present)
-                botdata = getattr(self.bot, "data", {}) or {}
-                up = botdata.get("user_pieces", {}) or {}
-                bot_parts = (up.get(uid_str, {}) or {}).get(buildable, []) or []
-
-                # also show completed flag and completed_at from stockings.json
-                stock_completed = bool(stock_brec.get("completed"))
-                stock_completed_at = stock_brec.get("completed_at")
-
-                text = (
-                    f"stockings.json (self._data) for {uid_str} / {buildable}:\n"
-                    f"  parts: {stock_parts}\n"
-                    f"  completed: {stock_completed}\n"
-                    f"  completed_at: {stock_completed_at}\n\n"
-                    f"runtime self.bot.data.user_pieces for {uid_str} / {buildable}:\n"
-                    f"  parts: {bot_parts}\n"
-                )
-                await ctx.reply(f"```\n{text}\n```", mention_author=False)
-            except Exception as e:
-                logger.exception("dbg_show_parts failed")
-                await ctx.reply(f"Debug failed: {e}", mention_author=False)
 
         class _Paginator(discord.ui.View):
             def __init__(self, build_embed_callable, total_pages: int, *, timeout: Optional[float] = 120.0):
@@ -904,6 +846,54 @@ class StockingCog(commands.Cog, name="StockingCog"):
         view = _Paginator(build_embed_for_page, total_pages)
         msg = await ctx.reply(embed=initial, view=view, mention_author=False)
         view.message = msg
+
+    # -------------------------
+    # Debug helpers (prefix commands)
+    @commands.command(name="dbg_list_cog_cmds")
+    @commands.has_guild_permissions(manage_guild=True)
+    async def dbg_list_cog_cmds(self, ctx: commands.Context):
+        """
+        List commands defined on this Cog (prefix commands). Run in guild as an admin.
+        """
+        try:
+            cog_cmds = [c.name for c in self.get_commands()] if hasattr(self, "get_commands") else []
+            await ctx.reply(f"registered commands on cog: {', '.join(cog_cmds) if cog_cmds else '(none)'}", mention_author=False)
+        except Exception:
+            logger.exception("dbg_list_cog_cmds failed")
+            await self._ephemeral_reply(ctx, "Failed to list commands on cog.")
+
+    @commands.command(name="dbg_show_parts")
+    @commands.has_guild_permissions(manage_guild=True)
+    async def dbg_show_parts(self, ctx: commands.Context, user_id: str, buildable: Optional[str] = "snowman"):
+        """
+        Debug helper: show parts for user_id from stockings.json (self._data)
+        and from runtime self.bot.data.user_pieces so you can compare sources.
+        Usage: !dbg_show_parts 625759569578164244 snowman
+        """
+        try:
+            uid_str = str(user_id)
+            stock_rec = (self._data or {}).get(uid_str) or {}
+            stock_brec = ((stock_rec.get("buildables") or {}).get(buildable) or {})
+            stock_parts = stock_brec.get("parts", []) or []
+            stock_completed = bool(stock_brec.get("completed"))
+            stock_completed_at = stock_brec.get("completed_at")
+
+            botdata = getattr(self.bot, "data", {}) or {}
+            up = botdata.get("user_pieces", {}) or {}
+            bot_parts = (up.get(uid_str, {}) or {}).get(buildable, []) or []
+
+            text = (
+                f"stockings.json (self._data) for {uid_str} / {buildable}:\n"
+                f"  parts: {stock_parts}\n"
+                f"  completed: {stock_completed}\n"
+                f"  completed_at: {stock_completed_at}\n\n"
+                f"runtime self.bot.data.user_pieces for {uid_str} / {buildable}:\n"
+                f"  parts: {bot_parts}\n"
+            )
+            await ctx.reply(f"```\n{text}\n```", mention_author=False)
+        except Exception:
+            logger.exception("dbg_show_parts failed")
+            await self._ephemeral_reply(ctx, "Debug failed; see logs.")
 
     # -------------------------
     # Role helpers & events
@@ -971,8 +961,8 @@ class StockingCog(commands.Cog, name="StockingCog"):
             logger.debug("_grant_buildable_completion_role: role or member missing (role=%s member=%s)", role, member)
             return False
 
-        if role in member.roles:
-            try:
+        try:
+            if role in member.roles:
                 rec = self._ensure_user(user_id)
                 brec = rec.setdefault("buildables", {}).setdefault(buildable_key, {})
                 if not brec.get("role_granted"):
@@ -985,22 +975,19 @@ class StockingCog(commands.Cog, name="StockingCog"):
                     except Exception:
                         brec["completed_at"] = datetime.utcnow().replace(tzinfo=timezone.utc).isoformat()
                 await self._save()
-            except Exception:
-                logger.exception("_grant_buildable_completion_role: failed to persist role_granted/completed")
-            return True
+                return True
 
-        bot_member = guild.me
-        if not bot_member or not bot_member.guild_permissions.manage_roles:
-            logger.warning("_grant_buildable_completion_role: cannot grant role %s in guild %s (missing perms)", role_id, guild.id)
-            return False
-        try:
-            if role.position >= (bot_member.top_role.position if bot_member.top_role else -1):
-                logger.warning("_grant_buildable_completion_role: role %s is equal/above bot top role", role_id)
+            bot_member = guild.me
+            if not bot_member or not bot_member.guild_permissions.manage_roles:
+                logger.warning("_grant_buildable_completion_role: cannot grant role %s in guild %s (missing perms)", role_id, guild.id)
                 return False
-        except Exception:
-            logger.exception("_grant_buildable_completion_role: failed role position check")
+            try:
+                if role.position >= (bot_member.top_role.position if bot_member.top_role else -1):
+                    logger.warning("_grant_buildable_completion_role: role %s is equal/above bot top role", role_id)
+                    return False
+            except Exception:
+                logger.exception("_grant_buildable_completion_role: failed role position check")
 
-        try:
             await member.add_roles(role, reason=f"{buildable_key} completed")
             rec = self._ensure_user(user_id)
             brec = rec.setdefault("buildables", {}).setdefault(buildable_key, {})
@@ -1041,7 +1028,6 @@ class StockingCog(commands.Cog, name="StockingCog"):
                         if brec and brec.get("role_granted"):
                             brec["role_granted"] = False
                             changed = True
-                            logger.info("on_member_update: cleared role_granted for %s buildable %s", uid, bk)
                 except Exception:
                     logger.exception("on_member_update: processing failed for buildable %s / member %s", bk, uid)
             if changed:
