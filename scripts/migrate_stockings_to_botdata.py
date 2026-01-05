@@ -14,7 +14,7 @@ Usage:
 import json
 import logging
 import shutil
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, Any
 
@@ -52,7 +52,7 @@ def create_timestamped_backup(file_path: Path) -> None:
         logger.info("Skipping backup for %s (does not exist)", file_path.name)
         return
     
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
     backup_name = f"{file_path.stem}_{timestamp}{file_path.suffix}"
     backup_path = BACKUPS_DIR / backup_name
     

@@ -13,6 +13,7 @@ This cog:
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import logging
 from datetime import datetime, timezone
@@ -487,8 +488,7 @@ class StockingCog(commands.Cog, name="StockingCog"):
         # Check if render function is async or sync, and handle None
         if render_stocking_image_auto:
             try:
-                # Determine if the function is async
-                import inspect
+                # Determine if the function is async (inspect imported at top)
                 if inspect.iscoroutinefunction(render_stocking_image_auto):
                     out = await render_stocking_image_auto(self._data, user_id, buildable_key, ASSETS_DIR)
                 else:
@@ -708,7 +708,7 @@ class StockingCog(commands.Cog, name="StockingCog"):
     @commands.hybrid_command(
         name="rumble_builds_leaderboard",
         aliases=["sled", "stocking_leaderboard", "stockingboard"],
-        description="Show stocking leaderboard for this guild (default: snowman)."
+        description="Show stocking leaderboard for this guild (default: snowman). Note: Slash command provides interactive pagination."
     )
     @commands.guild_only()
     @app_commands.describe(buildable="Which buildable to inspect (defaults to 'snowman')")
@@ -725,6 +725,28 @@ class StockingCog(commands.Cog, name="StockingCog"):
             return
 
         buildable = (buildable or "snowman").strip()
+        
+        # Ensure buildable metadata is in bot.data for LeaderboardView compatibility
+        # LeaderboardView reads from bot.data.get("puzzles", {}).get(puzzle_key, {})
+        # We'll temporarily add our buildable to puzzles for the view to read
+        build_def = self._get_buildable_metadata(buildable)
+        if not build_def:
+            await self._ephemeral_reply(ctx, f"Unknown buildable: {buildable}")
+            return
+        
+        # Temporarily add buildable metadata to bot.data["puzzles"] for LeaderboardView
+        try:
+            self.bot.data.setdefault("puzzles", {})
+            if buildable not in self.bot.data["puzzles"]:
+                # Map buildable metadata to puzzle format for LeaderboardView
+                self.bot.data["puzzles"][buildable] = {
+                    "display_name": build_def.get("display_name") or buildable.replace("_", " ").title(),
+                    "completion_role_id": build_def.get("role_on_complete") or AUTO_ROLE_ID,
+                    "color": build_def.get("color"),
+                    "emoji": build_def.get("emoji"),
+                }
+        except Exception:
+            logger.exception("LB: error adding buildable to bot.data[puzzles]")
         
         # Check if LeaderboardView is available
         if LeaderboardView is None:
@@ -822,18 +844,46 @@ class StockingCog(commands.Cog, name="StockingCog"):
             return
 
         # Create LeaderboardView and send
-        # Note: LeaderboardView expects puzzle_key as the second argument
-        # We'll use buildable as puzzle_key for compatibility
+        # LeaderboardView expects puzzle_key - we pass buildable (now in bot.data["puzzles"])
         try:
-            # Create an Interaction-like context for LeaderboardView
-            # For prefix commands, we need to defer/respond appropriately
+            # For prefix commands, provide a simple response directing to slash command
             if ctx.interaction:
                 interaction = ctx.interaction
             else:
-                # For prefix commands, we can't use LeaderboardView directly
-                # Fall back to a simple embed response
-                logger.warning("LB: prefix command detected, LeaderboardView requires interaction")
-                await self._ephemeral_reply(ctx, "Please use /rumble_builds_leaderboard for the interactive leaderboard.")
+                # Prefix command: provide simple embed with first page
+                logger.info("LB: prefix command detected, providing simple embed response")
+                PAGE_SIZE = 10
+                display_name = build_def.get("display_name") or buildable.replace("_", " ").title()
+                emoji = build_def.get("emoji") or "🏆"
+                try:
+                    color_val = build_def.get("color")
+                    if color_val:
+                        embed_color = discord.Color(int(color_val))
+                    else:
+                        embed_color = discord.Color(DEFAULT_COLOR if isinstance(DEFAULT_COLOR, int) else DEFAULT_COLOR)
+                except Exception:
+                    embed_color = discord.Color(DEFAULT_COLOR if isinstance(DEFAULT_COLOR, int) else DEFAULT_COLOR)
+                
+                lines = []
+                for i, (uid, cnt) in enumerate(leaderboard_data[:PAGE_SIZE], start=1):
+                    member = guild.get_member(uid)
+                    mention = member.mention if member else f"User (`{uid}`)"
+                    lines.append(f"**{i}.** {mention} — `{cnt}` pieces")
+                
+                embed = discord.Embed(title=f"{emoji} Leaderboard — {display_name}", description="\n".join(lines) or "No data", color=embed_color)
+                if guild and guild.icon:
+                    embed.set_author(name=display_name, icon_url=guild.icon.url)
+                else:
+                    embed.set_author(name=display_name)
+                
+                total_pages = max(1, (len(leaderboard_data) + PAGE_SIZE - 1) // PAGE_SIZE)
+                if total_pages > 1:
+                    embed.set_footer(text=f"Page 1 of {total_pages} — Use /rumble_builds_leaderboard for interactive pagination")
+                else:
+                    embed.set_footer(text=f"Page 1 of {total_pages}")
+                
+                await ctx.reply(embed=embed, mention_author=False)
+                logger.info("LB: sent simple embed for buildable=%s with %d entries", buildable, len(leaderboard_data))
                 return
 
             view = LeaderboardView(self.bot, guild, buildable, leaderboard_data, page=0, opener_id=ctx.author.id)
