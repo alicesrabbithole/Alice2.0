@@ -839,9 +839,8 @@ class StockingCog(commands.Cog, name="StockingCog"):
                 mention = member.mention if member else f"`{uid}`"
                 lines.append(f"**{i}.** {mention} — `{count}` pieces")
             
-
-    # -------------------------
-    # Debug helpers (prefix commands)
+            embed.description = "\n".join(lines) if lines else "No data"
+            await ctx.reply(embed=embed, mention_author=False)
 
     # -------------------------
     # Debug helpers (prefix commands)
