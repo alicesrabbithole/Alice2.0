@@ -11,6 +11,7 @@ Restart/reload the bot after saving. This cog:
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import logging
 from datetime import datetime, timezone
@@ -21,6 +22,9 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 from discord.utils import utcnow
+
+# Reuse puzzle UI views for consistent leaderboard UI/behavior
+from ui.views import open_leaderboard_view, LeaderboardView
 
 logger = logging.getLogger(__name__)
 
@@ -312,10 +316,51 @@ class StockingCog(commands.Cog, name="StockingCog"):
                     except Exception:
                         brec["completed_at"] = datetime.utcnow().replace(tzinfo=timezone.utc).isoformat()
 
-            # persist canonical changes
+            # persist canonical changes to stockings.json
             await self._save()
         except Exception:
             logger.exception("award_part: normalization/persist step failed")
+
+        # persist into bot.data model as well (user_pieces/buildables)
+        try:
+            botdata = getattr(self.bot, "data", None)
+            if botdata is None:
+                botdata = {}
+                setattr(self.bot, "data", botdata)
+            botdata.setdefault("user_pieces", {})
+            up = botdata["user_pieces"]
+            uid_str = str(user_id)
+            up.setdefault(uid_str, {})
+            existing_parts = {str(x).lower() for x in up[uid_str].get(buildable_key, [])}
+            for p in brec.get("parts", []) or []:
+                existing_parts.add(str(p).lower())
+            up[uid_str][buildable_key] = list(existing_parts)
+
+            # ensure buildables metadata present in botdata
+            botdata.setdefault("buildables", {})
+            try:
+                if self._buildables_def:
+                    # merge without overwriting existing keys
+                    for k, v in (self._buildables_def or {}).items():
+                        if k not in botdata["buildables"]:
+                            botdata["buildables"][k] = v
+            except Exception:
+                logger.exception("award_part: merging buildables_def into bot.data failed")
+
+            # prefer utils.db_utils.save_data if available
+            try:
+                from utils.db_utils import save_data
+                save_data(botdata)
+            except Exception:
+                # fallback: write to data/collected_pieces.json
+                collected_file = DATA_DIR / "collected_pieces.json"
+                try:
+                    with collected_file.open("w", encoding="utf-8") as fh:
+                        json.dump(botdata, fh, ensure_ascii=False, indent=2)
+                except Exception:
+                    logger.exception("award_part: failed to persist bot.data fallback file")
+        except Exception:
+            logger.exception("award_part: failed to persist into bot.data model")
 
         # attempt to render composite (best-effort)
         try:
@@ -451,10 +496,16 @@ class StockingCog(commands.Cog, name="StockingCog"):
     # -------------------------
     async def render_buildable(self, user_id: int, buildable_key: str) -> Optional[Path]:
         """Render composite PNG for a user's buildable. Returns path or None."""
+        # Safer plugin handling: plugin may be sync, async, or return None
         if render_stocking_image_auto:
             try:
-                out = await render_stocking_image_auto(self._data, user_id, buildable_key, ASSETS_DIR)
-                return Path(out) if out else None
+                maybe = render_stocking_image_auto(self._data, user_id, buildable_key, ASSETS_DIR)
+                if inspect.isawaitable(maybe):
+                    out = await maybe
+                else:
+                    out = maybe
+                if out:
+                    return Path(out)
             except Exception:
                 logger.exception("render_buildable: plugin renderer failed")
 
@@ -667,7 +718,7 @@ class StockingCog(commands.Cog, name="StockingCog"):
             await self._ephemeral_reply(ctx, f"You have {len(user_parts)} parts: {', '.join(user_parts) if user_parts else '(none)'}.")
 
     # -------------------------
-    # Leaderboard command (reads only from self._data, fallback to self.bot.data only if absent)
+    # Leaderboard command (now uses the same LeaderboardView used by the puzzles cog)
     @commands.hybrid_command(
         name="rumble_builds_leaderboard",
         aliases=["sled", "stocking_leaderboard", "stockingboard"],
@@ -676,277 +727,81 @@ class StockingCog(commands.Cog, name="StockingCog"):
     @commands.guild_only()
     @app_commands.describe(buildable="Which buildable to inspect (defaults to 'snowman')")
     async def rumble_builds_leaderboard(self, ctx: commands.Context, buildable: Optional[str] = "snowman"):
-        PAGE_SIZE = 12
-        guild = ctx.guild
-        if not guild:
-            await self._ephemeral_reply(ctx, "This command must be used in a guild.")
-            return
+        await ctx.defer(ephemeral=False)
 
         buildable = (buildable or "snowman").strip()
         build_def = (self._buildables_def or {}).get(buildable, {}) or {}
         parts_def = build_def.get("parts", {}) or {}
-        defined_part_keys = list(parts_def.keys())
 
-        _default_part_emojis = {
-            "carrot": "🥕", "hat": "🎩", "scarf": "🧣", "eyes": "👀",
-            "mouth": "👄", "buttons": "⚪", "arms": "🦴",
-        }
+        # Debug log to confirm which data source we'll inspect
+        logger.info("LB RUN: buildable=%s guild=%s persisted_users=%d has_botdata=%s",
+                    buildable, getattr(ctx.guild, "id", None), len(self._data or {}), bool(getattr(self.bot, "data", None)))
 
-        def _map_part_to_emoji(p: str) -> Optional[str]:
+        interaction = getattr(ctx, "interaction", None)
+        if interaction:
+            # Use the standard open_leaderboard_view for interaction (same UX as puzzles)
             try:
-                if isinstance(PART_EMOJI, dict):
-                    em = PART_EMOJI.get(p.lower())
-                    if em:
-                        return em
+                return await open_leaderboard_view(self.bot, interaction, buildable)
             except Exception:
-                pass
-            return _default_part_emojis.get(p.lower())
+                logger.exception("rumble_builds_leaderboard: open_leaderboard_view failed, falling back to non-interaction path")
 
-        # helper to get parts list for uid (EXCLUSIVELY prefer stockings.json in this cog)
-        def _get_parts_for_uid(uid: int) -> List[str]:
-            try:
-                rec = (self._data or {}).get(str(uid)) or {}
-                brec = ((rec.get("buildables") or {}).get(buildable) or {})
-                parts = brec.get("parts", []) or []
-                if parts:
-                    logger.debug("LB: uid=%s parts from self._data: %r", uid, parts)
-                    return list(parts)
-            except Exception:
-                logger.exception("LB: error reading self._data for uid=%s", uid)
+        # Build leaderboard_data: list of (uid:int, count:int)
+        leaderboard_map: Dict[int, int] = {}
 
-            # fallback: runtime storage (rare)
-            try:
-                ud = getattr(self.bot, "data", {}) or {}
-                up = ud.get("user_pieces", {}) or {}
-                puz = up.get(str(uid), {}) or {}
-                pparts = puz.get(buildable, []) or []
-                if pparts:
-                    logger.debug("LB: uid=%s parts from bot.data.user_pieces (FALLBACK): %r", uid, pparts)
-                    return list(pparts)
-            except Exception:
-                logger.exception("LB: error reading bot.data for uid=%s", uid)
-
-            logger.debug("LB: uid=%s has no parts for buildable=%s", uid, buildable)
-            return []
-
-        # -------------------------
-        # Build entries preserving finisher recorded order
-        # -------------------------
-        entries: List[Dict[str, Any]] = []
-
-        runtime_finishers = (getattr(self.bot, "data", {}) or {}).get("puzzle_finishers", {}).get(buildable, []) or []
-        fin_order: Dict[int, int] = {}
-        for pos, fin in enumerate(runtime_finishers, start=1):
-            try:
-                uid = int(fin.get("user_id")) if isinstance(fin, dict) else int(fin)
-            except Exception:
-                continue
-            if uid not in fin_order:
-                fin_order[uid] = pos
-
-        if not fin_order:
-            completed_ts_map: Dict[int, str] = {}
+        # Prefer persisted stockings.json entries
+        try:
             for uid_str, rec in (self._data or {}).items():
                 try:
                     uid = int(uid_str)
                 except Exception:
                     continue
                 brec = ((rec.get("buildables") or {}).get(buildable) or {})
-                if brec and brec.get("completed"):
-                    ts = brec.get("completed_at")
-                    if ts:
-                        completed_ts_map[uid] = ts
-            if completed_ts_map:
-                for pos, uid in enumerate(sorted(completed_ts_map.keys(), key=lambda u: completed_ts_map[u]), start=1):
-                    fin_order[uid] = pos
-
-        # finishers first
-        for uid in sorted(fin_order.keys(), key=lambda u: fin_order[u]):
-            member = guild.get_member(uid)
-            if not member:
-                continue
-            parts = _get_parts_for_uid(uid)
-            rec = (self._data or {}).get(str(uid)) or {}
-            stickers_cnt = len((rec.get("stickers") or []))
-            entries.append({
-                "user_id": uid,
-                "member": member,
-                "stickers_count": stickers_cnt,
-                "parts_count": len(parts),
-                "parts": list(parts),
-                "completed": True,
-                "completed_at": None,
-            })
-
-        # remaining users from self._data
-        for uid_str, rec in (self._data or {}).items():
-            try:
-                uid = int(uid_str)
-            except Exception:
-                continue
-            if uid in fin_order:
-                continue
-            member = guild.get_member(uid)
-            if member is None:
-                continue
-            brec = ((rec.get("buildables") or {}).get(buildable) or {})
-            parts = brec.get("parts", []) or []
-            completed = bool(brec.get("completed"))
-            completed_at = brec.get("completed_at")
-            entries.append({
-                "user_id": uid,
-                "member": member,
-                "stickers_count": len((rec.get("stickers") or [])),
-                "parts_count": len(parts),
-                "parts": list(parts),
-                "completed": completed,
-                "completed_at": completed_at,
-            })
-
-        # sort tail only; finishers stay at top
-        finished_count = len(fin_order)
-        if finished_count:
-            tail = entries[finished_count:]
-            tail.sort(key=lambda e: (-e.get("parts_count", 0), -e.get("stickers_count", 0), e.get("user_id", 0)))
-            entries = entries[:finished_count] + tail
-        else:
-            entries.sort(key=lambda e: (-e.get("parts_count", 0), -e.get("stickers_count", 0), e.get("user_id", 0)))
-
-        if not entries:
-            await ctx.reply("No stocking data found for members in this server.", mention_author=False)
-            return
-
-        # first finisher mention
-        first_finisher_mention = None
-        for uid in sorted(fin_order.keys(), key=lambda u: fin_order[u]):
-            member = guild.get_member(uid)
-            if member:
-                first_finisher_mention = member.mention
-                break
-
-        display_name = build_def.get("display_name") or buildable.replace("_", " ").title()
-        title_emoji = build_def.get("emoji") or "🏆"
-        try:
-            color_val = build_def.get("color")
-            if color_val:
-                embed_color = discord.Color(int(color_val))
-            else:
-                embed_color = discord.Color(DEFAULT_COLOR if isinstance(DEFAULT_COLOR, int) else DEFAULT_COLOR)
+                parts = brec.get("parts", []) or []
+                if parts:
+                    leaderboard_map[uid] = max(leaderboard_map.get(uid, 0), len(parts))
         except Exception:
-            embed_color = discord.Color(DEFAULT_COLOR if isinstance(DEFAULT_COLOR, int) else DEFAULT_COLOR)
+            logger.exception("rumble_builds_leaderboard: error reading self._data")
 
-        def build_embed_for_page(page_idx: int) -> discord.Embed:
-            start = page_idx * PAGE_SIZE
-            end = start + PAGE_SIZE
-            page_entries = entries[start:end]
+        # Fallback: runtime bot.data.user_pieces (if no persisted data found for those users)
+        if not leaderboard_map:
+            try:
+                all_user_pieces = (getattr(self.bot, "data", {}) or {}).get("user_pieces", {}) or {}
+                for user_id_str, user_puzzles in all_user_pieces.items():
+                    try:
+                        uid = int(user_id_str)
+                    except Exception:
+                        continue
+                    parts = (user_puzzles or {}).get(buildable, []) or []
+                    if parts:
+                        leaderboard_map[uid] = max(leaderboard_map.get(uid, 0), len(parts))
+            except Exception:
+                logger.exception("rumble_builds_leaderboard: error reading bot.data.user_pieces")
 
-            embed = discord.Embed(title=f"{title_emoji} Leaderboard — {display_name}", color=embed_color)
-            if guild and getattr(guild, "icon", None):
-                try:
-                    embed.set_author(name=display_name, icon_url=guild.icon.url)
-                except Exception:
-                    embed.set_author(name=display_name)
-            else:
-                embed.set_author(name=display_name)
+        leaderboard_data = [(uid, cnt) for uid, cnt in leaderboard_map.items() if cnt > 0]
+        leaderboard_data.sort(key=lambda x: (-x[1], x[0]))
 
-            lines: List[str] = []
-            for idx, ent in enumerate(page_entries, start=start + 1):
-                member = ent["member"]
-                who = member.mention
-                if ent.get("completed"):
-                    status = "Completed"
-                else:
-                    user_parts = set((ent.get("parts") or []) or [])
-                    missing = [p for p in defined_part_keys if p.lower() not in {str(x).lower() for x in user_parts}]
-                    if not missing:
-                        status = "Completed"
-                    else:
-                        emojis = []
-                        for p in missing:
-                            em = _map_part_to_emoji(p)
-                            if em:
-                                emojis.append(em)
-                        if emojis:
-                            max_show = 6
-                            if len(emojis) > max_show:
-                                status = "".join(emojis[:max_show]) + f" +{len(emojis) - max_show}"
-                            else:
-                                status = "".join(emojis)
-                        else:
-                            status = f"{len(missing)} missing"
-                lines.append(f"{idx}. {who} — {status}")
-
-            embed.add_field(name=f"Top collectors (Page {page_idx + 1} of {((len(entries)-1)//PAGE_SIZE)+1})",
-                            value="\n".join(lines), inline=False)
-
-            if first_finisher_mention:
-                embed.add_field(name="First Finisher", value=first_finisher_mention, inline=False)
-
-            embed.set_footer(text=f"Page {page_idx + 1} of {((len(entries)-1)//PAGE_SIZE)+1}")
-            return embed
-
-        total_pages = ((len(entries) - 1) // PAGE_SIZE) + 1
-        initial = build_embed_for_page(0)
-        if total_pages <= 1:
-            await ctx.reply(embed=initial, mention_author=False)
+        if not leaderboard_data:
+            await ctx.reply("No stocking data found for this buildable.", mention_author=False)
             return
 
-        class _Paginator(discord.ui.View):
-            def __init__(self, build_embed_callable, total_pages: int, *, timeout: Optional[float] = 120.0):
-                super().__init__(timeout=timeout)
-                self.page = 0
-                self.message: Optional[discord.Message] = None
-                self._build_embed = build_embed_callable
-                self.total_pages = total_pages
-
-            async def _update(self, interaction: discord.Interaction):
+        try:
+            view = LeaderboardView(self.bot, ctx.guild, buildable, leaderboard_data, page=0)
+            embed = await view.generate_embed()
+            # Reuse _reply pattern used elsewhere: use ctx.reply directly here
+            await ctx.reply(embed=embed, view=view, mention_author=False)
+        except Exception:
+            logger.exception("rumble_builds_leaderboard: failed to build/render LeaderboardView, falling back to simple list")
+            # Fallback simple textual listing
+            lines = []
+            for rank, (uid, cnt) in enumerate(leaderboard_data, start=1):
                 try:
-                    await interaction.response.edit_message(embed=self._build_embed(self.page), view=self)
+                    user = self.bot.get_user(uid) or await self.bot.fetch_user(uid)
+                    mention = user.mention
                 except Exception:
-                    try:
-                        if interaction.message:
-                            await interaction.message.edit(embed=self._build_embed(self.page), view=self)
-                    except Exception:
-                        pass
-
-            @discord.ui.button(label="<<", style=discord.ButtonStyle.gray)
-            async def first(self, button: discord.ui.Button, interaction: discord.Interaction):
-                self.page = 0
-                await self._update(interaction)
-
-            @discord.ui.button(label="<", style=discord.ButtonStyle.blurple)
-            async def prev(self, button: discord.ui.Button, interaction: discord.Interaction):
-                if self.page > 0:
-                    self.page -= 1
-                    await self._update(interaction)
-                else:
-                    await interaction.response.defer()
-
-            @discord.ui.button(label=">", style=discord.ButtonStyle.blurple)
-            async def next(self, button: discord.ui.Button, interaction: discord.Interaction):
-                if self.page < self.total_pages - 1:
-                    self.page += 1
-                    await self._update(interaction)
-                else:
-                    await interaction.response.defer()
-
-            @discord.ui.button(label=">>", style=discord.ButtonStyle.gray)
-            async def last(self, button: discord.ui.Button, interaction: discord.Interaction):
-                self.page = self.total_pages - 1
-                await self._update(interaction)
-
-            async def on_timeout(self):
-                for child in self.children:
-                    child.disabled = True
-                try:
-                    if self.message:
-                        await self.message.edit(view=self)
-                except Exception:
-                    pass
-
-        view = _Paginator(build_embed_for_page, total_pages)
-        msg = await ctx.reply(embed=initial, view=view, mention_author=False)
-        view.message = msg
+                    mention = f"`{uid}`"
+                lines.append(f"{rank}. {mention} — {cnt} parts")
+            out = "\n".join(lines)
+            await ctx.reply(f"```\n{out}\n```", mention_author=False)
 
     # -------------------------
     # Debug helpers (prefix commands)
