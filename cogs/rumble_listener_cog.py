@@ -52,7 +52,15 @@ class RumbleListenerCog(commands.Cog):
 
     def _load_config_from_dict(self, data: Dict[str, Any]) -> None:
         """Load configuration from dict (runtime or file)."""
-        # Accept plural "rumble_bot_ids" (preferred) or legacy singular "rumble_bot_id"\n        rb = data.get("rumble_bot_ids", data.get("rumble_bot_id", []))\n        if isinstance(rb, (int, str)):\n            rb = [rb]\n        try:\n            self.rumble_bot_ids = list(map(int, rb))\n        except Exception:\n            self.rumble_bot_ids = []\n        self.rumble_bot_id = int(self.rumble_bot_ids[0]) if self.rumble_bot_ids else None
+        # Accept plural "rumble_bot_ids" (preferred) or legacy singular "rumble_bot_id"
+        rb = data.get("rumble_bot_ids", data.get("rumble_bot_id", []))
+        if isinstance(rb, (int, str)):
+            rb = [rb]
+        try:
+            self.rumble_bot_ids = list(map(int, rb))
+        except Exception:
+            self.rumble_bot_ids = []
+        self.rumble_bot_id = int(self.rumble_bot_ids[0]) if self.rumble_bot_ids else None
         self.channel_part_map = {
             int(ch_id): tuple(map(str, val)) for ch_id, val in data.get("channel_part_map", {}).items()
         }
