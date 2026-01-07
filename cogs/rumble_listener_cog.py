@@ -82,6 +82,7 @@ class RumbleListenerCog(commands.Cog):
             CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
             out = {
                 "rumble_bot_ids": self.rumble_bot_ids,
+                    "rumble_bot_id": int(self.rumble_bot_ids[0]) if self.rumble_bot_ids else None,
                 "channel_part_map": {str(k): [v[0], v[1]] for k, v in self.channel_part_map.items()},
             }
             with CONFIG_FILE.open("w", encoding="utf-8") as fh:
