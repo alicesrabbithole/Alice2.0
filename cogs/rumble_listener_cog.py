@@ -1,6 +1,6 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """
-RumbleListenerCog — full patched implementation
+RumbleListenerCog Ã¢â‚¬â€ full patched implementation
 
 Behaviors:
 - Avoid awarding for "session start / participants" embeds.
@@ -52,7 +52,15 @@ class RumbleListenerCog(commands.Cog):
 
     def _load_config_from_dict(self, data: Dict[str, Any]) -> None:
         """Load configuration from dict (runtime or file)."""
-        self.rumble_bot_ids = list(map(int, data.get("rumble_bot_ids", [])))
+        # Accept plural "rumble_bot_ids" (preferred) or legacy singular "rumble_bot_id"
+        rb = data.get("rumble_bot_ids", data.get("rumble_bot_id", []))
+        if isinstance(rb, (int, str)):
+            rb = [rb]
+        try:
+            self.rumble_bot_ids = list(map(int, rb))
+        except Exception:
+            self.rumble_bot_ids = []
+        self.rumble_bot_id = int(self.rumble_bot_ids[0]) if self.rumble_bot_ids else None
         self.channel_part_map = {
             int(ch_id): tuple(map(str, val)) for ch_id, val in data.get("channel_part_map", {}).items()
         }
@@ -299,7 +307,7 @@ class RumbleListenerCog(commands.Cog):
 
         # require a reasonable winner indicator before extracting/awarding
         if not (WINNER_TITLE_RE.search(combined_text) or ADDITIONAL_WIN_RE.search(combined_text)):
-            # no winner keywords present — do not treat bare mentions as wins
+            # no winner keywords present Ã¢â‚¬â€ do not treat bare mentions as wins
             return
 
         try:
