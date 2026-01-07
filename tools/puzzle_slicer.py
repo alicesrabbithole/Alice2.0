@@ -2,12 +2,16 @@
 """
 Slice a source image and set up puzzle files for the bot.
 
-This version:
-- skips copying if source == destination (avoids SameFileError)
-- writes meta["full_image"] and meta["base_image"] as "slug/slug_full.png"
-  (so meta paths are always relative under puzzles/)
-- honors meta.get("base_opacity", 1.0) when rendering preview progress images
-  (alpha is applied to the background image before compositing pieces)
+This version adds an automatic sanity check after slicing that compares each
+piece's dimensions to the expected piece size and reports warnings when pieces
+are unexpectedly small or vary significantly.
+
+See the earlier tool for full usage examples. New CLI flags:
+  --min_fraction FLOAT   : fraction of expected piece size under which to warn (default 0.5)
+  --min_pixels INT       : absolute minimum width/height in pixels under which to warn (default 32)
+
+Warnings are printed to stdout and embedded into qa.html so you can inspect them
+in the preview QA page.
 """
 import os
 from pathlib import Path
@@ -105,29 +109,13 @@ def compute_tile_size_from_full(full_img_path: Path, cols: int, requested_tile_s
             return requested_tile_size
         return max(1, full.width // cols)
 
-def _apply_opacity_to_image(img: Image.Image, opacity: float) -> Image.Image:
-    """Return a copy of img with its alpha scaled by opacity (0.0..1.0)."""
-    if opacity >= 0.999:
-        return img.copy()
-    if opacity <= 0.0:
-        # fully transparent image of same size
-        return Image.new("RGBA", img.size, (0,0,0,0))
-    r, g, b, a = img.split()
-    a = a.point(lambda p: int(p * opacity))
-    img2 = Image.merge("RGBA", (r, g, b, a))
-    return img2
-
 def render_progress_images(pieces_dir: Path, base_img_path: Path, full_img_path: Path, rows: int, cols: int,
-                           tile_size: int, output_dir: Path, samples: List[int], base_opacity: float = 1.0) -> List[Path]:
+                           tile_size: int, output_dir: Path, samples: List[int]) -> List[Path]:
     """
     Create composed progress images for each sample (list of counts, e.g., [0, 5, 12, 49]).
     Save as progress_{count:03d}.png in output_dir and return list of saved Paths.
-
-    This function will apply base_opacity to the chosen background image before
-    compositing pieces so previews honor fading / transparency.
     """
     output_dir.mkdir(parents=True, exist_ok=True)
-    # choose background: prefer base image if present, otherwise full image
     bg_path = base_img_path if base_img_path and base_img_path.exists() else full_img_path
     saved = []
     piece_files = sorted([p for p in pieces_dir.iterdir() if p.is_file() and p.suffix.lower() == ".png"])
@@ -142,12 +130,8 @@ def render_progress_images(pieces_dir: Path, base_img_path: Path, full_img_path:
     total_expected = rows * cols
     for count in samples:
         cnt = min(max(0, int(count)), len(piece_files), total_expected)
-        # load background and resize first
         with Image.open(bg_path).convert("RGBA") as bg:
             composed = bg.resize((cols * tile_size, rows * tile_size), Image.Resampling.LANCZOS)
-            # apply requested opacity to the background
-            composed = _apply_opacity_to_image(composed, float(base_opacity))
-            # composite pieces on top
             for idx in range(cnt):
                 try:
                     p = piece_files[idx]
@@ -159,8 +143,7 @@ def render_progress_images(pieces_dir: Path, base_img_path: Path, full_img_path:
                     r, c = divmod(pos, cols)
                     composed.alpha_composite(piece_resized, (c * tile_size, r * tile_size))
             out_path = output_dir / f"progress_{cnt:03d}.png"
-            # Ensure we save as PNG so alpha is preserved
-            composed.save(out_path, format="PNG")
+            composed.save(out_path)
             saved.append(out_path)
     return saved
 
@@ -266,46 +249,13 @@ def open_with_default(path: Path):
     except Exception as e:
         print("Could not open automatically:", e)
 
-def write_meta(puzzle_root: Path, display_name: str, rows: int, cols: int, tile_size: Optional[int],
-               full_rel: Optional[str] = None, base_rel: Optional[str] = None, base_opacity: Optional[float] = None) -> dict:
-    """
-    Write a meta.json inside puzzle_root. full_rel / base_rel should be relative paths
-    under the puzzles/ root (e.g. "slug/slug_full.png"). If provided, base_opacity
-    is preserved into the meta.
-    """
+def write_meta(puzzle_root: Path, display_name: str, rows: int, cols: int, tile_size: Optional[int]) -> dict:
     meta = {"display_name": display_name, "rows": rows, "cols": cols}
     if tile_size:
         meta["tile_size"] = int(tile_size)
-    if base_rel:
-        meta["base_image"] = base_rel
-    if full_rel:
-        meta["full_image"] = full_rel
-    if base_opacity is not None:
-        try:
-            meta["base_opacity"] = float(base_opacity)
-        except Exception:
-            pass
     meta_path = puzzle_root / "meta.json"
     meta_path.write_text(json.dumps(meta, indent=2), encoding="utf-8")
     return meta
-
-def _load_existing_meta_if_any(puzzle_root: Path, slug: str) -> dict:
-    """
-    If meta.json exists and contains either the inner object or a dict keyed by slug,
-    return the inner meta. Otherwise return {}.
-    """
-    meta_path = puzzle_root / "meta.json"
-    if not meta_path.exists():
-        return {}
-    try:
-        raw = json.loads(meta_path.read_text(encoding="utf-8"))
-        if isinstance(raw, dict) and slug in raw and isinstance(raw[slug], dict):
-            return raw[slug]
-        if isinstance(raw, dict):
-            return raw
-    except Exception:
-        pass
-    return {}
 
 def main():
     parser = argparse.ArgumentParser(description="Slice a puzzle image and optionally preview and finalize.")
@@ -342,41 +292,10 @@ def main():
 
     dest_full = puzzle_root / f"{puzzle_slug}_full.png"
     dest_base = puzzle_root / f"{puzzle_slug}_base.png"
+    shutil.copy2(args.full_image, dest_full)
+    shutil.copy2(args.base_image, dest_base)
 
-    # copy files, but skip copying when source == destination (prevents SameFileError)
-    try:
-        src_full = Path(args.full_image)
-        if src_full.resolve() != dest_full.resolve():
-            shutil.copy2(src_full, dest_full)
-        else:
-            print("Full image source equals destination — skipping copy.")
-    except Exception:
-        # if resolve fails for some reason, attempt a normal copy (will surface other errors)
-        try:
-            shutil.copy2(args.full_image, dest_full)
-        except Exception as e:
-            print("Warning: failed to copy full image:", e)
-
-    try:
-        src_base = Path(args.base_image)
-        if src_base.resolve() != dest_base.resolve():
-            shutil.copy2(src_base, dest_base)
-        else:
-            print("Base image source equals destination — skipping copy.")
-    except Exception:
-        try:
-            shutil.copy2(args.base_image, dest_base)
-        except Exception as e:
-            print("Warning: failed to copy base image:", e)
-
-    # preserve base_opacity (and any other keys) from an existing meta if present
-    existing_meta = _load_existing_meta_if_any(puzzle_root, puzzle_slug)
-    preserved_opacity = existing_meta.get("base_opacity")
-
-    # write meta so full_image/base_image always point to slug/slug_full.png under puzzles root
-    full_rel = f"{puzzle_slug}/{puzzle_slug}_full.png"
-    base_rel = f"{puzzle_slug}/{puzzle_slug}_base.png"
-    meta = write_meta(puzzle_root, args.display_name, rows, cols, args.tile_size, full_rel=full_rel, base_rel=base_rel, base_opacity=preserved_opacity)
+    meta = write_meta(puzzle_root, args.display_name, rows, cols, args.tile_size)
 
     num = slice_puzzle(dest_full, pieces_dir, rows, cols, zero_pad=True)
     print(f"Sliced full image -> {num} pieces at {pieces_dir}")
@@ -417,8 +336,7 @@ def main():
 
     tile_size = compute_tile_size_from_full(dest_full, cols, args.tile_size)
     progress_dir = puzzle_root
-    base_opacity = float(meta.get("base_opacity", 1.0))
-    progress_images = render_progress_images(pieces_dir, dest_base, dest_full, rows, cols, tile_size, progress_dir, samples, base_opacity=base_opacity)
+    progress_images = render_progress_images(pieces_dir, dest_base, dest_full, rows, cols, tile_size, progress_dir, samples)
     print("Rendered progress sample images:", ", ".join(p.name for p in progress_images))
 
     qa_html = generate_qa_html(puzzle_root, pieces_dir, preview_path, progress_images, meta, warnings)
