@@ -37,43 +37,19 @@ def render_progress_image(bot_data: Dict, puzzle_key: str, collected_piece_ids: 
     base_path = (config.PUZZLES_ROOT / base_rel) if base_rel else None
     alt_full_path = (config.PUZZLES_ROOT / full_rel) if full_rel else None
 
-    # opacity may be specified in meta as a float 0.0..1.0 (default 1.0)
-    try:
-        opacity = float(meta.get("base_opacity", 1.0))
-    except Exception:
-        opacity = 1.0
-    opacity = max(0.0, min(1.0, opacity))
-
-    base_img = None
+    base_path_to_use = None
     if base_path and base_path.exists():
-        logger.info("Trying to open base image at: %s", base_path)
-        try:
-            with PILImage.open(base_path).convert("RGBA") as tmp:
-                resized = tmp.resize((img_width, img_height), PILImage.Resampling.LANCZOS)
-                if opacity < 1.0:
-                    # scale alpha channel
-                    r, g, b, a = resized.split()
-                    a = a.point(lambda p: int(p * opacity))
-                    resized.putalpha(a)
-                base_img = resized.copy()
-                logger.info("Loaded base image: %s (opacity=%s)", base_path, opacity)
-        except Exception:
-            logger.exception("Failed to open/resize base image: %s", base_path)
-            base_img = PILImage.new("RGBA", (img_width, img_height), (30, 30, 30, 255))
+        base_path_to_use = base_path
     elif alt_full_path and alt_full_path.exists():
-        # Use the full image as the base (faded if opacity < 1.0)
-        logger.info("Base image not found; using full image as base: %s", alt_full_path)
+        base_path_to_use = alt_full_path
+
+    if base_path_to_use:
+        logger.info("Trying to open base image at: %s", base_path_to_use)
         try:
-            with PILImage.open(alt_full_path).convert("RGBA") as tmp:
-                resized = tmp.resize((img_width, img_height), PILImage.Resampling.LANCZOS)
-                if opacity < 1.0:
-                    r, g, b, a = resized.split()
-                    a = a.point(lambda p: int(p * opacity))
-                    resized.putalpha(a)
-                base_img = resized.copy()
-                logger.info("Loaded full image as base: %s (opacity=%s)", alt_full_path, opacity)
+            base_img = PILImage.open(base_path_to_use).convert("RGBA").resize((img_width, img_height), PILImage.Resampling.LANCZOS)
+            logger.info("Loaded base image: %s", base_path_to_use)
         except Exception:
-            logger.exception("Failed to open/resize full image: %s", alt_full_path)
+            logger.exception("Failed to open/resize base image: %s", base_path_to_use)
             base_img = PILImage.new("RGBA", (img_width, img_height), (30, 30, 30, 255))
     else:
         logger.warning("Base/full image not found for puzzle %s; using placeholder.", puzzle_key)
@@ -133,10 +109,9 @@ def render_progress_image(bot_data: Dict, puzzle_key: str, collected_piece_ids: 
     if total_pieces > 0 and collected_count >= total_pieces:
         if alt_full_path and alt_full_path.exists():
             try:
-                with PILImage.open(alt_full_path).convert("RGBA") as full_img:
-                    full_img = full_img.resize((img_width, img_height), PILImage.Resampling.LANCZOS)
-                    base_img = full_img.copy()
-                    logger.info("Puzzle complete; using full image as final display for puzzle %s", puzzle_key)
+                logger.info("Trying to open completed puzzle image at: %s", alt_full_path)
+                full_img = PILImage.open(alt_full_path).convert("RGBA").resize((img_width, img_height), PILImage.Resampling.LANCZOS)
+                base_img = full_img
             except Exception:
                 logger.exception("Failed to load completed puzzle image: %s", alt_full_path)
 
