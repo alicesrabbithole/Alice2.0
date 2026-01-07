@@ -1,13 +1,3 @@
-#!/usr/bin/env python3
-"""
-StockingCog - refactored full cog
-
-Copy-paste this file to cogs/stocking_cog.py (replace your existing cog).
-Restart/reload the bot after saving. This cog:
- - Uses data/stockings.json (self._data) as the canonical source for parts/leaderboard.
- - Provides /mysnowman and rumble_builds_leaderboard (hybrid), plus debug prefix commands.
- - Normalizes parts, sets completed/completed_at on award, and runs a startup integrity check.
-"""
 from __future__ import annotations
 
 import asyncio
@@ -16,33 +6,41 @@ import json
 import logging
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, Any, Optional, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import discord
 from discord import app_commands
 from discord.ext import commands
-from discord.utils import utcnow
 
-# Reuse puzzle UI views for consistent leaderboard UI/behavior
-from ui.views import open_leaderboard_view, LeaderboardView
-
+# single logger definition — put this once, near the top
 logger = logging.getLogger(__name__)
 
-# Paths
+# -------------------------
+# Module-level constants / helpers
+# -------------------------
 ROOT = Path.cwd()
 DATA_DIR = ROOT / "data"
 DATA_DIR.mkdir(parents=True, exist_ok=True)
+
 ASSETS_DIR = DATA_DIR / "stocking_assets"
 ASSETS_DIR.mkdir(parents=True, exist_ok=True)
 
-STOCKINGS_FILE = DATA_DIR / "stockings.json"
+STOCKINGS_FILE = DATA_DIR / "stockings.json"          # legacy runtime path (fallback only)
 STICKERS_DEF_FILE = DATA_DIR / "stickers.json"
 BUILDABLES_DEF_FILE = DATA_DIR / "buildables.json"
+COLLECTED_FILE = DATA_DIR / "collected_pieces.json"  # canonical single-file persistence
 
 DEFAULT_CAPACITY = 12
-AUTO_ROLE_ID: Optional[int] = 1448857904282206208
+AUTO_ROLE_ID: Optional[int] = None  # set to your guild role id if desired
 
 _save_lock = asyncio.Lock()
+
+# Try to import utcnow from discord.utils, fallback if not present
+try:
+    from discord.utils import utcnow  # type: ignore
+except Exception:
+    def utcnow():
+        return datetime.utcnow().replace(tzinfo=timezone.utc)
 
 # Theme helpers (optional)
 try:
@@ -61,6 +59,12 @@ try:
 except Exception:
     render_stocking_image_auto = None
 
+# Best-effort import of leaderboard UI (puzzles/other cog helper)
+try:
+    from ui.views import open_leaderboard_view, LeaderboardView
+except Exception:
+    open_leaderboard_view = None
+    LeaderboardView = None
 
 class StockingCog(commands.Cog, name="StockingCog"):
     def __init__(self, bot: commands.Bot):
@@ -68,25 +72,61 @@ class StockingCog(commands.Cog, name="StockingCog"):
         self._data: Dict[str, Dict[str, Any]] = {}
         self._stickers_def: Dict[str, Any] = {}
         self._buildables_def: Dict[str, Any] = {}
+        # Load persisted state (COLLECTED_FILE preferred)
         self._load_all()
         logger.info("StockingCog initialized (data keys sample=%s)", list(self._data.keys())[:5])
 
     # -------------------------
-    # Persistence
+    # Persistence helpers
+    # -------------------------
+    def _normalize_user_pieces(self, data: Dict[str, Any]) -> None:
+        """
+        Ensure user_pieces entries are deterministic:
+         - remove duplicates while preserving insertion order
+         - ensure parts are lowercase strings
+        Modifies `data` in place.
+        """
+        up = data.get("user_pieces")
+        if not isinstance(up, dict):
+            return
+
+        for uid, builds in list(up.items()):
+            if not isinstance(builds, dict):
+                continue
+            for buildable, parts in list(builds.items()):
+                if not isinstance(parts, list):
+                    continue
+                seen = {}
+                normalized: List[str] = []
+                for p in parts:
+                    pl = str(p).lower()
+                    if pl not in seen:
+                        seen[pl] = True
+                        normalized.append(pl)
+                builds[buildable] = normalized
+
+        data["user_pieces"] = up
+
+    # -------------------------
+    # Loading + integrity
     # -------------------------
     def _load_all(self) -> None:
-        # stockings
+        # Prefer canonical COLLECTED_FILE if present, else fall back to legacy STOCKINGS_FILE.
         try:
-            if STOCKINGS_FILE.exists():
+            if COLLECTED_FILE.exists():
+                with COLLECTED_FILE.open("r", encoding="utf-8") as fh:
+                    d = json.load(fh) or {}
+                    self._data = d if isinstance(d, dict) else {}
+            elif STOCKINGS_FILE.exists():
                 with STOCKINGS_FILE.open("r", encoding="utf-8") as fh:
                     self._data = json.load(fh) or {}
             else:
                 self._data = {}
         except Exception:
-            logger.exception("Failed to load stockings data, starting empty")
+            logger.exception("Failed to load collected/stockings data, starting empty")
             self._data = {}
 
-        # stickers
+        # stickers definitions
         try:
             if STICKERS_DEF_FILE.exists():
                 with STICKERS_DEF_FILE.open("r", encoding="utf-8") as fh:
@@ -97,7 +137,7 @@ class StockingCog(commands.Cog, name="StockingCog"):
             logger.exception("Failed to load stickers definitions")
             self._stickers_def = {}
 
-        # buildables (create default snowman if missing)
+        # buildables definitions (create default snowman if missing)
         try:
             if BUILDABLES_DEF_FILE.exists():
                 with BUILDABLES_DEF_FILE.open("r", encoding="utf-8") as fh:
@@ -128,7 +168,7 @@ class StockingCog(commands.Cog, name="StockingCog"):
             logger.exception("Failed to load buildables def")
             self._buildables_def = {}
 
-        # --- Data integrity: normalize stored parts and set completed flags if they already have all parts
+        # Data integrity: normalize stored parts and set completion flags
         try:
             changed = False
             ts = None
@@ -137,20 +177,18 @@ class StockingCog(commands.Cog, name="StockingCog"):
                 for bkey, bdef in (self._buildables_def or {}).items():
                     brec = buildables_rec.get(bkey) or {}
                     parts = brec.get("parts", []) or []
-                    # normalize parts to lowercase, unique
-                    parts_norm = []
-                    seen = set()
+                    seen = {}
+                    parts_norm: List[str] = []
                     for p in parts:
                         pl = str(p).lower()
                         if pl not in seen:
-                            seen.add(pl)
+                            seen[pl] = True
                             parts_norm.append(pl)
                     if parts_norm != parts:
                         brec["parts"] = parts_norm
                         buildables_rec[bkey] = brec
                         changed = True
 
-                    # completion check: mark completed if they have all defined parts
                     parts_def = (bdef.get("parts", {}) or {})
                     defined_keys = [k for k in parts_def.keys()]
                     if defined_keys:
@@ -167,32 +205,53 @@ class StockingCog(commands.Cog, name="StockingCog"):
                                 brec["completed_at"] = ts
                             buildables_rec[bkey] = brec
                             changed = True
+                rec["buildables"] = buildables_rec
+                self._data[uid_str] = rec
 
             if changed:
-                # persist changes (async if running)
                 try:
-                    import asyncio as _asyncio
-                    loop = _asyncio.get_event_loop()
+                    loop = asyncio.get_event_loop()
                     if loop and loop.is_running():
                         loop.create_task(self._save())
                     else:
-                        with STOCKINGS_FILE.open("w", encoding="utf-8") as fh:
+                        COLLECTED_FILE.parent.mkdir(parents=True, exist_ok=True)
+                        with COLLECTED_FILE.open("w", encoding="utf-8") as fh:
                             json.dump(self._data, fh, ensure_ascii=False, indent=2)
                 except Exception:
-                    with STOCKINGS_FILE.open("w", encoding="utf-8") as fh:
+                    COLLECTED_FILE.parent.mkdir(parents=True, exist_ok=True)
+                    with COLLECTED_FILE.open("w", encoding="utf-8") as fh:
                         json.dump(self._data, fh, ensure_ascii=False, indent=2)
         except Exception:
             logger.exception("_load_all: integrity check failed")
 
     async def _save(self) -> None:
+        """
+        Persist current in-memory stocking data to COLLECTED_FILE only.
+        Normalizes user_pieces before saving. Uses utils.db_utils.save_data() if available,
+        otherwise writes COLLECTED_FILE directly.
+        """
         async with _save_lock:
             try:
-                STOCKINGS_FILE.parent.mkdir(parents=True, exist_ok=True)
-                with STOCKINGS_FILE.open("w", encoding="utf-8") as fh:
-                    json.dump(self._data, fh, ensure_ascii=False, indent=2)
-                logger.debug("_save: wrote %s", STOCKINGS_FILE)
+                self._normalize_user_pieces(self._data)
+                COLLECTED_FILE.parent.mkdir(parents=True, exist_ok=True)
+
+                try:
+                    from utils import db_utils  # type: ignore
+                    loop = asyncio.get_event_loop()
+                    await loop.run_in_executor(None, lambda: db_utils.save_data(self._data))
+                    logger.debug("_save: wrote canonical collected_pieces.json via utils.db_utils.save_data()")
+                except Exception:
+                    collected_path = COLLECTED_FILE
+                    loop = asyncio.get_event_loop()
+
+                    def _write_collected():
+                        with open(collected_path, "w", encoding="utf-8") as fh:
+                            json.dump(self._data, fh, ensure_ascii=False, indent=2)
+
+                    await loop.run_in_executor(None, _write_collected)
+                    logger.debug("_save: wrote %s", collected_path)
             except Exception:
-                logger.exception("Failed to save stockings data")
+                logger.exception("Unexpected error while saving collected_pieces.json")
 
     # -------------------------
     # Utilities
@@ -217,7 +276,7 @@ class StockingCog(commands.Cog, name="StockingCog"):
         if all(str(p).isdigit() for p in parts_sorted):
             s = ", ".join(str(int(p)) for p in parts_sorted)
         else:
-            out = []
+            out: List[str] = []
             for p in parts_sorted:
                 try:
                     em = PART_EMOJI.get(p.lower()) if isinstance(PART_EMOJI, dict) else None
@@ -268,7 +327,6 @@ class StockingCog(commands.Cog, name="StockingCog"):
         user = self._ensure_user(user_id)
         brec = user.setdefault("buildables", {}).setdefault(buildable_key, {"parts": [], "completed": False})
 
-        # if user already has the part (case-insensitive), skip announcement
         try:
             existing = {str(p).lower() for p in brec.get("parts", [])}
             if str(part_key).strip().lower() in existing:
@@ -289,11 +347,9 @@ class StockingCog(commands.Cog, name="StockingCog"):
         try:
             parts_list = brec.setdefault("parts", [])
             new_part = str(part_key).strip()
-            # avoid duplicate (case-insensitive)
             if new_part.lower() not in {str(p).lower() for p in parts_list}:
                 parts_list.append(new_part)
-            # normalize stored parts to lowercase unique list
-            normalized = []
+            normalized: List[str] = []
             seen = set()
             for p in parts_list:
                 pl = str(p).lower()
@@ -302,7 +358,6 @@ class StockingCog(commands.Cog, name="StockingCog"):
                     normalized.append(pl)
             brec["parts"] = normalized
 
-            # recompute completion and set completed_at if needed
             try:
                 capacity_slots = int(build_def.get("capacity_slots", len(parts_def)))
             except Exception:
@@ -316,7 +371,6 @@ class StockingCog(commands.Cog, name="StockingCog"):
                     except Exception:
                         brec["completed_at"] = datetime.utcnow().replace(tzinfo=timezone.utc).isoformat()
 
-            # persist canonical changes to stockings.json
             await self._save()
         except Exception:
             logger.exception("award_part: normalization/persist step failed")
@@ -336,39 +390,33 @@ class StockingCog(commands.Cog, name="StockingCog"):
                 existing_parts.add(str(p).lower())
             up[uid_str][buildable_key] = list(existing_parts)
 
-            # ensure buildables metadata present in botdata
             botdata.setdefault("buildables", {})
             try:
                 if self._buildables_def:
-                    # merge without overwriting existing keys
                     for k, v in (self._buildables_def or {}).items():
                         if k not in botdata["buildables"]:
                             botdata["buildables"][k] = v
             except Exception:
                 logger.exception("award_part: merging buildables_def into bot.data failed")
 
-            # prefer utils.db_utils.save_data if available
             try:
-                from utils.db_utils import save_data
+                from utils.db_utils import save_data  # type: ignore
                 save_data(botdata)
             except Exception:
-                # fallback: write to data/collected_pieces.json
-                collected_file = DATA_DIR / "collected_pieces.json"
                 try:
-                    with collected_file.open("w", encoding="utf-8") as fh:
+                    with COLLECTED_FILE.open("w", encoding="utf-8") as fh:
                         json.dump(botdata, fh, ensure_ascii=False, indent=2)
                 except Exception:
                     logger.exception("award_part: failed to persist bot.data fallback file")
         except Exception:
             logger.exception("award_part: failed to persist into bot.data model")
 
-        # attempt to render composite (best-effort)
         try:
             _ = await self.render_buildable(user_id, buildable_key)
         except Exception:
             pass
 
-        # announce award (short embed)
+        # announce award
         if announce and channel:
             member = None
             display = None
@@ -433,7 +481,6 @@ class StockingCog(commands.Cog, name="StockingCog"):
                                 logger.warning("award_part: cannot grant role %s in guild %s (hierarchy)", role_id, guild.id)
                             else:
                                 await member.add_roles(role, reason=f"{buildable_key} completed")
-                                # persist role_granted flag
                                 try:
                                     rec = self._ensure_user(user_id)
                                     brec2 = rec.setdefault("buildables", {}).setdefault(buildable_key, {})
@@ -447,7 +494,6 @@ class StockingCog(commands.Cog, name="StockingCog"):
                                     await self._save()
                                 except Exception:
                                     logger.exception("award_part: failed to persist role_granted flag")
-                                # announce completion
                                 try:
                                     if channel and getattr(channel, "guild", None):
                                         await asyncio.sleep(0.4)
@@ -496,7 +542,6 @@ class StockingCog(commands.Cog, name="StockingCog"):
     # -------------------------
     async def render_buildable(self, user_id: int, buildable_key: str) -> Optional[Path]:
         """Render composite PNG for a user's buildable. Returns path or None."""
-        # Safer plugin handling: plugin may be sync, async, or return None
         if render_stocking_image_auto:
             try:
                 maybe = render_stocking_image_auto(self._data, user_id, buildable_key, ASSETS_DIR)
@@ -609,430 +654,423 @@ class StockingCog(commands.Cog, name="StockingCog"):
             logger.exception("render_buildable: failed to save composite to %s", out_path)
             return None
 
-    # -------------------------
-    # /mysnowman command
-    @commands.hybrid_command(name="mysnowman", description="Show your snowman assembled from collected parts.")
-    async def mysnowman(self, ctx: commands.Context):
-        user = ctx.author
-        user_id = getattr(user, "id", None)
-        if not user_id:
-            await self._ephemeral_reply(ctx, "Could not determine your user id.")
-            return
-
-        build_key = "snowman"
-        build_def = self._buildables_def.get(build_key)
-        if not build_def:
-            await self._ephemeral_reply(ctx, "No snowman buildable configured.")
-            return
-
-        rec = self._ensure_user(user_id)
-        b = rec.get("buildables", {}).get(build_key, {"parts": [], "completed": False})
-        user_parts = list(dict.fromkeys(b.get("parts", []) or []))
-        parts_def = build_def.get("parts", {}) or {}
-        all_parts = list(parts_def.keys())
-        capacity_slots = int(build_def.get("capacity_slots", len(all_parts)))
-
-        is_complete = bool(b.get("completed")) or (len(user_parts) >= capacity_slots or len(user_parts) >= len(all_parts))
-        if is_complete:
-            try:
-                await self._grant_buildable_completion_role(user_id, build_key, ctx.guild, ctx.channel)
-            except Exception:
-                logger.exception("mysnowman: error while attempting to grant completion role for user %s", user_id)
-
-        composite_path = None
-        try:
-            composite_path = await self.render_buildable(user_id, build_key)
-        except Exception:
-            composite_path = None
-
-        try:
-            embed_color = discord.Color(DEFAULT_COLOR) if isinstance(DEFAULT_COLOR, int) else (DEFAULT_COLOR or discord.Color.dark_blue())
-        except Exception:
-            embed_color = discord.Color.dark_blue()
-
-        title = "☃️ Snowman ☃️"
-        embed = discord.Embed(title=title, color=embed_color, timestamp=discord.utils.utcnow())
-
-        def _emoji_or_name(p: str) -> str:
-            try:
-                e = PART_EMOJI.get(p.lower()) if isinstance(PART_EMOJI, dict) else None
-                if str(p).isdigit():
-                    return str(p)
-                return e if e else p
-            except Exception:
-                return p
-
-        collected_items = [_emoji_or_name(p) for p in user_parts]
-        missing_parts = [p for p in all_parts if p not in user_parts]
-        missing_items = [_emoji_or_name(p) for p in missing_parts]
-
-        collected_line = " ".join(collected_items) if collected_items else "(none)"
-        missing_line = " ".join(missing_items) if missing_items else "(none)"
-
-        embed.add_field(name="Collected", value=collected_line, inline=False)
-        embed.add_field(name="Missing", value=missing_line, inline=False)
-
-        if composite_path and composite_path.exists():
-            try:
-                file = discord.File(composite_path, filename=composite_path.name)
-                embed.set_image(url=f"attachment://{composite_path.name}")
-                await ctx.reply(embed=embed, file=file, mention_author=False)
+        # -------------------------
+        # /mysnowman command
+        @commands.hybrid_command(name="mysnowman", description="Show your snowman assembled from collected parts.")
+        async def mysnowman(self, ctx: commands.Context):
+            user = ctx.author
+            user_id = getattr(user, "id", None)
+            if not user_id:
+                await self._ephemeral_reply(ctx, "Could not determine your user id.")
                 return
-            except Exception:
-                logger.exception("mysnowman: failed to send composite image, falling back")
 
-        candidate = None
-        base_rel = build_def.get("base")
-        if base_rel:
-            base_path = Path(base_rel)
-            if not base_path.exists():
-                base_path = ASSETS_DIR / base_rel
-            if not base_path.exists():
-                base_path = ROOT / base_rel
-            if base_path.exists():
-                candidate = base_path
-
-        if not candidate and user_parts:
-            last = user_parts[-1]
-            pdef = parts_def.get(last, {}) or {}
-            ppath = Path(pdef.get("file", "")) if pdef.get("file") else None
-            if not ppath or not ppath.exists():
-                ppath = ASSETS_DIR / pdef.get("file", "")
-            if not ppath or not ppath.exists():
-                ppath = ASSETS_DIR / f"stickers/{last}.png"
-            if ppath.exists():
-                candidate = ppath
-
-        if candidate:
-            try:
-                f = discord.File(candidate, filename=candidate.name)
-                embed.set_image(url=f"attachment://%s" % candidate.name)
-                await ctx.reply(embed=embed, file=f, mention_author=False)
+            build_key = "snowman"
+            build_def = self._buildables_def.get(build_key)
+            if not build_def:
+                await self._ephemeral_reply(ctx, "No snowman buildable configured.")
                 return
-            except Exception:
-                logger.exception("mysnowman: failed to send fallback image %s", candidate)
 
-        try:
-            await ctx.reply(embed=embed, mention_author=False)
-        except Exception:
-            await self._ephemeral_reply(ctx, f"You have {len(user_parts)} parts: {', '.join(user_parts) if user_parts else '(none)'}.")
+            rec = self._ensure_user(user_id)
+            b = rec.get("buildables", {}).get(build_key, {"parts": [], "completed": False})
+            user_parts = list(dict.fromkeys(b.get("parts", []) or []))
+            parts_def = build_def.get("parts", {}) or {}
+            all_parts = list(parts_def.keys())
+            capacity_slots = int(build_def.get("capacity_slots", len(all_parts)))
 
-    # -------------------------
-    # Leaderboard command (now uses the same LeaderboardView used by the puzzles cog)
-    @commands.hybrid_command(
-        name="rumble_builds_leaderboard",
-        aliases=["sled", "stocking_leaderboard", "stockingboard"],
-        description="Show stocking leaderboard for this guild (default: snowman)."
-    )
-    @commands.guild_only()
-    @app_commands.describe(buildable="Which buildable to inspect (defaults to 'snowman')")
-    async def rumble_builds_leaderboard(self, ctx: commands.Context, buildable: Optional[str] = "snowman"):
-        await ctx.defer(ephemeral=False)
-
-        buildable = (buildable or "snowman").strip()
-        build_def = (self._buildables_def or {}).get(buildable, {}) or {}
-        parts_def = build_def.get("parts", {}) or {}
-
-        # Debug log to confirm which data source we'll inspect
-        logger.info("LB RUN: buildable=%s guild=%s persisted_users=%d has_botdata=%s",
-                    buildable, getattr(ctx.guild, "id", None), len(self._data or {}), bool(getattr(self.bot, "data", None)))
-
-        interaction = getattr(ctx, "interaction", None)
-        if interaction:
-            # Use the standard open_leaderboard_view for interaction (same UX as puzzles)
-            try:
-                return await open_leaderboard_view(self.bot, interaction, buildable)
-            except Exception:
-                logger.exception("rumble_builds_leaderboard: open_leaderboard_view failed, falling back to non-interaction path")
-
-        # Build leaderboard_data: list of (uid:int, count:int)
-        leaderboard_map: Dict[int, int] = {}
-
-        # Prefer persisted stockings.json entries
-        try:
-            for uid_str, rec in (self._data or {}).items():
+            is_complete = bool(b.get("completed")) or (
+                        len(user_parts) >= capacity_slots or len(user_parts) >= len(all_parts))
+            if is_complete:
                 try:
-                    uid = int(uid_str)
+                    await self._grant_buildable_completion_role(user_id, build_key, ctx.guild, ctx.channel)
                 except Exception:
-                    continue
-                brec = ((rec.get("buildables") or {}).get(buildable) or {})
-                parts = brec.get("parts", []) or []
-                if parts:
-                    leaderboard_map[uid] = max(leaderboard_map.get(uid, 0), len(parts))
-        except Exception:
-            logger.exception("rumble_builds_leaderboard: error reading self._data")
+                    logger.exception("mysnowman: error while attempting to grant completion role for user %s", user_id)
 
-        # Fallback: runtime bot.data.user_pieces (if no persisted data found for those users)
-        if not leaderboard_map:
+            composite_path = None
             try:
-                all_user_pieces = (getattr(self.bot, "data", {}) or {}).get("user_pieces", {}) or {}
-                for user_id_str, user_puzzles in all_user_pieces.items():
+                composite_path = await self.render_buildable(user_id, build_key)
+            except Exception:
+                composite_path = None
+
+            try:
+                embed_color = discord.Color(DEFAULT_COLOR) if isinstance(DEFAULT_COLOR, int) else (
+                            DEFAULT_COLOR or discord.Color.dark_blue())
+            except Exception:
+                embed_color = discord.Color.dark_blue()
+
+            title = "☃️ Snowman ☃️"
+            embed = discord.Embed(title=title, color=embed_color, timestamp=discord.utils.utcnow())
+
+            def _emoji_or_name(p: str) -> str:
+                try:
+                    e = PART_EMOJI.get(p.lower()) if isinstance(PART_EMOJI, dict) else None
+                    if str(p).isdigit():
+                        return str(p)
+                    return e if e else p
+                except Exception:
+                    return p
+
+            collected_items = [_emoji_or_name(p) for p in user_parts]
+            missing_parts = [p for p in all_parts if p not in user_parts]
+            missing_items = [_emoji_or_name(p) for p in missing_parts]
+
+            collected_line = " ".join(collected_items) if collected_items else "(none)"
+            missing_line = " ".join(missing_items) if missing_items else "(none)"
+
+            embed.add_field(name="Collected", value=collected_line, inline=False)
+            embed.add_field(name="Missing", value=missing_line, inline=False)
+
+            if composite_path and composite_path.exists():
+                try:
+                    file = discord.File(composite_path, filename=composite_path.name)
+                    embed.set_image(url=f"attachment://{composite_path.name}")
+                    await ctx.reply(embed=embed, file=file, mention_author=False)
+                    return
+                except Exception:
+                    logger.exception("mysnowman: failed to send composite image, falling back")
+
+            candidate = None
+            base_rel = build_def.get("base")
+            if base_rel:
+                base_path = Path(base_rel)
+                if not base_path.exists():
+                    base_path = ASSETS_DIR / base_rel
+                if not base_path.exists():
+                    base_path = ROOT / base_rel
+                if base_path.exists():
+                    candidate = base_path
+
+            if not candidate and user_parts:
+                last = user_parts[-1]
+                pdef = parts_def.get(last, {}) or {}
+                ppath = Path(pdef.get("file", "")) if pdef.get("file") else None
+                if not ppath or not ppath.exists():
+                    ppath = ASSETS_DIR / pdef.get("file", "")
+                if not ppath or not ppath.exists():
+                    ppath = ASSETS_DIR / f"stickers/{last}.png"
+                if ppath.exists():
+                    candidate = ppath
+
+            if candidate:
+                try:
+                    f = discord.File(candidate, filename=candidate.name)
+                    embed.set_image(url=f"attachment://%s" % candidate.name)
+                    await ctx.reply(embed=embed, file=f, mention_author=False)
+                    return
+                except Exception:
+                    logger.exception("mysnowman: failed to send fallback image %s", candidate)
+
+            try:
+                await ctx.reply(embed=embed, mention_author=False)
+            except Exception:
+                await self._ephemeral_reply(ctx,
+                                            f"You have {len(user_parts)} parts: {', '.join(user_parts) if user_parts else '(none)'}.")
+
+        # -------------------------
+        # Leaderboard command
+        @commands.hybrid_command(
+            name="rumble_builds_leaderboard",
+            aliases=["sled", "stocking_leaderboard", "stockingboard"],
+            description="Show stocking leaderboard for this guild (default: snowman)."
+        )
+        @commands.guild_only()
+        @app_commands.describe(buildable="Which buildable to inspect (defaults to 'snowman')")
+        async def rumble_builds_leaderboard(self, ctx: commands.Context, buildable: Optional[str] = "snowman"):
+            await ctx.defer(ephemeral=False)
+
+            buildable = (buildable or "snowman").strip()
+            build_def = (self._buildables_def or {}).get(buildable, {}) or {}
+            parts_def = build_def.get("parts", {}) or {}
+
+            logger.info("LB RUN: buildable=%s guild=%s persisted_users=%d has_botdata=%s",
+                        buildable, getattr(ctx.guild, "id", None), len(self._data or {}),
+                        bool(getattr(self.bot, "data", None)))
+
+            interaction = getattr(ctx, "interaction", None)
+            if interaction and open_leaderboard_view:
+                try:
+                    return await open_leaderboard_view(self.bot, interaction, buildable)
+                except Exception:
+                    logger.exception("rumble_builds_leaderboard: open_leaderboard_view failed")
+
+            leaderboard_map: Dict[int, int] = {}
+
+            try:
+                for uid_str, rec in (self._data or {}).items():
                     try:
-                        uid = int(user_id_str)
+                        uid = int(uid_str)
                     except Exception:
                         continue
-                    parts = (user_puzzles or {}).get(buildable, []) or []
+                    brec = ((rec.get("buildables") or {}).get(buildable) or {})
+                    parts = brec.get("parts", []) or []
                     if parts:
                         leaderboard_map[uid] = max(leaderboard_map.get(uid, 0), len(parts))
             except Exception:
-                logger.exception("rumble_builds_leaderboard: error reading bot.data.user_pieces")
+                logger.exception("rumble_builds_leaderboard: error reading self._data")
 
-        leaderboard_data = [(uid, cnt) for uid, cnt in leaderboard_map.items() if cnt > 0]
-        leaderboard_data.sort(key=lambda x: (-x[1], x[0]))
-
-        if not leaderboard_data:
-            await ctx.reply("No stocking data found for this buildable.", mention_author=False)
-            return
-
-        try:
-            view = LeaderboardView(self.bot, ctx.guild, buildable, leaderboard_data, page=0)
-            embed = await view.generate_embed()
-            # Reuse _reply pattern used elsewhere: use ctx.reply directly here
-            await ctx.reply(embed=embed, view=view, mention_author=False)
-        except Exception:
-            logger.exception("rumble_builds_leaderboard: failed to build/render LeaderboardView, falling back to simple list")
-            # Fallback simple textual listing
-            lines = []
-            for rank, (uid, cnt) in enumerate(leaderboard_data, start=1):
+            if not leaderboard_map:
                 try:
-                    user = self.bot.get_user(uid) or await self.bot.fetch_user(uid)
-                    mention = user.mention
-                except Exception:
-                    mention = f"`{uid}`"
-                lines.append(f"{rank}. {mention} — {cnt} parts")
-            out = "\n".join(lines)
-            await ctx.reply(f"```\n{out}\n```", mention_author=False)
-
-    # -------------------------
-    # Debug helpers (prefix commands)
-    @commands.command(name="dbg_list_cog_cmds")
-    @commands.has_guild_permissions(manage_guild=True)
-    async def dbg_list_cog_cmds(self, ctx: commands.Context):
-        """
-        List commands defined on this Cog (prefix commands). Run in guild as an admin.
-        """
-        try:
-            cog_cmds = [c.name for c in self.get_commands()] if hasattr(self, "get_commands") else []
-            await ctx.reply(f"registered commands on cog: {', '.join(cog_cmds) if cog_cmds else '(none)'}", mention_author=False)
-        except Exception:
-            logger.exception("dbg_list_cog_cmds failed")
-            await self._ephemeral_reply(ctx, "Failed to list commands on cog.")
-
-    @commands.command(name="dbg_show_parts")
-    @commands.has_guild_permissions(manage_guild=True)
-    async def dbg_show_parts(self, ctx: commands.Context, member_or_id: Optional[str] = None, buildable: Optional[str] = "snowman"):
-        """
-        Debug helper: show parts from stockings.json (self._data) and from runtime self.bot.data.user_pieces.
-        Usage:
-          !dbg_show_parts                  -> shows for invoking user
-          !dbg_show_parts @Member          -> shows for mentioned member
-          !dbg_show_parts 625759569578164244 -> show for explicit id
-          Optionally add a buildable name as second arg (defaults to snowman).
-        """
-        import re
-
-        try:
-            guild = ctx.guild
-            # Resolve target uid
-            if member_or_id is None:
-                uid = getattr(ctx.author, "id", None)
-            else:
-                # try to extract a snowflake from a mention or raw id
-                m = re.search(r"(\d{16,22})", member_or_id)
-                if m:
-                    uid = int(m.group(1))
-                else:
-                    uid = None
-                    if guild:
-                        member = None
+                    all_user_pieces = (getattr(self.bot, "data", {}) or {}).get("user_pieces", {}) or {}
+                    for user_id_str, user_puzzles in all_user_pieces.items():
                         try:
-                            member = await commands.MemberConverter().convert(ctx, member_or_id)
+                            uid = int(user_id_str)
                         except Exception:
-                            member = discord.utils.find(lambda mm: (mm.name == member_or_id) or (mm.display_name == member_or_id), guild.members)
-                        if member:
-                            uid = member.id
-            if not uid:
-                await self._ephemeral_reply(ctx, "Could not resolve the target user. Provide a mention or numeric ID, or omit to use yourself.")
+                            continue
+                        parts = (user_puzzles or {}).get(buildable, []) or []
+                        if parts:
+                            leaderboard_map[uid] = max(leaderboard_map.get(uid, 0), len(parts))
+                except Exception:
+                    logger.exception("rumble_builds_leaderboard: error reading bot.data.user_pieces")
+
+            leaderboard_data = [(uid, cnt) for uid, cnt in leaderboard_map.items() if cnt > 0]
+            leaderboard_data.sort(key=lambda x: (-x[1], x[0]))
+
+            if not leaderboard_data:
+                await ctx.reply("No stocking data found for this buildable.", mention_author=False)
                 return
 
-            uid_str = str(uid)
-            # stockings.json (self._data)
-            stock_rec = (self._data or {}).get(uid_str) or {}
-            stock_brec = ((stock_rec.get("buildables") or {}).get(buildable) or {})
-            stock_parts = stock_brec.get("parts", []) or []
-            stock_completed = bool(stock_brec.get("completed"))
-            stock_completed_at = stock_brec.get("completed_at")
-
-            # runtime self.bot.data.user_pieces (if present)
-            botdata = getattr(self.bot, "data", {}) or {}
-            up = botdata.get("user_pieces", {}) or {}
-            bot_parts = (up.get(uid_str, {}) or {}).get(buildable, []) or []
-
-            text = (
-                f"stockings.json (self._data) for {uid_str} / {buildable}:\n"
-                f"  parts: {stock_parts}\n"
-                f"  completed: {stock_completed}\n"
-                f"  completed_at: {stock_completed_at}\n\n"
-                f"runtime self.bot.data.user_pieces for {uid_str} / {buildable}:\n"
-                f"  parts: {bot_parts}\n"
-            )
-            await ctx.reply(f"```\n{text}\n```", mention_author=False)
-        except Exception:
-            logger.exception("dbg_show_parts failed")
-            await self._ephemeral_reply(ctx, "Debug failed; see logs.")
-
-    # optional admin command to clear runtime data
-    @commands.command(name="admin_clear_runtime_data")
-    @commands.is_owner()
-    async def admin_clear_runtime_data(self, ctx: commands.Context):
-        """Clear in-memory bot.data (use with caution)."""
-        try:
-            self.bot.data = {}
-            await ctx.reply("Cleared bot.data runtime store.", mention_author=False)
-        except Exception as e:
-            logger.exception("admin_clear_runtime_data failed")
-            await ctx.reply(f"Failed to clear runtime data: {e}", mention_author=False)
-
-    # -------------------------
-    # Role helpers & events
-    async def _maybe_award_role(self, user_id: int, guild: Optional[discord.Guild]) -> None:
-        if AUTO_ROLE_ID is None or guild is None:
-            return
-        try:
-            user = self._ensure_user(user_id)
-            total = len(user.get("stickers", []))
-            capacity = int(user.get("capacity", DEFAULT_CAPACITY))
-            if total >= capacity:
-                role = guild.get_role(AUTO_ROLE_ID)
-                member = guild.get_member(user_id)
-                if role and member and role not in member.roles:
-                    await member.add_roles(role, reason="Sticker capacity reached")
-                    try:
-                        chan = guild.system_channel
-                        if chan:
-                            await chan.send(f"{member.mention} filled their sticker capacity and was awarded {role.mention}!")
-                    except Exception:
-                        logger.exception("_maybe_award_role: failed to notify")
-        except Exception:
-            logger.exception("_maybe_award_role: unexpected error")
-
-    async def _ephemeral_reply(self, ctx: commands.Context, content: str, *, mention_author: bool = False) -> None:
-        try:
-            if getattr(ctx, "interaction", None) and getattr(ctx.interaction, "response", None) and not ctx.interaction.response.is_done():
-                await ctx.interaction.response.send_message(content, ephemeral=True)
-                return
-        except Exception:
-            pass
-        try:
-            await ctx.reply(content, mention_author=mention_author)
-        except Exception:
             try:
-                await ctx.send(content)
+                if LeaderboardView:
+                    view = LeaderboardView(self.bot, ctx.guild, buildable, leaderboard_data, page=0)
+                    embed = await view.generate_embed()
+                    await ctx.reply(embed=embed, view=view, mention_author=False)
+                else:
+                    raise RuntimeError("LeaderboardView not available")
+            except Exception:
+                logger.exception(
+                    "rumble_builds_leaderboard: failed to build/render LeaderboardView, falling back to simple list")
+                lines = []
+                for rank, (uid, cnt) in enumerate(leaderboard_data, start=1):
+                    try:
+                        user = self.bot.get_user(uid) or await self.bot.fetch_user(uid)
+                        mention = user.mention
+                    except Exception:
+                        mention = f"`{uid}`"
+                    lines.append(f"{rank}. {mention} — {cnt} parts")
+                out = "\n".join(lines)
+                await ctx.reply(f"```\n{out}\n```", mention_author=False)
+
+        # -------------------------
+        # Debug helpers
+        @commands.command(name="dbg_list_cog_cmds")
+        @commands.has_guild_permissions(manage_guild=True)
+        async def dbg_list_cog_cmds(self, ctx: commands.Context):
+            try:
+                cog_cmds = [c.name for c in self.get_commands()] if hasattr(self, "get_commands") else []
+                await ctx.reply(f"registered commands on cog: {', '.join(cog_cmds) if cog_cmds else '(none)'}",
+                                mention_author=False)
+            except Exception:
+                logger.exception("dbg_list_cog_cmds failed")
+                await self._ephemeral_reply(ctx, "Failed to list commands on cog.")
+
+        @commands.command(name="dbg_show_parts")
+        @commands.has_guild_permissions(manage_guild=True)
+        async def dbg_show_parts(self, ctx: commands.Context, member_or_id: Optional[str] = None,
+                                 buildable: Optional[str] = "snowman"):
+            import re
+
+            try:
+                guild = ctx.guild
+                if member_or_id is None:
+                    uid = getattr(ctx.author, "id", None)
+                else:
+                    m = re.search(r"(\d{16,22})", member_or_id)
+                    if m:
+                        uid = int(m.group(1))
+                    else:
+                        uid = None
+                        if guild:
+                            member = None
+                            try:
+                                member = await commands.MemberConverter().convert(ctx, member_or_id)
+                            except Exception:
+                                member = discord.utils.find(
+                                    lambda mm: (mm.name == member_or_id) or (mm.display_name == member_or_id),
+                                    guild.members)
+                            if member:
+                                uid = member.id
+                if not uid:
+                    await self._ephemeral_reply(ctx,
+                                                "Could not resolve the target user. Provide a mention or numeric ID, or omit to use yourself.")
+                    return
+
+                uid_str = str(uid)
+                stock_rec = (self._data or {}).get(uid_str) or {}
+                stock_brec = ((stock_rec.get("buildables") or {}).get(buildable) or {})
+                stock_parts = stock_brec.get("parts", []) or []
+                stock_completed = bool(stock_brec.get("completed"))
+                stock_completed_at = stock_brec.get("completed_at")
+
+                botdata = getattr(self.bot, "data", {}) or {}
+                up = botdata.get("user_pieces", {}) or {}
+                bot_parts = (up.get(uid_str, {}) or {}).get(buildable, []) or []
+
+                text = (
+                    f"collected_pieces.json (self._data) for {uid_str} / {buildable}:\n"
+                    f"  parts: {stock_parts}\n"
+                    f"  completed: {stock_completed}\n"
+                    f"  completed_at: {stock_completed_at}\n\n"
+                    f"runtime self.bot.data.user_pieces for {uid_str} / {buildable}:\n"
+                    f"  parts: {bot_parts}\n"
+                )
+                await ctx.reply(f"```\n{text}\n```", mention_author=False)
+            except Exception:
+                logger.exception("dbg_show_parts failed")
+                await self._ephemeral_reply(ctx, "Debug failed; see logs.")
+
+        @commands.command(name="admin_clear_runtime_data")
+        @commands.is_owner()
+        async def admin_clear_runtime_data(self, ctx: commands.Context):
+            try:
+                self.bot.data = {}
+                await ctx.reply("Cleared bot.data runtime store.", mention_author=False)
+            except Exception as e:
+                logger.exception("admin_clear_runtime_data failed")
+                await ctx.reply(f"Failed to clear runtime data: {e}", mention_author=False)
+
+        # -------------------------
+        # Role helpers & events
+        async def _maybe_award_role(self, user_id: int, guild: Optional[discord.Guild]) -> None:
+            if AUTO_ROLE_ID is None or guild is None:
+                return
+            try:
+                user = self._ensure_user(user_id)
+                total = len(user.get("stickers", []))
+                capacity = int(user.get("capacity", DEFAULT_CAPACITY))
+                if total >= capacity:
+                    role = guild.get_role(AUTO_ROLE_ID)
+                    member = guild.get_member(user_id)
+                    if role and member and role not in member.roles:
+                        await member.add_roles(role, reason="Sticker capacity reached")
+                        try:
+                            chan = guild.system_channel
+                            if chan:
+                                await chan.send(
+                                    f"{member.mention} filled their sticker capacity and was awarded {role.mention}!")
+                        except Exception:
+                            logger.exception("_maybe_award_role: failed to notify")
+            except Exception:
+                logger.exception("_maybe_award_role: unexpected error")
+
+        async def _ephemeral_reply(self, ctx: commands.Context, content: str, *, mention_author: bool = False) -> None:
+            try:
+                if getattr(ctx, "interaction", None) and getattr(ctx.interaction, "response",
+                                                                 None) and not ctx.interaction.response.is_done():
+                    await ctx.interaction.response.send_message(content, ephemeral=True)
+                    return
             except Exception:
                 pass
-
-    async def _grant_buildable_completion_role(self, user_id: int, buildable_key: str, guild: Optional[discord.Guild], channel: Optional[discord.TextChannel] = None) -> bool:
-        """
-        Grant the configured completion role and ensure persistent flags are set.
-        """
-        if guild is None:
-            return False
-        build_def = self._buildables_def.get(buildable_key, {}) or {}
-        role_id = build_def.get("role_on_complete") or AUTO_ROLE_ID
-        if not role_id:
-            return False
-        try:
-            role = guild.get_role(int(role_id))
-        except Exception:
-            role = None
-        try:
-            member = guild.get_member(user_id)
-        except Exception:
-            member = None
-        if member is None:
             try:
-                member = await guild.fetch_member(user_id)
+                await ctx.reply(content, mention_author=mention_author)
             except Exception:
-                member = None
+                try:
+                    await ctx.send(content)
+                except Exception:
+                    pass
 
-        if role is None or member is None:
-            logger.debug("_grant_buildable_completion_role: role or member missing (role=%s member=%s)", role, member)
-            return False
-
-        try:
-            if role in member.roles:
-                rec = self._ensure_user(user_id)
-                brec = rec.setdefault("buildables", {}).setdefault(buildable_key, {})
-                if not brec.get("role_granted"):
-                    brec["role_granted"] = True
-                if not brec.get("completed"):
-                    brec["completed"] = True
-                if not brec.get("completed_at"):
-                    try:
-                        brec["completed_at"] = utcnow().isoformat()
-                    except Exception:
-                        brec["completed_at"] = datetime.utcnow().replace(tzinfo=timezone.utc).isoformat()
-                await self._save()
-                return True
-
-            bot_member = guild.me
-            if not bot_member or not bot_member.guild_permissions.manage_roles:
-                logger.warning("_grant_buildable_completion_role: cannot grant role %s in guild %s (missing perms)", role_id, guild.id)
+        async def _grant_buildable_completion_role(self, user_id: int, buildable_key: str,
+                                                   guild: Optional[discord.Guild],
+                                                   channel: Optional[discord.TextChannel] = None) -> bool:
+            if guild is None:
+                return False
+            build_def = self._buildables_def.get(buildable_key, {}) or {}
+            role_id = build_def.get("role_on_complete") or AUTO_ROLE_ID
+            if not role_id:
                 return False
             try:
-                if role.position >= (bot_member.top_role.position if bot_member.top_role else -1):
-                    logger.warning("_grant_buildable_completion_role: role %s is equal/above bot top role", role_id)
-                    return False
+                role = guild.get_role(int(role_id))
             except Exception:
-                logger.exception("_grant_buildable_completion_role: failed role position check")
-
-            await member.add_roles(role, reason=f"{buildable_key} completed")
-            rec = self._ensure_user(user_id)
-            brec = rec.setdefault("buildables", {}).setdefault(buildable_key, {})
-            brec["role_granted"] = True
-            brec["completed"] = True
+                role = None
             try:
-                brec["completed_at"] = utcnow().isoformat()
+                member = guild.get_member(user_id)
             except Exception:
-                brec["completed_at"] = datetime.utcnow().replace(tzinfo=timezone.utc).isoformat()
-            await self._save()
-            try:
-                post_chan = channel if channel and getattr(channel, "guild", None) else (guild.system_channel if getattr(guild, "system_channel", None) else None)
-                if post_chan:
-                    await post_chan.send(f"🎉 {member.mention} has completed **{buildable_key}** and was awarded {role.mention}!")
-            except Exception:
-                logger.exception("_grant_buildable_completion_role: announce failed")
-            return True
-        except Exception:
-            logger.exception("_grant_buildable_completion_role: add_roles failed")
-            return False
-
-    @commands.Cog.listener()
-    async def on_member_update(self, before: discord.Member, after: discord.Member) -> None:
-        try:
-            removed = {r.id for r in getattr(before, "roles", [])} - {r.id for r in getattr(after, "roles", [])}
-            if not removed:
-                return
-            uid = after.id
-            changed = False
-            for bk, bdef in (self._buildables_def or {}).items():
-                rid = bdef.get("role_on_complete") or AUTO_ROLE_ID
-                if not rid:
-                    continue
+                member = None
+            if member is None:
                 try:
-                    if int(rid) in removed:
-                        rec = self._ensure_user(uid)
-                        brec = rec.get("buildables", {}).get(bk)
-                        if brec and brec.get("role_granted"):
-                            brec["role_granted"] = False
-                            changed = True
+                    member = await guild.fetch_member(user_id)
                 except Exception:
-                    logger.exception("on_member_update: processing failed for buildable %s / member %s", bk, uid)
-            if changed:
+                    member = None
+
+            if role is None or member is None:
+                logger.debug("_grant_buildable_completion_role: role or member missing (role=%s member=%s)", role,
+                             member)
+                return False
+
+            try:
+                if role in member.roles:
+                    rec = self._ensure_user(user_id)
+                    brec = rec.setdefault("buildables", {}).setdefault(buildable_key, {})
+                    if not brec.get("role_granted"):
+                        brec["role_granted"] = True
+                    if not brec.get("completed"):
+                        brec["completed"] = True
+                    if not brec.get("completed_at"):
+                        try:
+                            brec["completed_at"] = utcnow().isoformat()
+                        except Exception:
+                            brec["completed_at"] = datetime.utcnow().replace(tzinfo=timezone.utc).isoformat()
+                    await self._save()
+                    return True
+
+                bot_member = guild.me
+                if not bot_member or not bot_member.guild_permissions.manage_roles:
+                    logger.warning("_grant_buildable_completion_role: cannot grant role %s in guild %s (missing perms)",
+                                   role_id, guild.id)
+                    return False
+                try:
+                    if role.position >= (bot_member.top_role.position if bot_member.top_role else -1):
+                        logger.warning("_grant_buildable_completion_role: role %s is equal/above bot top role", role_id)
+                        return False
+                except Exception:
+                    logger.exception("_grant_buildable_completion_role: failed role position check")
+
+                await member.add_roles(role, reason=f"{buildable_key} completed")
+                rec = self._ensure_user(user_id)
+                brec = rec.setdefault("buildables", {}).setdefault(buildable_key, {})
+                brec["role_granted"] = True
+                brec["completed"] = True
+                try:
+                    brec["completed_at"] = utcnow().isoformat()
+                except Exception:
+                    brec["completed_at"] = datetime.utcnow().replace(tzinfo=timezone.utc).isoformat()
                 await self._save()
-        except Exception:
-            logger.exception("on_member_update: unexpected error")
+                try:
+                    post_chan = channel if channel and getattr(channel, "guild", None) else (
+                        guild.system_channel if getattr(guild, "system_channel", None) else None)
+                    if post_chan:
+                        await post_chan.send(
+                            f"🎉 {member.mention} has completed **{buildable_key}** and was awarded {role.mention}!")
+                except Exception:
+                    logger.exception("_grant_buildable_completion_role: announce failed")
+                return True
+            except Exception:
+                logger.exception("_grant_buildable_completion_role: add_roles failed")
+                return False
 
+        @commands.Cog.listener()
+        async def on_member_update(self, before: discord.Member, after: discord.Member) -> None:
+            try:
+                removed = {r.id for r in getattr(before, "roles", [])} - {r.id for r in getattr(after, "roles", [])}
+                if not removed:
+                    return
+                uid = after.id
+                changed = False
+                for bk, bdef in (self._buildables_def or {}).items():
+                    rid = bdef.get("role_on_complete") or AUTO_ROLE_ID
+                    if not rid:
+                        continue
+                    try:
+                        if int(rid) in removed:
+                            rec = self._ensure_user(uid)
+                            brec = rec.get("buildables", {}).get(bk)
+                            if brec and brec.get("role_granted"):
+                                brec["role_granted"] = False
+                                changed = True
+                    except Exception:
+                        logger.exception("on_member_update: processing failed for buildable %s / member %s", bk, uid)
+                if changed:
+                    await self._save()
+            except Exception:
+                logger.exception("on_member_update: unexpected error")
 
-async def setup(bot: commands.Bot):
-    await bot.add_cog(StockingCog(bot))
+    async def setup(bot: commands.Bot):
+        await bot.add_cog(StockingCog(bot))
