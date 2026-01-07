@@ -1,0 +1,14 @@
+{
+  "lost_in_a_book": {
+    "display_name": "Lost in a Book",
+    "color": "b83ce7",
+    "ping_role_id": 1443655423948230709,
+    "reward_role_id": 1432910237144322179,
+    "tile_size": 146,
+    "base_opacity": 0.4,
+    "base_image": "lost_in_a_book/lost_in_a_book_base.png",
+    "full_image": "lost_in_a_book/lost_in_a_book_full.png",
+    "rows": 7,
+    "cols": 7
+  }
+}
