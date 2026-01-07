@@ -75,6 +75,15 @@ class RumbleListenerCog(commands.Cog):
                 # create an empty file to simplify later assumptions
                 self._processed_file.write_text("[]", encoding="utf-8")
                 self._processed_message_ids = set()
+            CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
+            out = {
+                "rumble_bot_ids": self.rumble_bot_ids,
+                    "rumble_bot_id": int(self.rumble_bot_ids[0]) if self.rumble_bot_ids else None,
+                "channel_part_map": {str(k): [v[0], v[1]] for k, v in self.channel_part_map.items()},
+            }
+            with CONFIG_FILE.open("w", encoding="utf-8") as fh:
+                json.dump(out, fh, ensure_ascii=False, indent=2)
+            logger.info("Saved rumble listener config to %s", CONFIG_FILE)
         except Exception:
             logger.exception("Failed to load processed rumble message ids")
             self._processed_message_ids = set()
