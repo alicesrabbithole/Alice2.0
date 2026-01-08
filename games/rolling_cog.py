@@ -5,48 +5,40 @@ import os
 import json
 import asyncio
 from datetime import datetime, timedelta
-from typing import Optional
 from utils.checks import STAFF_ROLE_ID
 
 DB_FILE = os.path.join(os.path.dirname(__file__), '..', 'data', 'roll_leaderboard.json')
 MAX_ROLLS = 10
 
-
-def load_leaderboards() -> dict:
+def load_leaderboards():
     if not os.path.exists(DB_FILE):
         return {}
     with open(DB_FILE, "r", encoding="utf-8") as f:
         return json.load(f)
 
-
-def save_leaderboards(lb: dict) -> None:
+def save_leaderboards(lb):
     with open(DB_FILE, "w", encoding="utf-8") as f:
-        json.dump(lb, f, indent=2)
-
+        json.dump(lb, f)
 
 def pretty_rolls(rolls):
     return " - ".join(f"**{x}**" for x in rolls) if rolls else ""
 
-
-def format_timedelta(dt: Optional[timedelta]):
+def format_timedelta(dt):
     if not dt or dt.total_seconds() < 0:
         return "ended"
     mins, secs = divmod(int(dt.total_seconds()), 60)
     hours, mins = divmod(mins, 60)
-    parts = []
+    s = []
     if hours:
-        parts.append(f"{hours}h")
+        s.append(f"{hours}h")
     if mins:
-        parts.append(f"{mins}m")
-    if secs or not parts:
-        parts.append(f"{secs}s")
-    return " ".join(parts)
-
+        s.append(f"{mins}m")
+    if secs or not s:
+        s.append(f"{secs}s")
+    return " ".join(s)
 
 class PersonalRollView(discord.ui.View):
-    """Private per-user rolling panel view."""
-
-    def __init__(self, cog, user_id: int, channel_id: int, game_end_time: Optional[datetime] = None):
+    def __init__(self, cog, user_id, channel_id, game_end_time=None):
         super().__init__(timeout=None)
         self.cog = cog
         self.user_id = user_id
@@ -54,87 +46,40 @@ class PersonalRollView(discord.ui.View):
         self.game_end_time = game_end_time
         self.rolls = []
         self.finished = False
-
-        # Restart button (disabled until game finishes)
         self.restart_btn = discord.ui.Button(
             label="Restart Game", style=discord.ButtonStyle.secondary, disabled=True
         )
         self.restart_btn.callback = self.restart_callback
         self.add_item(self.restart_btn)
 
-        # roll_button will be resolved lazily from self.children (the decorator-created button)
-        self.roll_button = None
-        self._resolve_buttons()
-
-    def _resolve_buttons(self):
-        # Called during init to capture references to the decorator-created roll button
-        for item in self.children:
-            if isinstance(item, discord.ui.Button) and item.label and "Roll" in item.label:
-                self.roll_button = item
-                break
-
-    def disable_all_items(self) -> None:
-        """Disable all interactive items on the view (safe to call)."""
-        for item in self.children:
-            try:
-                item.disabled = True
-            except Exception:
-                # best-effort disable — ignore if some item can't be disabled
-                pass
-
-    async def _safe_edit_panel(self, interaction: discord.Interaction) -> None:
-        """
-        Safely edit the message for this interaction. If interaction.response
-        is already used, fall back to editing the original message object.
-        """
-        content = self.build_panel_message(interaction.user)
-        try:
-            # Prefer to use the response if available
-            await interaction.response.edit_message(content=content, view=self)
-        except Exception:
-            # Response may already have been used; fallback to message edit
-            try:
-                if interaction.message:
-                    await interaction.message.edit(content=content, view=self)
-            except Exception:
-                # If all editing fails, log/ignore — view state may still be updated server-side
-                pass
-
-    def build_panel_message(self, member: discord.Member) -> str:
+    def build_panel_message(self, member):
         scores = self.cog.leaderboards.get(str(self.channel_id), {})
         score_to_beat = max(scores.values()) if scores else '-'
         lb = sorted(scores.items(), key=lambda kv: kv[1], reverse=True)
         user_score = sum(self.rolls) if self.rolls else 0
         pos = None
         for idx, (uid, score) in enumerate(lb):
-            try:
-                if int(uid) == member.id:
-                    pos = idx + 1
-                    break
-            except Exception:
-                continue
+            if int(uid) == member.id:
+                pos = idx + 1
+                break
         # Time left
         if self.game_end_time:
             time_left = self.game_end_time - datetime.utcnow()
             time_str = format_timedelta(time_left)
         else:
             time_str = "∞"
-
         panel = f"## __{member.mention}'s rolls:__\n"
         panel += pretty_rolls(self.rolls) + "\n"
         panel += "──────────────────────────\n"
         score_str = f"Current total: {user_score}   |   Score to beat: {score_to_beat}"
-        panel += f"{score_str}\nTime left: {time_str}\n"
+        time_str = f"Time left: {time_str}"
+        panel += f"{score_str}\n{time_str}\n"
         if pos is not None:
             panel += f"Your leaderboard position: **#{pos}**\n"
         return panel
 
     @discord.ui.button(label="Roll 1-10 🎲", style=discord.ButtonStyle.secondary)
     async def roll(self, interaction: discord.Interaction, button: discord.ui.Button):
-        # Ensure we have a reference to the roll button
-        if self.roll_button is None:
-            self._resolve_buttons()
-
         if interaction.user.id != self.user_id:
             await interaction.response.send_message("This is not your game.", ephemeral=True)
             return
@@ -142,12 +87,11 @@ class PersonalRollView(discord.ui.View):
         game = self.cog.active_games.get(self.channel_id)
         now = datetime.utcnow()
         end_time = game.get("end_time") if game else None
-        game_active = bool(game and game.get("active", False) and (not end_time or now <= end_time))
+        game_active = game and game.get("active", False) and (not end_time or now <= end_time)
         if not game_active:
             await interaction.response.send_message("Game ended!", ephemeral=True)
-            # Disable UI and update panel
             self.disable_all_items()
-            await self._safe_edit_panel(interaction)
+            await self.edit_panel(interaction)
             self.cog.active_panels[(self.channel_id, self.user_id)]["active"] = False
             return
 
@@ -166,17 +110,12 @@ class PersonalRollView(discord.ui.View):
             self.finished = True
             score = sum(self.rolls)
             self.cog.update_leaderboard(self.channel_id, self.user_id, score)
-            # disable roll button and enable restart
-            if self.roll_button:
-                try:
-                    self.roll_button.disabled = True
-                except Exception:
-                    pass
+            self.children[0].disabled = True
             self.restart_btn.disabled = False
-            await self._safe_edit_panel(interaction)
+            await self.edit_panel(interaction)
             self.cog.active_panels[(self.channel_id, self.user_id)]["active"] = False
         else:
-            await self._safe_edit_panel(interaction)
+            await self.edit_panel(interaction)
 
     async def restart_callback(self, interaction: discord.Interaction):
         if interaction.user.id != self.user_id:
@@ -184,19 +123,18 @@ class PersonalRollView(discord.ui.View):
             return
         self.rolls = []
         self.finished = False
-        # enable roll button, disable restart
-        if self.roll_button:
-            try:
-                self.roll_button.disabled = False
-            except Exception:
-                pass
+        self.children[0].disabled = False
         self.restart_btn.disabled = True
         self.cog.active_panels[(self.channel_id, self.user_id)]["active"] = True
-        await self._safe_edit_panel(interaction)
+        await self.edit_panel(interaction)
 
+    async def edit_panel(self, interaction):
+        await interaction.response.edit_message(
+            content=self.build_panel_message(interaction.user), view=self
+        )
 
 class JoinGameView(discord.ui.View):
-    def __init__(self, cog, channel_id: int, game_end_time: Optional[datetime] = None):
+    def __init__(self, cog, channel_id, game_end_time=None):
         super().__init__(timeout=None)
         self.cog = cog
         self.channel_id = channel_id
@@ -207,14 +145,12 @@ class JoinGameView(discord.ui.View):
         user_id = interaction.user.id
         panel_key = (self.channel_id, user_id)
         view = PersonalRollView(self.cog, user_id, self.channel_id, game_end_time=self.game_end_time)
-        # send ephemeral personal panel
         await interaction.response.send_message(
-            content=view.build_panel_message(interaction.user),
+            view.build_panel_message(interaction.user),
             view=view,
             ephemeral=True
         )
         self.cog.active_panels[panel_key] = {"active": True}
-
 
 class RollingCog(commands.Cog):
     def __init__(self, bot):
@@ -234,7 +170,7 @@ class RollingCog(commands.Cog):
             self.leaderboards[cid][uid] = score
             save_leaderboards(self.leaderboards)
 
-    def is_staff(self, member: discord.Member) -> bool:
+    def is_staff(self, member):
         return (
             any(r.id == STAFF_ROLE_ID for r in getattr(member, "roles", []))
             or member.guild_permissions.manage_guild
@@ -247,31 +183,23 @@ class RollingCog(commands.Cog):
         if not self.is_staff(ctx.author):
             await ctx.send("You do not have permission to start new games.")
             return
-
-        # End and cleanup any active game first
         game = self.active_games.get(channel_id)
+        now = datetime.utcnow()
+        end_time = game.get("end_time") if game else None
+        # End and cleanup any active game first
         if game and game.get("active", False):
             await self.force_end_game(channel_id, ctx.channel)
 
-        # Start a fresh game
-        now = datetime.utcnow()
-        end_time = None
-        if minutes and minutes > 0:
-            end_time = now + timedelta(minutes=minutes)
-
+        # Always start a fresh game (reset leaderboard)
         self.active_games[channel_id] = {"active": True}
-        if end_time:
-            self.active_games[channel_id]["end_time"] = end_time
-
         self.last_host[channel_id] = ctx.author.id
         self.leaderboards[str(channel_id)] = {}
         save_leaderboards(self.leaderboards)
-
-        # Cleanup panels for this channel
+        # Cleanup all panels for this channel
         for panel_key in list(self.active_panels):
             if panel_key[0] == channel_id:
                 self.active_panels.pop(panel_key, None)
-
+        # Alice theme
         embed = discord.Embed(
             title="A New Wonderland Rolling Game Has Begun!",
             description=(
@@ -280,17 +208,17 @@ class RollingCog(commands.Cog):
             ),
             color=discord.Color.purple()
         )
-
         if ctx.author.avatar:
-            embed.set_thumbnail(url="https://cdn.discordapp.com/attachments/1309962373846532159/1443432386732757123/Aiwdice.png")
-        embed.set_footer(text="Good luck!")
-        if minutes and minutes > 0:
-            embed.add_field(name="Game Ends", value=f"{minutes} minutes", inline=False)
-            # schedule auto end
-            self.bot.loop.create_task(self.auto_end_game(channel_id, end_time, ctx.channel))
-
-        view = JoinGameView(self, channel_id, game_end_time=end_time)
-        await ctx.send(embed=embed, view=view)
+            embed.set_thumbnail(
+                url="https://cdn.discordapp.com/attachments/1309962373846532159/1443432386732757123/Aiwdice.png?ex=69290caa&is=6927bb2a&hm=dded477a1d04745957dd25bbe5b0c84b8faff9cbe54e8851655caaf15d2202b0&")
+            embed.set_footer(text="Good luck!")
+            if minutes and minutes > 0:
+                end_time = now + timedelta(minutes=minutes)
+                self.active_games[channel_id]["end_time"] = end_time
+                embed.add_field(name="Game Ends", value=f"{minutes} minutes", inline=False)
+                self.bot.loop.create_task(self.auto_end_game(channel_id, end_time, ctx.channel))
+            view = JoinGameView(self, channel_id, game_end_time=end_time)
+            await ctx.send(embed=embed, view=view)
 
     async def auto_end_game(self, channel_id, end_time, channel):
         seconds = max(1, int((end_time - datetime.utcnow()).total_seconds()))
@@ -317,7 +245,8 @@ class RollingCog(commands.Cog):
         host_id = self.last_host.get(channel_id)
         self.active_games[channel_id] = {"active": False}
         sorted_lb = sorted(self.leaderboards.get(str(channel_id), {}).items(), key=lambda kv: kv[1], reverse=True)
-        leaderboard_text = "\n".join(f"<@{uid}>: {score}" for uid, score in sorted_lb) if sorted_lb else "No scores for this game!"
+        leaderboard_text = "\n".join(
+            f"<@{uid}>: {score}" for uid, score in sorted_lb) if sorted_lb else "No scores for this game!"
         host_tag = f"<@{host_id}>" if host_id else ""
         embed = discord.Embed(
             title="Game Ended!",
@@ -332,7 +261,7 @@ class RollingCog(commands.Cog):
 
     @commands.hybrid_command(name="roll_leaderboard", description="Show roll game leaderboard.")
     async def roll_leaderboard(self, ctx):
-        if not self.is_staff(ctx.author):
+        if not self.is_staff(ctx.author):  # restrict to staff only
             await ctx.send("You do not have permission to view the leaderboard.", ephemeral=True)
             return
         scores = self.leaderboards.get(str(ctx.channel.id), {})
@@ -375,7 +304,6 @@ class RollingCog(commands.Cog):
         self.leaderboards[str(channel_id)] = {}
         save_leaderboards(self.leaderboards)
         await ctx.send("The rolling game and leaderboard have been fully reset in this channel.")
-
 
 async def setup(bot):
     await bot.add_cog(RollingCog(bot))
