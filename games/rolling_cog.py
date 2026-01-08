@@ -52,6 +52,28 @@ class PersonalRollView(discord.ui.View):
         self.restart_btn.callback = self.restart_callback
         self.add_item(self.restart_btn)
 
+    def disable_all_items(self) -> None:
+        """Best-effort disable of all UI items so callers can call safely."""
+        for item in self.children:
+            try:
+                item.disabled = True
+            except Exception:
+                pass
+
+    async def _safe_edit_panel(self, interaction):
+        """Edit the panel safely whether response has been used or not."""
+        content = self.build_panel_message(interaction.user)
+        try:
+            await interaction.response.edit_message(content=content, view=self)
+        except Exception:
+            # response already used or unavailable — try to edit the original message
+            try:
+                if getattr(interaction, "message", None):
+                    await interaction.message.edit(content=content, view=self)
+            except Exception:
+                # best-effort: nothing further we can do here
+                pass
+
     def build_panel_message(self, member):
         scores = self.cog.leaderboards.get(str(self.channel_id), {})
         score_to_beat = max(scores.values()) if scores else '-'
@@ -90,8 +112,9 @@ class PersonalRollView(discord.ui.View):
         game_active = game and game.get("active", False) and (not end_time or now <= end_time)
         if not game_active:
             await interaction.response.send_message("Game ended!", ephemeral=True)
+            # use safe disable and safe edit
             self.disable_all_items()
-            await self.edit_panel(interaction)
+            await self._safe_edit_panel(interaction)
             self.cog.active_panels[(self.channel_id, self.user_id)]["active"] = False
             return
 
@@ -110,12 +133,20 @@ class PersonalRollView(discord.ui.View):
             self.finished = True
             score = sum(self.rolls)
             self.cog.update_leaderboard(self.channel_id, self.user_id, score)
-            self.children[0].disabled = True
+            # protect against indexing errors: try to disable the roll button (first interactive)
+            try:
+                # find first button that looks like a roll (best-effort)
+                for item in self.children:
+                    if isinstance(item, discord.ui.Button) and "Roll" in (item.label or ""):
+                        item.disabled = True
+                        break
+            except Exception:
+                pass
             self.restart_btn.disabled = False
-            await self.edit_panel(interaction)
+            await self._safe_edit_panel(interaction)
             self.cog.active_panels[(self.channel_id, self.user_id)]["active"] = False
         else:
-            await self.edit_panel(interaction)
+            await self._safe_edit_panel(interaction)
 
     async def restart_callback(self, interaction: discord.Interaction):
         if interaction.user.id != self.user_id:
@@ -123,15 +154,21 @@ class PersonalRollView(discord.ui.View):
             return
         self.rolls = []
         self.finished = False
-        self.children[0].disabled = False
+        # re-enable the roll button (best-effort)
+        try:
+            for item in self.children:
+                if isinstance(item, discord.ui.Button) and "Roll" in (item.label or ""):
+                    item.disabled = False
+                    break
+        except Exception:
+            pass
         self.restart_btn.disabled = True
         self.cog.active_panels[(self.channel_id, self.user_id)]["active"] = True
-        await self.edit_panel(interaction)
+        await self._safe_edit_panel(interaction)
 
     async def edit_panel(self, interaction):
-        await interaction.response.edit_message(
-            content=self.build_panel_message(interaction.user), view=self
-        )
+        # keep for backward compatibility; delegate to safe editor
+        await self._safe_edit_panel(interaction)
 
 class JoinGameView(discord.ui.View):
     def __init__(self, cog, channel_id, game_end_time=None):
